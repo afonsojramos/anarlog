@@ -63,7 +63,7 @@ SYNC = {
 ROLES = {"ai": AI, "sync": SYNC, "core": CORE | SYNC, "billing": BILLING}
 
 
-def select(service, api_secrets, cloudsync_secrets):
+def select(service, api_secrets, cloudsync_secrets, webhook_secrets=()):
     if service not in {*ROLES, "all", "gateway", "legacy"}:
         raise ValueError("Unknown API service")
     allowed = SHARED | ROLES.get(service, AI | CORE | SYNC)
@@ -99,6 +99,16 @@ def select(service, api_secrets, cloudsync_secrets):
         required |= {"NANGO_API_KEY", "NANGO_WEBHOOK_SIGNING_KEY"}
     if service in {"sync", "core", "all", "gateway", "legacy"}:
         required |= SYNC - {"ANARLOG_CLOUDSYNC_DESKTOP_TRANSPORT"}
+    if service == "billing":
+        webhook_values = {
+            secret["key"]: secret.get("value", "") for secret in webhook_secrets
+        }
+        for key in {"DATABASE_URL", "STRIPE_WEBHOOK_SECRET"}:
+            values[key] = webhook_values.get(key, "")
+            required.add(key)
+        values["LOOPS_API_KEY"] = values.get("LOOPS_KEY", "")
+        if webhook_values.get("SENTRY_DSN"):
+            values["BILLING_SENTRY_DSN"] = webhook_values["SENTRY_DSN"]
     missing = sorted(key for key in required if not values.get(key))
     if missing:
         raise ValueError("Missing required service secrets: " + ", ".join(missing))
@@ -113,11 +123,13 @@ def main():
     parser.add_argument("--api", required=True)
     parser.add_argument("--cloudsync", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--webhooks")
     args = parser.parse_args()
     values = select(
         args.service,
         json.loads(Path(args.api).read_text()),
         json.loads(Path(args.cloudsync).read_text()),
+        json.loads(Path(args.webhooks).read_text()) if args.webhooks else [],
     )
     path = Path(args.output)
     path.touch(mode=0o600)

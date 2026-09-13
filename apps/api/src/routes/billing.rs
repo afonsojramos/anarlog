@@ -15,10 +15,20 @@ pub(crate) fn router(
     };
     let config = anlg_api_subscription::SubscriptionConfig::new(&env.supabase, stripe, loops)
         .with_analytics(analytics);
-    subscription_aliases(anlg_api_subscription::billing_router(config))
+    let router = subscription_aliases(anlg_api_subscription::billing_router(config))
         .route_layer(middleware::from_fn(auth::sentry_and_analytics))
         .route_layer(middleware::from_fn_with_state(
             AuthState::new(&env.supabase.supabase_url),
             auth::require_auth,
-        ))
+        ));
+    if env.anarlog_billing_webhooks {
+        router.merge(crate::billing_webhook::router())
+    } else if env.upstreams.anarlog_billing_origin.is_some() {
+        router.route(
+            "/webhook/stripe",
+            axum::routing::post(|| async { axum::http::StatusCode::NOT_FOUND }),
+        )
+    } else {
+        router
+    }
 }

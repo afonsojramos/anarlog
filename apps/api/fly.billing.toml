@@ -1,8 +1,8 @@
 app = 'anarlog-billing-api'
 primary_region = 'sjc'
 kill_signal = 'SIGTERM'
-# Fly caps this at 300s. Meeting streams can last longer, so api_cd uses
-# cordoned replacement Machines + SIGUSR1 and leaves old Machines up until idle.
+# Fly caps this at 300s. Accepted billing work can last longer, so api_cd uses
+# cordoned replacement Machines + SIGUSR1 and leaves old Machines up until requests and seat jobs finish.
 kill_timeout = 300
 swap_size_mb = 512
 
@@ -10,7 +10,13 @@ swap_size_mb = 512
 policy = "on-failure"
 processes = ["app"]
 
+[build]
+build-target = "billing-runtime"
+
 [env]
+NODE_ENV = "production"
+BILLING_API_BINARY = "/usr/local/bin/api"
+ANARLOG_BILLING_WEBHOOKS = "true"
 ANARLOG_SERVICE = "billing"
 ANARLOG_ATTACHMENT_BACKUP_GC_ENABLED = "false"
 PORT = "3001"

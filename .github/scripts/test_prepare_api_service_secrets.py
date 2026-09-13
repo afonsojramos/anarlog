@@ -8,6 +8,10 @@ class ServiceSecretsTests(unittest.TestCase):
         self.api = [
             {"key": key, "value": "test-value"} for key in SHARED | AI | CORE | SYNC
         ]
+        self.webhooks = [
+            {"key": key, "value": "webhook-value"}
+            for key in {"DATABASE_URL", "STRIPE_WEBHOOK_SECRET"}
+        ]
         self.api.append(
             {"key": "OTA_S3_SECRET_ACCESS_KEY", "value": "not-for-services"}
         )
@@ -20,7 +24,7 @@ class ServiceSecretsTests(unittest.TestCase):
             ("core", AI),
         ]:
             with self.subTest(role=role):
-                result = select(role, self.api, [])
+                result = select(role, self.api, [], self.webhooks)
                 self.assertFalse(result.keys() & excluded)
                 self.assertNotIn("OTA_S3_SECRET_ACCESS_KEY", result)
                 self.assertIn("SUPABASE_SERVICE_ROLE_KEY", result)
@@ -37,6 +41,17 @@ class ServiceSecretsTests(unittest.TestCase):
             "https://anarlog-inference.fly.dev",
         )
         self.assertEqual(select("all", self.api, [])["API_BASE_URL"], "test-value")
+
+    def test_webhook_credentials_only_reach_billing(self):
+        result = select("billing", self.api, [], self.webhooks)
+        self.assertEqual(result["DATABASE_URL"], "webhook-value")
+        self.assertEqual(result["LOOPS_API_KEY"], result["LOOPS_KEY"])
+        for role in ["core", "gateway", "ai", "sync"]:
+            result = select(role, self.api, [], self.webhooks)
+            self.assertNotIn("DATABASE_URL", result)
+            self.assertNotIn("STRIPE_WEBHOOK_SECRET", result)
+        with self.assertRaisesRegex(ValueError, "DATABASE_URL"):
+            select("billing", self.api, [])
 
     def test_unknown_role_fails_closed(self):
         with self.assertRaisesRegex(ValueError, "Unknown"):

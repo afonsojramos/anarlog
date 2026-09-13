@@ -134,8 +134,9 @@ jobs:
 
           ai_secrets_json="$(mktemp)"
           cloudsync_secrets_json="$(mktemp)"
+          webhook_secrets_json="$(mktemp)"
           secrets_file="$(mktemp)"
-          trap 'rm -f "$ai_secrets_json" "$cloudsync_secrets_json" "$secrets_file"' EXIT
+          trap 'rm -f "$ai_secrets_json" "$cloudsync_secrets_json" "$webhook_secrets_json" "$secrets_file"' EXIT
 
           infisical export \
             --token="$INFISICAL_TOKEN" \
@@ -153,9 +154,16 @@ jobs:
             --format=json \
             --output-file="$cloudsync_secrets_json"
 
+          printf '[]' > "$webhook_secrets_json"
+          if [ "$SERVICE" = billing ]; then
+            infisical export --token="$INFISICAL_TOKEN" --env=prod \
+              --projectId="$INFISICAL_PROJECT_ID" --path=/anarlog/stripe-sync \
+              --format=json --output-file="$webhook_secrets_json"
+          fi
+
           python3 .github/scripts/prepare_api_service_secrets.py \
             --service "$SERVICE" --api "$ai_secrets_json" \
-            --cloudsync "$cloudsync_secrets_json" --output "$secrets_file"
+            --cloudsync "$cloudsync_secrets_json" --webhooks "$webhook_secrets_json" --output "$secrets_file"
 
           if [ -s "$secrets_file" ]; then
             flyctl secrets import --app "$FLY_APP" --stage < "$secrets_file"

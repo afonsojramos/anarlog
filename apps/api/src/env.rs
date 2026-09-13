@@ -52,6 +52,8 @@ pub struct Env {
     pub upstreams: crate::proxy::Env,
     #[serde(default = "default_port")]
     pub port: u16,
+    #[serde(default)]
+    pub anarlog_billing_webhooks: bool,
     #[serde(default, deserialize_with = "anlg_api_env::filter_empty")]
     pub sentry_dsn: Option<String>,
     #[serde(default, deserialize_with = "anlg_api_env::filter_empty")]
@@ -120,6 +122,9 @@ impl RuntimeConfig {
         validate_supabase_env(&env.supabase)?;
         let service = env.anarlog_service;
         env.upstreams.validate(service)?;
+        if env.anarlog_billing_webhooks && service != Service::Billing {
+            return Err("Local billing webhooks require the billing role".into());
+        }
         let nango = if service.includes(Service::Core) {
             resolve_nango(&env.nango)?
         } else {
@@ -381,6 +386,20 @@ mod tests {
         )
         .map_err(|error| error.to_string())?;
         RuntimeConfig::resolve(raw)
+    }
+
+    #[test]
+    fn local_webhooks_are_billing_only() {
+        let enabled = [("ANARLOG_BILLING_WEBHOOKS", "true")];
+        assert!(role_config("billing", &enabled).is_ok());
+        for role in ["sync", "core", "ai", "all"] {
+            assert!(
+                role_config(role, &enabled)
+                    .err()
+                    .unwrap()
+                    .contains("require the billing role")
+            );
+        }
     }
 
     #[test]

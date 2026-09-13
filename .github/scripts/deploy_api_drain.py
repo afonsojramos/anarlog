@@ -312,9 +312,11 @@ def desired_runtime_config(app: str, config_path: str) -> dict[str, Any]:
             "env",
             "http_service",
             "vm",
+            "build",
         },
         "Fly",
     )
+    only(config.get("build", {}), {"build-target"}, "build")
     http = config["http_service"]
     only(
         http,

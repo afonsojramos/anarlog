@@ -4,6 +4,7 @@ import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 
+import { startBillingApi, drainBillingRuntime } from "./billing-runtime";
 import { env } from "./env";
 import { captureOperationalError, sanitizeErrorEvent } from "./error-reporting";
 import type { AppBindings } from "./hono-bindings";
@@ -13,7 +14,7 @@ import { drainServer } from "./shutdown";
 import { startWorkspaceSeatWorker } from "./workspace-seat-worker";
 
 Sentry.init({
-  dsn: Bun.env.SENTRY_DSN,
+  dsn: Bun.env.BILLING_SENTRY_DSN ?? Bun.env.SENTRY_DSN,
   environment: env.NODE_ENV,
   enabled: env.NODE_ENV === "production",
   release: Bun.env.APP_VERSION
@@ -59,10 +60,29 @@ app.notFound((c) => c.text("not_found", 404));
 
 const stopSeatWorker = startWorkspaceSeatWorker();
 const server = Bun.serve({
-  port: env.PORT,
+  port: Bun.env.BILLING_API_BINARY ? 8788 : env.PORT,
+  hostname: Bun.env.BILLING_API_BINARY ? "127.0.0.1" : "0.0.0.0",
   fetch: app.fetch,
 });
+const api = Bun.env.BILLING_API_BINARY
+  ? startBillingApi(Bun.env.BILLING_API_BINARY, env.PORT)
+  : undefined;
 let shuttingDown = false;
+if (api) {
+  void api.exited.then(async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    captureOperationalError(new Error("Billing API exited unexpectedly"), {
+      operation: "billing_api_exit",
+    });
+    try {
+      await drainServer(server, stopSeatWorker);
+    } finally {
+      await Sentry.flush(2000);
+      process.exit(1);
+    }
+  });
+}
 for (const signal of ["SIGTERM", "SIGINT", "SIGUSR1"] as const) {
   process.on(signal, () => {
     if (shuttingDown) return;
@@ -70,7 +90,13 @@ for (const signal of ["SIGTERM", "SIGINT", "SIGUSR1"] as const) {
     void (async () => {
       let exitCode = 0;
       try {
-        await drainServer(server, stopSeatWorker);
+        if (api) {
+          await drainBillingRuntime(api, () =>
+            drainServer(server, stopSeatWorker),
+          );
+        } else {
+          await drainServer(server, stopSeatWorker);
+        }
       } catch (error) {
         exitCode = 1;
         captureOperationalError(error, { operation: "server_shutdown" });
