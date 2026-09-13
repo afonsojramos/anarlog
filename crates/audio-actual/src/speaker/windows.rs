@@ -1,4 +1,5 @@
 use anlg_audio_utils::{pcm_i16_to_f32, pcm_i32_to_f32};
+use anlg_resampler::{Async, FixedAsync, PolynomialDegree, RubatoChunkResampler};
 use anyhow::{Context, Result};
 use futures_util::Stream;
 use futures_util::task::AtomicWaker;
@@ -177,34 +178,29 @@ impl EndpointFollower {
     }
 }
 
-// Old-rate samples still queued in the ring must be consumed before the new rate is published,
-// otherwise the consumer labels them with the new endpoint's rate.
-struct RateHandoff {
-    pending: Option<u32>,
-}
+type EndpointResampler = RubatoChunkResampler<Async<f32>, 1>;
 
-impl RateHandoff {
-    fn new() -> Self {
-        Self { pending: None }
+fn build_endpoint_resampler(
+    stream_rate: u32,
+    endpoint_rate: u32,
+) -> Result<Option<EndpointResampler>> {
+    if endpoint_rate == stream_rate {
+        return Ok(None);
     }
 
-    fn schedule(&mut self, current: u32, next: u32) {
-        self.pending = (next != current).then_some(next);
-    }
-
-    fn ready(&mut self, queued: usize, rate: &AtomicU32) -> bool {
-        let Some(pending) = self.pending else {
-            return true;
-        };
-
-        if queued > 0 {
-            return false;
-        }
-
-        rate.store(pending, Ordering::Release);
-        self.pending = None;
-        true
-    }
+    let ratio = stream_rate as f64 / endpoint_rate as f64;
+    let resampler = Async::<f32>::new_poly(
+        ratio,
+        2.0,
+        PolynomialDegree::Cubic,
+        CHUNK_SIZE,
+        1,
+        FixedAsync::Input,
+    )
+    .context("Failed to build endpoint resampler")?;
+    Ok(Some(RubatoChunkResampler::new(
+        resampler, CHUNK_SIZE, CHUNK_SIZE,
+    )))
 }
 
 fn capture_audio_loop(
@@ -238,7 +234,10 @@ fn capture_audio_loop(
         }
     };
 
-    current_sample_rate.store(capture.format.sample_rate, Ordering::Release);
+    // The rate published to the consumer is fixed for the life of the stream; endpoints with a
+    // different mix rate are resampled here so the consumer never sees a rate boundary.
+    let stream_rate = capture.format.sample_rate;
+    current_sample_rate.store(stream_rate, Ordering::Release);
     tracing::info!(
         anarlog.audio.sample_rate_hz = capture.format.sample_rate,
         device = ?capture.device_name,
@@ -247,29 +246,30 @@ fn capture_audio_loop(
     let _ = init_tx.send(Ok(()));
 
     let mut follower = EndpointFollower::new(capture.device_id.clone());
-    let mut handoff = RateHandoff::new();
-    // Samples captured from the new endpoint while old-rate samples still sit in the ring are
-    // staged here and released once the rate is published.
-    let (mut staging_prod, mut staging_cons) = HeapRb::<f32>::new(BUFFER_SIZE).split();
     let mut next_endpoint_poll = Instant::now() + ENDPOINT_POLL_INTERVAL;
     let mut temp_queue = VecDeque::new();
     let mut scratch = vec![0.0f32; crate::rt_ring::DEFAULT_SCRATCH_LEN];
+    let (mut convert_prod, mut convert_cons) = HeapRb::<f32>::new(BUFFER_SIZE).split();
+    let mut resampler: Option<EndpointResampler> = None;
 
     while running.load(Ordering::Acquire) {
         if Instant::now() >= next_endpoint_poll {
             next_endpoint_poll = Instant::now() + ENDPOINT_POLL_INTERVAL;
             if let Some(device) = poll_render_endpoint_switch(&enumerator, &mut follower) {
-                match open_loopback_capture(device) {
-                    Ok(next) => {
+                let next_capture = open_loopback_capture(device).and_then(|next| {
+                    let next_resampler =
+                        build_endpoint_resampler(stream_rate, next.format.sample_rate)?;
+                    Ok((next, next_resampler))
+                });
+                match next_capture {
+                    Ok((next, next_resampler)) => {
                         let _ = capture.audio_client.stop_stream();
                         capture = next;
+                        resampler = next_resampler;
                         follower = EndpointFollower::new(capture.device_id.clone());
-                        handoff.schedule(
-                            current_sample_rate.load(Ordering::Acquire),
-                            capture.format.sample_rate,
-                        );
                         tracing::info!(
                             anarlog.audio.sample_rate_hz = capture.format.sample_rate,
+                            resampled = resampler.is_some(),
                             device = ?capture.device_name,
                             "wasapi_loopback_endpoint_switched"
                         );
@@ -295,34 +295,41 @@ fn capture_audio_loop(
             continue;
         }
 
-        let ready = handoff.ready(producer.occupied_len(), &current_sample_rate);
-        let mut staged_pushed = 0;
-        if ready && staging_cons.occupied_len() > 0 {
-            let staged = staging_cons.occupied_len();
-            staged_pushed = producer.push_iter(staging_cons.pop_iter());
-            dropped_samples.fetch_add(staged - staged_pushed, Ordering::Relaxed);
-        }
-
-        let stats = if ready {
-            push_wasapi_bytes(
+        let stats = match resampler.as_mut() {
+            None => push_wasapi_bytes(
                 temp_queue.make_contiguous(),
                 capture.format,
                 &mut scratch,
                 &mut producer,
-            )?
-        } else {
-            push_wasapi_bytes(
-                temp_queue.make_contiguous(),
-                capture.format,
-                &mut scratch,
-                &mut staging_prod,
-            )?
+            )?,
+            Some(rs) => {
+                let converted = push_wasapi_bytes(
+                    temp_queue.make_contiguous(),
+                    capture.format,
+                    &mut scratch,
+                    &mut convert_prod,
+                )?;
+                for sample in convert_cons.pop_iter() {
+                    rs.push_sample(sample);
+                }
+                if let Err(err) = rs.process_all_ready_blocks() {
+                    tracing::warn!(error = %err, "wasapi_loopback_endpoint_resample_failed");
+                    rs.clear_input();
+                }
+                let mut pushed = 0;
+                let mut dropped = converted.dropped;
+                if let Some(out) = rs.take_all_output() {
+                    pushed = producer.push_iter(out.iter().copied());
+                    dropped += out.len() - pushed;
+                }
+                PushStats { pushed, dropped }
+            }
         };
         if stats.dropped > 0 {
             dropped_samples.fetch_add(stats.dropped, Ordering::Relaxed);
         }
 
-        if (staged_pushed > 0 || stats.pushed > 0) && wake_pending.load(Ordering::Acquire) {
+        if stats.pushed > 0 && wake_pending.load(Ordering::Acquire) {
             wake_pending.store(false, Ordering::Release);
             waker.wake();
         }
@@ -655,38 +662,26 @@ mod tests {
     }
 
     #[test]
-    fn rate_handoff_publishes_only_when_ring_drained() {
-        let mut handoff = RateHandoff::new();
-        let rate = AtomicU32::new(48_000);
-
-        handoff.schedule(48_000, 44_100);
-        assert!(!handoff.ready(10, &rate));
-        assert_eq!(rate.load(Ordering::Acquire), 48_000);
-        assert!(handoff.ready(0, &rate));
-        assert_eq!(rate.load(Ordering::Acquire), 44_100);
-        assert!(handoff.ready(5, &rate));
+    fn endpoint_resampler_is_noop_for_matching_rate() {
+        assert!(build_endpoint_resampler(48_000, 48_000).unwrap().is_none());
     }
 
     #[test]
-    fn rate_handoff_is_noop_for_same_rate() {
-        let mut handoff = RateHandoff::new();
-        let rate = AtomicU32::new(48_000);
+    fn endpoint_resampler_converts_to_stream_rate() {
+        let mut resampler = build_endpoint_resampler(48_000, 44_100)
+            .unwrap()
+            .expect("different rates should create a resampler");
 
-        handoff.schedule(48_000, 48_000);
-        assert!(handoff.ready(10, &rate));
-        assert_eq!(rate.load(Ordering::Acquire), 48_000);
-    }
+        for index in 0..44_100 {
+            resampler.push_sample((index as f32 * 0.01).sin());
+        }
+        resampler.process_all_ready_blocks().unwrap();
+        resampler.process_partial_block(true).unwrap();
 
-    #[test]
-    fn rate_handoff_cancels_when_switching_back_before_drain() {
-        let mut handoff = RateHandoff::new();
-        let rate = AtomicU32::new(48_000);
-
-        handoff.schedule(48_000, 44_100);
-        assert!(!handoff.ready(10, &rate));
-        handoff.schedule(48_000, 48_000);
-        assert!(handoff.ready(10, &rate));
-        assert_eq!(rate.load(Ordering::Acquire), 48_000);
+        let output = resampler
+            .take_all_output()
+            .expect("resampler produced output");
+        assert!((47_000..=49_000).contains(&output.len()));
     }
 }
 
