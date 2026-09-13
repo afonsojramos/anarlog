@@ -130,11 +130,22 @@ impl Stream for SpeakerStream {
             return std::task::Poll::Ready(Some(sample));
         }
 
+        let rate_before = this.inner.sample_rate();
         match this.inner.as_mut().poll_next(cx) {
             std::task::Poll::Ready(Some(chunk)) => {
+                let rate_after = this.inner.sample_rate();
+                // The producer only publishes a new rate once the ring is empty, so a chunk whose
+                // fetch spans a rate change is the last old-rate chunk or the first new-rate one;
+                // drop it rather than mislabel it.
+                if rate_after != rate_before {
+                    this.buffer.clear();
+                    *this.buffer_idx = 0;
+                    cx.waker().wake_by_ref();
+                    return std::task::Poll::Pending;
+                }
                 *this.buffer = chunk;
                 *this.buffer_idx = 0;
-                *this.buffer_rate = this.inner.sample_rate();
+                *this.buffer_rate = rate_after;
                 if !this.buffer.is_empty() {
                     let sample = this.buffer[0];
                     *this.buffer_idx = 1;

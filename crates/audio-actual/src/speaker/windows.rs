@@ -5,7 +5,7 @@ use futures_util::task::AtomicWaker;
 use pin_project::pin_project;
 use ringbuf::{
     HeapCons, HeapProd, HeapRb,
-    traits::{Observer, Producer, Split},
+    traits::{Consumer, Observer, Producer, Split},
 };
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -248,6 +248,9 @@ fn capture_audio_loop(
 
     let mut follower = EndpointFollower::new(capture.device_id.clone());
     let mut handoff = RateHandoff::new();
+    // Samples captured from the new endpoint while old-rate samples still sit in the ring are
+    // staged here and released once the rate is published.
+    let (mut staging_prod, mut staging_cons) = HeapRb::<f32>::new(BUFFER_SIZE).split();
     let mut next_endpoint_poll = Instant::now() + ENDPOINT_POLL_INTERVAL;
     let mut temp_queue = VecDeque::new();
     let mut scratch = vec![0.0f32; crate::rt_ring::DEFAULT_SCRATCH_LEN];
@@ -292,21 +295,34 @@ fn capture_audio_loop(
             continue;
         }
 
-        if !handoff.ready(producer.occupied_len(), &current_sample_rate) {
-            continue;
+        let ready = handoff.ready(producer.occupied_len(), &current_sample_rate);
+        let mut staged_pushed = 0;
+        if ready && staging_cons.occupied_len() > 0 {
+            let staged = staging_cons.occupied_len();
+            staged_pushed = producer.push_iter(staging_cons.pop_iter());
+            dropped_samples.fetch_add(staged - staged_pushed, Ordering::Relaxed);
         }
 
-        let stats = push_wasapi_bytes(
-            temp_queue.make_contiguous(),
-            capture.format,
-            &mut scratch,
-            &mut producer,
-        )?;
+        let stats = if ready {
+            push_wasapi_bytes(
+                temp_queue.make_contiguous(),
+                capture.format,
+                &mut scratch,
+                &mut producer,
+            )?
+        } else {
+            push_wasapi_bytes(
+                temp_queue.make_contiguous(),
+                capture.format,
+                &mut scratch,
+                &mut staging_prod,
+            )?
+        };
         if stats.dropped > 0 {
             dropped_samples.fetch_add(stats.dropped, Ordering::Relaxed);
         }
 
-        if stats.pushed > 0 && wake_pending.load(Ordering::Acquire) {
+        if (staged_pushed > 0 || stats.pushed > 0) && wake_pending.load(Ordering::Acquire) {
             wake_pending.store(false, Ordering::Release);
             waker.wake();
         }
