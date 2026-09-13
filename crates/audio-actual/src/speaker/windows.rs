@@ -11,11 +11,11 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::error;
 use wasapi::{
-    AudioClient, DeviceEnumerator, Direction, SampleType, SessionState, ShareMode, StreamMode,
-    WaveFormat, initialize_mta,
+    AudioCaptureClient, AudioClient, Device, DeviceEnumerator, Direction, Handle, SampleType,
+    SessionState, ShareMode, StreamMode, WaveFormat, initialize_mta,
 };
 
 use crate::async_ring::RingbufAsyncReader;
@@ -24,6 +24,10 @@ use crate::rt_ring::{PushStats, push_f32le_bytes_first_channel_to_ringbuf};
 use super::{BUFFER_SIZE, CHUNK_SIZE};
 
 const DEFAULT_SAMPLE_RATE: u32 = 44_100;
+const ENDPOINT_POLL_INTERVAL: Duration = Duration::from_secs(2);
+// A meeting app can start rendering to a non-default endpoint after capture began. Requiring two
+// consecutive polls keeps a one-off system sound from bouncing the stream.
+const ENDPOINT_SWITCH_CONFIRMATIONS: u8 = 2;
 
 pub struct SpeakerInput;
 
@@ -124,6 +128,51 @@ struct WasapiCaptureFormat {
     bits_per_sample: u16,
 }
 
+struct LoopbackCapture {
+    audio_client: AudioClient,
+    event: Handle,
+    capture_client: AudioCaptureClient,
+    format: WasapiCaptureFormat,
+    device_id: String,
+    device_name: Option<String>,
+}
+
+// Tracks which render endpoint `open_render_device` would pick and reports a switch once the pick
+// has stayed away from the captured endpoint for `ENDPOINT_SWITCH_CONFIRMATIONS` polls.
+struct EndpointFollower {
+    current: String,
+    pending: Option<(String, u8)>,
+}
+
+impl EndpointFollower {
+    fn new(current: String) -> Self {
+        Self {
+            current,
+            pending: None,
+        }
+    }
+
+    fn observe(&mut self, observed: String) -> Option<String> {
+        if observed == self.current {
+            self.pending = None;
+            return None;
+        }
+
+        let count = match &self.pending {
+            Some((id, count)) if *id == observed => count.saturating_add(1),
+            _ => 1,
+        };
+
+        if count >= ENDPOINT_SWITCH_CONFIRMATIONS {
+            self.pending = None;
+            Some(observed)
+        } else {
+            self.pending = Some((observed, count));
+            None
+        }
+    }
+}
+
 fn capture_audio_loop(
     mut producer: HeapProd<f32>,
     waker: Arc<AtomicWaker>,
@@ -139,42 +188,15 @@ fn capture_audio_loop(
             .ok()
             .context("Failed to initialize WASAPI COM apartment")?;
 
-        let (mut audio_client, accepted_format, buffer_duration_hns) =
-            open_endpoint_loopback_client()?;
+        let enumerator =
+            DeviceEnumerator::new().context("Failed to create WASAPI device enumerator")?;
+        let device = open_render_device(&enumerator)?;
+        let capture = open_loopback_capture(device)?;
 
-        let capture_format = WasapiCaptureFormat {
-            sample_rate: accepted_format.get_samplespersec(),
-            channels: accepted_format.get_nchannels() as usize,
-            sample_type: accepted_format
-                .get_subformat()
-                .context("Unsupported WASAPI sample type")?,
-            bits_per_sample: accepted_format.get_bitspersample(),
-        };
-
-        let mode = StreamMode::EventsShared {
-            autoconvert: true,
-            buffer_duration_hns,
-        };
-
-        audio_client
-            .initialize_client(&accepted_format, &Direction::Capture, &mode)
-            .context("Failed to initialize WASAPI loopback client")?;
-
-        let event = audio_client
-            .set_get_eventhandle()
-            .context("Failed to create WASAPI event handle")?;
-        let capture_client = audio_client
-            .get_audiocaptureclient()
-            .context("Failed to get WASAPI capture client")?;
-
-        audio_client
-            .start_stream()
-            .context("Failed to start WASAPI loopback stream")?;
-
-        Ok((audio_client, event, capture_client, capture_format))
+        Ok((enumerator, capture))
     })();
 
-    let (audio_client, event, capture_client, capture_format) = match setup_result {
+    let (enumerator, mut capture) = match setup_result {
         Ok(values) => values,
         Err(err) => {
             let _ = init_tx.send(Err(anyhow::anyhow!(err.to_string())));
@@ -182,23 +204,51 @@ fn capture_audio_loop(
         }
     };
 
-    current_sample_rate.store(capture_format.sample_rate, Ordering::Release);
+    current_sample_rate.store(capture.format.sample_rate, Ordering::Release);
     tracing::info!(
-        anarlog.audio.sample_rate_hz = capture_format.sample_rate,
+        anarlog.audio.sample_rate_hz = capture.format.sample_rate,
+        device = ?capture.device_name,
         "wasapi_loopback_initialized"
     );
     let _ = init_tx.send(Ok(()));
 
+    let mut follower = EndpointFollower::new(capture.device_id.clone());
+    let mut next_endpoint_poll = Instant::now() + ENDPOINT_POLL_INTERVAL;
     let mut temp_queue = VecDeque::new();
     let mut scratch = vec![0.0f32; crate::rt_ring::DEFAULT_SCRATCH_LEN];
 
     while running.load(Ordering::Acquire) {
-        if event.wait_for_event(250).is_err() {
+        if Instant::now() >= next_endpoint_poll {
+            next_endpoint_poll = Instant::now() + ENDPOINT_POLL_INTERVAL;
+            if let Some(device) = poll_render_endpoint_switch(&enumerator, &mut follower) {
+                match open_loopback_capture(device) {
+                    Ok(next) => {
+                        let _ = capture.audio_client.stop_stream();
+                        capture = next;
+                        follower = EndpointFollower::new(capture.device_id.clone());
+                        current_sample_rate.store(capture.format.sample_rate, Ordering::Release);
+                        tracing::info!(
+                            anarlog.audio.sample_rate_hz = capture.format.sample_rate,
+                            device = ?capture.device_name,
+                            "wasapi_loopback_endpoint_switched"
+                        );
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            error = %err,
+                            "wasapi_loopback_endpoint_switch_failed_keeping_current"
+                        );
+                    }
+                }
+            }
+        }
+
+        if capture.event.wait_for_event(250).is_err() {
             continue;
         }
 
         temp_queue.clear();
-        drain_packets(&capture_client, &mut temp_queue);
+        drain_packets(&capture.capture_client, &mut temp_queue);
 
         if temp_queue.is_empty() {
             continue;
@@ -206,7 +256,7 @@ fn capture_audio_loop(
 
         let stats = push_wasapi_bytes(
             temp_queue.make_contiguous(),
-            capture_format,
+            capture.format,
             &mut scratch,
             &mut producer,
         )?;
@@ -222,15 +272,68 @@ fn capture_audio_loop(
 
     alive.store(false, Ordering::Release);
     waker.wake();
-    let _ = audio_client.stop_stream();
+    let _ = capture.audio_client.stop_stream();
 
     Ok(())
 }
 
-fn open_endpoint_loopback_client() -> Result<(AudioClient, WaveFormat, i64)> {
-    let enumerator =
-        DeviceEnumerator::new().context("Failed to create WASAPI device enumerator")?;
-    let device = open_render_device(&enumerator)?;
+fn poll_render_endpoint_switch(
+    enumerator: &DeviceEnumerator,
+    follower: &mut EndpointFollower,
+) -> Option<Device> {
+    let device = open_render_device(enumerator).ok()?;
+    let device_id = device.get_id().ok()?;
+    follower.observe(device_id).map(|_| device)
+}
+
+fn open_loopback_capture(device: Device) -> Result<LoopbackCapture> {
+    let device_id = device
+        .get_id()
+        .context("Failed to get WASAPI render device id")?;
+    let device_name = device.get_friendlyname().ok();
+    let (mut audio_client, accepted_format, buffer_duration_hns) =
+        open_endpoint_loopback_client(&device)?;
+
+    let format = WasapiCaptureFormat {
+        sample_rate: accepted_format.get_samplespersec(),
+        channels: accepted_format.get_nchannels() as usize,
+        sample_type: accepted_format
+            .get_subformat()
+            .context("Unsupported WASAPI sample type")?,
+        bits_per_sample: accepted_format.get_bitspersample(),
+    };
+
+    let mode = StreamMode::EventsShared {
+        autoconvert: true,
+        buffer_duration_hns,
+    };
+
+    audio_client
+        .initialize_client(&accepted_format, &Direction::Capture, &mode)
+        .context("Failed to initialize WASAPI loopback client")?;
+
+    let event = audio_client
+        .set_get_eventhandle()
+        .context("Failed to create WASAPI event handle")?;
+    let capture_client = audio_client
+        .get_audiocaptureclient()
+        .context("Failed to get WASAPI capture client")?;
+
+    audio_client
+        .start_stream()
+        .context("Failed to start WASAPI loopback stream")?;
+
+    Ok(LoopbackCapture {
+        audio_client,
+        event,
+        capture_client,
+        format,
+        device_id,
+        device_name,
+    })
+}
+
+fn open_endpoint_loopback_client(device: &Device) -> Result<(AudioClient, WaveFormat, i64)> {
     let audio_client = device
         .get_iaudioclient()
         .context("Failed to get IAudioClient")?;
@@ -276,7 +379,7 @@ fn drain_packets(capture_client: &wasapi::AudioCaptureClient, queue: &mut VecDeq
     }
 }
 
-fn open_render_device(enumerator: &DeviceEnumerator) -> Result<wasapi::Device> {
+fn open_render_device(enumerator: &DeviceEnumerator) -> Result<Device> {
     let default = enumerator
         .get_default_device(&Direction::Render)
         .context("Failed to get default render device")?;
@@ -287,28 +390,19 @@ fn open_render_device(enumerator: &DeviceEnumerator) -> Result<wasapi::Device> {
 // Meeting apps often play through an endpoint that is not the system default. When another process
 // is actively rendering somewhere, follow it; the default wins ties so unrelated playback on a
 // secondary device does not pull us away from a meeting on the default one.
-fn render_device_in_use(
-    enumerator: &DeviceEnumerator,
-    default: &wasapi::Device,
-) -> Option<wasapi::Device> {
+fn render_device_in_use(enumerator: &DeviceEnumerator, default: &Device) -> Option<Device> {
     if has_foreign_active_session(default) {
         return None;
     }
 
     let collection = enumerator.get_device_collection(&Direction::Render).ok()?;
-    let device = collection
+    collection
         .into_iter()
         .filter_map(|device| device.ok())
-        .find(has_foreign_active_session)?;
-
-    tracing::info!(
-        device = ?device.get_friendlyname().ok(),
-        "wasapi_loopback_following_active_render_endpoint"
-    );
-    Some(device)
+        .find(has_foreign_active_session)
 }
 
-fn has_foreign_active_session(device: &wasapi::Device) -> bool {
+fn has_foreign_active_session(device: &Device) -> bool {
     let self_pid = std::process::id();
     let Ok(manager) = device.get_iaudiosessionmanager() else {
         return false;
@@ -431,6 +525,51 @@ impl Stream for SpeakerStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         self.reader.poll_next_chunk(cx).poll
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn endpoint_follower_ignores_unchanged_endpoint() {
+        let mut follower = EndpointFollower::new("speakers".into());
+        assert_eq!(follower.observe("speakers".into()), None);
+        assert_eq!(follower.observe("speakers".into()), None);
+    }
+
+    #[test]
+    fn endpoint_follower_switches_after_consecutive_confirmations() {
+        let mut follower = EndpointFollower::new("speakers".into());
+        assert_eq!(follower.observe("headset".into()), None);
+        assert_eq!(
+            follower.observe("headset".into()),
+            Some("headset".to_string())
+        );
+    }
+
+    #[test]
+    fn endpoint_follower_resets_on_one_off_change() {
+        let mut follower = EndpointFollower::new("speakers".into());
+        assert_eq!(follower.observe("headset".into()), None);
+        assert_eq!(follower.observe("speakers".into()), None);
+        assert_eq!(follower.observe("headset".into()), None);
+        assert_eq!(
+            follower.observe("headset".into()),
+            Some("headset".to_string())
+        );
+    }
+
+    #[test]
+    fn endpoint_follower_restarts_count_when_candidate_changes() {
+        let mut follower = EndpointFollower::new("speakers".into());
+        assert_eq!(follower.observe("headset".into()), None);
+        assert_eq!(follower.observe("monitor".into()), None);
+        assert_eq!(
+            follower.observe("monitor".into()),
+            Some("monitor".to_string())
+        );
     }
 }
 
