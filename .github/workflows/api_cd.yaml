@@ -198,6 +198,7 @@ jobs:
             python3 -m venv "$RUNNER_TEMP/continuity-venv"
             "$RUNNER_TEMP/continuity-venv/bin/pip" install httpx==0.28.1 websockets==15.0.1
             qa_args=()
+            if [ "$SERVICE" = gateway ]; then qa_args+=(--base-url https://api.anarlog.so); fi
             if [ "$ISOLATED_DRAIN_ONLY" = true ]; then qa_args+=(--isolated-drain-only); fi
             if [ -n "$CONTINUITY_ROLLBACK_IMAGE" ]; then qa_args+=(--rollback-image "$CONTINUITY_ROLLBACK_IMAGE"); fi
             if [ -n "$ADOPT_DRAIN_IMAGE" ]; then qa_args+=(--verified-image-digest "$ADOPT_DRAIN_IMAGE"); fi
