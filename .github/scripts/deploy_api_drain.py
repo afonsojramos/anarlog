@@ -368,6 +368,7 @@ def desired_runtime_config(app: str, config_path: str) -> dict[str, Any]:
             "cpu_kind": vm["cpu_kind"],
             "cpus": vm["cpus"],
         },
+        "init": {"swap_size_mb": config.get("swap_size_mb", 0)},
         "swap_size_mb": config.get("swap_size_mb", 0),
         "restart": {"policy": restart["policy"]},
         "services": [

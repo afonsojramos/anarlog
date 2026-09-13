@@ -735,12 +735,22 @@ def test_invalid_config_fails_before_any_machine_mutation():
             fly.assert_not_called()
 
 
+def test_billing_replacements_use_the_image_entrypoint():
+    runtime = deploy_api_drain.desired_runtime_config(
+        "anarlog-billing-api", "apps/api/fly.billing.toml"
+    )
+    for override in ["exec", "cmd", "entrypoint"]:
+        old = {"config": {"init": {override: ["/usr/local/bin/api"]}}}
+        new = replacement_config(old, "combined-image", {}, runtime)
+        assert new["init"] == {"swap_size_mb": 512}
+
+
 def test_standalone_profiles_have_role_checks_and_no_duplicate_cleanup():
     for role, app, health in [
         ("ai", "anarlog-inference", "ai"),
         ("sync", "anarlog-sync", "sync"),
         ("core", "anarlog-core", "core"),
-        ("billing", "anarlog-billing-api", "billing-api"),
+        ("billing", "anarlog-billing-api", "billing-unified"),
     ]:
         config = deploy_api_drain.desired_runtime_config(
             app, f"apps/api/fly.{role}.toml"
@@ -1121,6 +1131,7 @@ if __name__ == "__main__":
     test_rollback_requires_an_immutable_api_image_before_mutating_machines()
     test_deploy_restores_minimum_primary_region_capacity()
     test_cutover_preflight_rechecks_candidate_readiness()
+    test_billing_replacements_use_the_image_entrypoint()
     test_standalone_profiles_have_role_checks_and_no_duplicate_cleanup()
     test_desired_runtime_replaces_stale_machine_settings()
     test_invalid_config_fails_before_any_machine_mutation()

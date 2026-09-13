@@ -482,10 +482,11 @@ async fn service_readiness(
         }
     };
     let webhook_ready = !state.billing_webhooks || billing_webhook::ready().await;
-    let ready = expected == state.service.name()
-        && configured
-        && webhook_ready
-        && !state.session_gate.is_draining();
+    let expected_role = expected == state.service.name()
+        || (expected == "billing-unified"
+            && state.service == Service::Billing
+            && state.billing_webhooks);
+    let ready = expected_role && configured && webhook_ready && !state.session_gate.is_draining();
     subsystem_health_response(
         ready,
         serde_json::json!({

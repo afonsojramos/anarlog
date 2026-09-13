@@ -28,7 +28,10 @@ The billing image uses the `billing-runtime` Docker target: one Machine runs
 the Rust API and the existing `apps/stripe` webhook handler and seat worker.
 Rust exposes `/webhook/stripe`, preserving signed bytes through a loopback hop
 to port 8788. Only the billing role may enable `ANARLOG_BILLING_WEBHOOKS`.
-Readiness requires the local webhook listener. The Bun supervisor drains Rust
+Readiness at `/health/ready/billing-unified` requires the local webhook listener.
+The deployment profile deliberately uses that path so pre-consolidation Rust-only
+images cannot pass readiness during rollback. Retain a known combined billing
+image for rollback after moving the Stripe destination. The Bun supervisor drains Rust
 requests before stopping webhooks and awaiting claimed seat work.
 Billing secrets include DATABASE_URL and STRIPE_WEBHOOK_SECRET from
 `/anarlog/stripe-sync`; LOOPS_API_KEY comes from the API view LOOPS_KEY.

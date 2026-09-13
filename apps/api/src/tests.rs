@@ -836,6 +836,10 @@ async fn readiness_requires_the_expected_role_configuration_and_accepting_state(
             request_status(&app, Method::GET, "/health/ready/wrong").await,
             StatusCode::SERVICE_UNAVAILABLE
         );
+        assert_eq!(
+            request_status(&app, Method::GET, "/health/ready/billing-unified").await,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
         let mut incomplete = state;
         match service {
             Service::Ai | Service::All => incomplete.transcription_configured = false,
