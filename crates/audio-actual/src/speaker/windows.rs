@@ -139,18 +139,8 @@ fn capture_audio_loop(
             .ok()
             .context("Failed to initialize WASAPI COM apartment")?;
 
-        let (mut audio_client, accepted_format, buffer_duration_hns, source) =
-            match open_process_loopback_client() {
-                Ok((client, format)) => (client, format, 0, "process"),
-                Err(error) => {
-                    tracing::info!(
-                        error = %error,
-                        "wasapi_process_loopback_unavailable_using_endpoint"
-                    );
-                    let (client, format, period) = open_endpoint_loopback_client()?;
-                    (client, format, period, "endpoint")
-                }
-            };
+        let (mut audio_client, accepted_format, buffer_duration_hns) =
+            open_endpoint_loopback_client()?;
 
         let capture_format = WasapiCaptureFormat {
             sample_rate: accepted_format.get_samplespersec(),
@@ -181,10 +171,10 @@ fn capture_audio_loop(
             .start_stream()
             .context("Failed to start WASAPI loopback stream")?;
 
-        Ok((audio_client, event, capture_client, capture_format, source))
+        Ok((audio_client, event, capture_client, capture_format))
     })();
 
-    let (audio_client, event, capture_client, capture_format, source) = match setup_result {
+    let (audio_client, event, capture_client, capture_format) = match setup_result {
         Ok(values) => values,
         Err(err) => {
             let _ = init_tx.send(Err(anyhow::anyhow!(err.to_string())));
@@ -195,7 +185,6 @@ fn capture_audio_loop(
     current_sample_rate.store(capture_format.sample_rate, Ordering::Release);
     tracing::info!(
         anarlog.audio.sample_rate_hz = capture_format.sample_rate,
-        source,
         "wasapi_loopback_initialized"
     );
     let _ = init_tx.send(Ok(()));
@@ -236,26 +225,6 @@ fn capture_audio_loop(
     let _ = audio_client.stop_stream();
 
     Ok(())
-}
-
-// Process loopback captures every other process's render streams no matter which endpoint each one
-// plays through, so the user never has to tell us which speakers the meeting app uses. Requires
-// Windows 11 (build 20348+); older builds fail activation and we fall back to endpoint loopback.
-//
-// `include_tree = false` selects PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE: everything
-// except our own process tree. The wasapi crate's doc comment describes this flag backwards.
-fn open_process_loopback_client() -> Result<(AudioClient, WaveFormat)> {
-    let client = AudioClient::new_application_loopback_client(std::process::id(), false)
-        .context("Failed to activate WASAPI process loopback")?;
-    let format = WaveFormat::new(
-        32,
-        32,
-        &SampleType::Float,
-        DEFAULT_SAMPLE_RATE as usize,
-        2,
-        None,
-    );
-    Ok((client, format))
 }
 
 fn open_endpoint_loopback_client() -> Result<(AudioClient, WaveFormat, i64)> {
