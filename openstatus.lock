@@ -252,7 +252,7 @@
       target: 200
     - compare: contains
       kind: textBody
-      target: '"status":"ok"'
+      target: '"ready":true'
     description: Verifies the production Stripe webhook and billing service.
     frequency: 1m
     kind: http
