@@ -189,9 +189,7 @@ impl RateHandoff {
     }
 
     fn schedule(&mut self, current: u32, next: u32) {
-        if next != current {
-            self.pending = Some(next);
-        }
+        self.pending = (next != current).then_some(next);
     }
 
     fn ready(&mut self, queued: usize, rate: &AtomicU32) -> bool {
@@ -658,6 +656,18 @@ mod tests {
         let mut handoff = RateHandoff::new();
         let rate = AtomicU32::new(48_000);
 
+        handoff.schedule(48_000, 48_000);
+        assert!(handoff.ready(10, &rate));
+        assert_eq!(rate.load(Ordering::Acquire), 48_000);
+    }
+
+    #[test]
+    fn rate_handoff_cancels_when_switching_back_before_drain() {
+        let mut handoff = RateHandoff::new();
+        let rate = AtomicU32::new(48_000);
+
+        handoff.schedule(48_000, 44_100);
+        assert!(!handoff.ready(10, &rate));
         handoff.schedule(48_000, 48_000);
         assert!(handoff.ready(10, &rate));
         assert_eq!(rate.load(Ordering::Acquire), 48_000);
