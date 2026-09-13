@@ -691,9 +691,9 @@ def test_drain_adoption_only_marks_the_verified_image():
         mark.assert_called_once_with("anarlog-inference", "verified")
 
 
-def test_stripe_replacement_migrates_process_group_and_keeps_capacity():
+def test_billing_replacement_migrates_process_group_and_keeps_capacity():
     desired = deploy_api_drain.desired_runtime_config(
-        "hyprnote-stripe", "apps/stripe/fly.toml"
+        "anarlog-billing-api", "apps/api/fly.billing.toml"
     )
     old = {"config": {"metadata": {"fly_process_group": "web", "custom": "keep"}}}
     result = replacement_config(old, "new", {"signal": "SIGTERM"}, desired)
@@ -701,10 +701,10 @@ def test_stripe_replacement_migrates_process_group_and_keeps_capacity():
     assert result["metadata"]["custom"] == "keep"
     assert old["config"]["metadata"]["fly_process_group"] == "web"
     (service,) = result["services"]
-    assert service["internal_port"] == 8080
+    assert service["internal_port"] == 3001
     assert service["min_machines_running"] == 2
     assert service["autostop"] == "off"
-    assert service["checks"][0]["path"] == "/health"
+    assert service["checks"][0]["path"] == "/health/ready/billing-unified"
 
 
 def test_invalid_config_fails_before_any_machine_mutation():
@@ -1127,7 +1127,7 @@ if __name__ == "__main__":
     test_idle_legacy_stripe_retirement_requires_cordon_and_healthy_capacity()
     test_bootstrap_marks_healthy_machines_for_future_drains()
     test_drain_adoption_only_marks_the_verified_image()
-    test_stripe_replacement_migrates_process_group_and_keeps_capacity()
+    test_billing_replacement_migrates_process_group_and_keeps_capacity()
     test_rollback_requires_an_immutable_api_image_before_mutating_machines()
     test_deploy_restores_minimum_primary_region_capacity()
     test_cutover_preflight_rechecks_candidate_readiness()
