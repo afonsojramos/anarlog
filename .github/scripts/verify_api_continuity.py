@@ -409,7 +409,7 @@ async def run(args):
     rollback_file.write(deploy.rollback_health_config(args.config, originals[0]))
     rollback_file.flush()
     gateway = args.app in {"anarlog-gateway", "anarlog-ai"}
-    base = "https://api.anarlog.so" if gateway else "https://anarlog-inference.fly.dev"
+    base = getattr(args, "base_url", None) or f"https://{args.app}.fly.dev"
     traffic = Traffic(base, token, audio, gateway=gateway)
     monitor = asyncio.create_task(traffic.requests())
     result = {
@@ -510,6 +510,16 @@ if __name__ == "__main__":
         "output",
     ]:
         parser.add_argument("--" + name, required=True)
+    parser.add_argument(
+        "--base-url",
+        choices=[
+            "https://api.anarlog.so",
+            "https://anarlog-gateway.fly.dev",
+            "https://anarlog-ai.fly.dev",
+            "https://anarlog-inference.fly.dev",
+        ],
+        help="Traffic origin; defaults to the selected app before custom-domain cutover",
+    )
     parser.add_argument("--verified-image-digest")
     parser.add_argument("--rollback-image")
     parser.add_argument("--isolated-drain-only", action="store_true")

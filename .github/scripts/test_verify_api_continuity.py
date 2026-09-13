@@ -44,6 +44,7 @@ class ContinuityTests(unittest.IsolatedAsyncioTestCase):
 
         class Traffic:
             def __init__(self, *args, **kwargs):
+                assert args[0] == "https://anarlog-gateway.fly.dev"
                 self.streams = []
                 self.errors = []
                 self.llms = self.health = self.business_reads = 1
