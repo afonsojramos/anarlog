@@ -621,7 +621,9 @@ def test_drain_rejects_unexpected_machine_states():
 
 
 def test_desired_runtime_replaces_stale_machine_settings():
-    desired = deploy_api_drain.desired_runtime_config("anarlog-gateway", "apps/api/fly.toml")
+    desired = deploy_api_drain.desired_runtime_config(
+        "anarlog-gateway", "apps/api/fly.toml"
+    )
     old = {
         "id": "old",
         "config": {
@@ -726,7 +728,9 @@ def test_invalid_config_fails_before_any_machine_mutation():
             config.write(invalid)
             config.flush()
             try:
-                deploy_api_drain.deploy("anarlog-gateway", config.name, "Dockerfile", "test")
+                deploy_api_drain.deploy(
+                    "anarlog-gateway", config.name, "Dockerfile", "test"
+                )
             except DeployError:
                 pass
             else:
@@ -1085,7 +1089,9 @@ def test_adoption_of_a_verified_candidate_requires_the_exact_digest():
         mark.assert_not_called()
         try:
             deploy_api_drain.adopt_drain_image(
-                "anarlog-gateway", digest, "registry.fly.io/anarlog-core@sha256:" + "b" * 64
+                "anarlog-gateway",
+                digest,
+                "registry.fly.io/anarlog-core@sha256:" + "b" * 64,
             )
         except DeployError:
             pass
