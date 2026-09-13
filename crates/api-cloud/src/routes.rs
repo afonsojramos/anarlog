@@ -721,6 +721,11 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n\
         assert_mcp_tool_discovery("anarlog-gateway.fly.dev").await;
     }
 
+    #[tokio::test]
+    async fn mcp_supports_tool_discovery_on_the_gateway_upstream_host() {
+        assert_mcp_tool_discovery("anarlog-sync.fly.dev").await;
+    }
+
     async fn assert_mcp_tool_discovery(host: &str) {
         let server = MockServer::start().await;
         let key = format!("anl_{}", "a".repeat(64));
