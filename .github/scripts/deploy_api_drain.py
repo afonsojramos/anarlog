@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deploy anarlog-ai without cutting live STT meetings.
+"""Deploy Anarlog services without cutting live STT meetings.
 
 Fly blue/green cordons old machines and then SIGTERMs them immediately.
 `kill_timeout` maxes out at 300s, which is shorter than a meeting, so this
@@ -768,7 +768,7 @@ def deploy(
 ) -> None:
     if image_override:
         if not re.fullmatch(
-            r"registry\.fly\.io/(anarlog-ai|anarlog-inference|anarlog-sync|anarlog-core|anarlog-billing-api|hyprnote-ai|hyprnote-stripe)@sha256:[0-9a-f]{64}",
+            r"registry\.fly\.io/(anarlog-gateway|anarlog-ai|anarlog-inference|anarlog-sync|anarlog-core|anarlog-billing-api|hyprnote-ai|hyprnote-stripe)@sha256:[0-9a-f]{64}",
             image_override,
         ):
             raise DeployError(

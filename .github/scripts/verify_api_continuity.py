@@ -353,10 +353,10 @@ async def verify_isolated_drain(args, token, audio, *, stop_timeout=90):
 
 
 async def run(args):
-    if args.app not in {"anarlog-inference", "anarlog-ai"}:
+    if args.app not in {"anarlog-inference", "anarlog-gateway", "anarlog-ai"}:
         raise RuntimeError("Continuity QA supports the AI runtime and Anarlog gateway")
     if not re.fullmatch(
-        r"registry\.fly\.io/(anarlog-ai|anarlog-inference|anarlog-core|anarlog-sync|anarlog-billing-api|hyprnote-ai)@sha256:[0-9a-f]{64}",
+        r"registry\.fly\.io/(anarlog-gateway|anarlog-ai|anarlog-inference|anarlog-core|anarlog-sync|anarlog-billing-api|hyprnote-ai)@sha256:[0-9a-f]{64}",
         args.image,
     ):
         raise RuntimeError("Continuity QA requires an immutable API image")
@@ -408,7 +408,7 @@ async def run(args):
     rollback_file = tempfile.NamedTemporaryFile(mode="w", suffix=".toml")
     rollback_file.write(deploy.rollback_health_config(args.config, originals[0]))
     rollback_file.flush()
-    gateway = args.app == "anarlog-ai"
+    gateway = args.app in {"anarlog-gateway", "anarlog-ai"}
     base = "https://api.anarlog.so" if gateway else "https://anarlog-inference.fly.dev"
     traffic = Traffic(base, token, audio, gateway=gateway)
     monitor = asyncio.create_task(traffic.requests())

@@ -49,7 +49,7 @@ existing URLs working while clients and webhook providers migrate.
 Standalone profiles are `fly.ai.toml` (`anarlog-inference`),
 `fly.sync.toml` (`anarlog-sync`), `fly.core.toml` (`anarlog-core`), and
 `fly.billing.toml` (`anarlog-billing-api`). The default `fly.toml` and
-`fly.gateway.toml` route public and legacy custom domains through `anarlog-ai`
+`fly.gateway.toml` route public and legacy custom domains through `anarlog-gateway`
 to these services. Keep domain certificates and DNS routing on this shared gateway.
 Core owns durable cleanup; other profiles disable it. Never transfer cleanup
 ownership until the previous owner's worker has stopped.

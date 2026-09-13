@@ -74,7 +74,7 @@ jobs:
             sync) app=anarlog-sync; config=apps/api/fly.sync.toml; health=/health/ready/sync ;;
             core) app=anarlog-core; config=apps/api/fly.core.toml; health=/health/ready/core ;;
             billing) app=anarlog-billing-api; config=apps/api/fly.billing.toml; health=/health/ready/billing-unified ;;
-            gateway) app=anarlog-ai; config=apps/api/fly.gateway.toml; health=/health/ready/api ;;
+            gateway) app=anarlog-gateway; config=apps/api/fly.gateway.toml; health=/health/ready/api ;;
             *) exit 1 ;;
           esac
           echo "FLY_APP=$app" >> "$GITHUB_ENV"
