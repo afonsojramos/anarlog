@@ -40,7 +40,8 @@ existing URLs working while clients and webhook providers migrate.
 Standalone profiles are `fly.ai.toml` (`anarlog-inference`),
 `fly.sync.toml` (`anarlog-sync`), `fly.core.toml` (`anarlog-core`), and
 `fly.billing.toml` (`anarlog-billing-api`). The default `fly.toml` and
-`fly.gateway.toml` route the existing `anarlog-ai` URLs to these services. `fly.legacy.toml` preserves legacy `hyprnote-ai` URLs.
+`fly.gateway.toml` route public and legacy custom domains through `anarlog-ai`
+to these services. Keep domain certificates and DNS routing on this shared gateway.
 Core owns durable cleanup; other profiles disable it. Never transfer cleanup
 ownership until the previous owner's worker has stopped.
 
@@ -63,9 +64,9 @@ not retry writes or follow redirects. Drain permits cover proxied requests and
 upgraded connections through completion. Origins are rejected in standalone
 roles to prevent routing cycles.
 
-`api_cd.yaml` selects one explicit service per dispatch. `gateway` and `legacy`
-retain the existing public URLs with forwarding profiles; deploy and verify all
-standalone services before activating these profiles. The default dispatch is
+`api_cd.yaml` selects one explicit service per dispatch. `gateway` retains the
+existing public URLs with its forwarding profile; deploy and verify all
+standalone services before activating this profile. The default dispatch is
 `gateway`. The optional `image` input accepts only an immutable API image digest.
 Keep the image and configuration together in the rollout record. Explicit drain
 adoption requires independent verification that the exact image handles SIGUSR1;
