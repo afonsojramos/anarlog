@@ -1,12 +1,11 @@
 use anlg_audio_utils::{pcm_i16_to_f32, pcm_i32_to_f32};
-use anlg_resampler::{Async, FixedAsync, PolynomialDegree, RubatoChunkResampler};
 use anyhow::{Context, Result};
 use futures_util::Stream;
 use futures_util::task::AtomicWaker;
 use pin_project::pin_project;
 use ringbuf::{
     HeapCons, HeapProd, HeapRb,
-    traits::{Consumer, Observer, Producer, Split},
+    traits::{Observer, Producer, Split},
 };
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -16,7 +15,7 @@ use std::time::{Duration, Instant};
 use tracing::error;
 use wasapi::{
     AudioCaptureClient, AudioClient, Device, DeviceEnumerator, Direction, Handle, SampleType,
-    SessionState, ShareMode, StreamMode, WaveFormat, initialize_mta,
+    SessionState, StreamMode, WaveFormat, initialize_mta,
 };
 
 use crate::async_ring::RingbufAsyncReader;
@@ -178,31 +177,6 @@ impl EndpointFollower {
     }
 }
 
-type EndpointResampler = RubatoChunkResampler<Async<f32>, 1>;
-
-fn build_endpoint_resampler(
-    stream_rate: u32,
-    endpoint_rate: u32,
-) -> Result<Option<EndpointResampler>> {
-    if endpoint_rate == stream_rate {
-        return Ok(None);
-    }
-
-    let ratio = stream_rate as f64 / endpoint_rate as f64;
-    let resampler = Async::<f32>::new_poly(
-        ratio,
-        2.0,
-        PolynomialDegree::Cubic,
-        CHUNK_SIZE,
-        1,
-        FixedAsync::Input,
-    )
-    .context("Failed to build endpoint resampler")?;
-    Ok(Some(RubatoChunkResampler::new(
-        resampler, CHUNK_SIZE, CHUNK_SIZE,
-    )))
-}
-
 fn capture_audio_loop(
     mut producer: HeapProd<f32>,
     waker: Arc<AtomicWaker>,
@@ -234,10 +208,9 @@ fn capture_audio_loop(
         }
     };
 
-    // The rate published to the consumer is fixed for the life of the stream; endpoints with a
-    // different mix rate are resampled here so the consumer never sees a rate boundary.
-    let stream_rate = capture.format.sample_rate;
-    current_sample_rate.store(stream_rate, Ordering::Release);
+    // Every endpoint is opened at DEFAULT_SAMPLE_RATE with WASAPI autoconvert, so the published
+    // rate never changes across endpoint switches.
+    current_sample_rate.store(capture.format.sample_rate, Ordering::Release);
     tracing::info!(
         anarlog.audio.sample_rate_hz = capture.format.sample_rate,
         device = ?capture.device_name,
@@ -249,27 +222,18 @@ fn capture_audio_loop(
     let mut next_endpoint_poll = Instant::now() + ENDPOINT_POLL_INTERVAL;
     let mut temp_queue = VecDeque::new();
     let mut scratch = vec![0.0f32; crate::rt_ring::DEFAULT_SCRATCH_LEN];
-    let (mut convert_prod, mut convert_cons) = HeapRb::<f32>::new(BUFFER_SIZE).split();
-    let mut resampler: Option<EndpointResampler> = None;
 
     while running.load(Ordering::Acquire) {
         if Instant::now() >= next_endpoint_poll {
             next_endpoint_poll = Instant::now() + ENDPOINT_POLL_INTERVAL;
             if let Some(device) = poll_render_endpoint_switch(&enumerator, &mut follower) {
-                let next_capture = open_loopback_capture(device).and_then(|next| {
-                    let next_resampler =
-                        build_endpoint_resampler(stream_rate, next.format.sample_rate)?;
-                    Ok((next, next_resampler))
-                });
-                match next_capture {
-                    Ok((next, next_resampler)) => {
+                match open_loopback_capture(device) {
+                    Ok(next) => {
                         let _ = capture.audio_client.stop_stream();
                         capture = next;
-                        resampler = next_resampler;
                         follower = EndpointFollower::new(capture.device_id.clone());
                         tracing::info!(
                             anarlog.audio.sample_rate_hz = capture.format.sample_rate,
-                            resampled = resampler.is_some(),
                             device = ?capture.device_name,
                             "wasapi_loopback_endpoint_switched"
                         );
@@ -295,36 +259,12 @@ fn capture_audio_loop(
             continue;
         }
 
-        let stats = match resampler.as_mut() {
-            None => push_wasapi_bytes(
-                temp_queue.make_contiguous(),
-                capture.format,
-                &mut scratch,
-                &mut producer,
-            )?,
-            Some(rs) => {
-                let converted = push_wasapi_bytes(
-                    temp_queue.make_contiguous(),
-                    capture.format,
-                    &mut scratch,
-                    &mut convert_prod,
-                )?;
-                for sample in convert_cons.pop_iter() {
-                    rs.push_sample(sample);
-                }
-                if let Err(err) = rs.process_all_ready_blocks() {
-                    tracing::warn!(error = %err, "wasapi_loopback_endpoint_resample_failed");
-                    rs.clear_input();
-                }
-                let mut pushed = 0;
-                let mut dropped = converted.dropped;
-                if let Some(out) = rs.take_all_output() {
-                    pushed = producer.push_iter(out.iter().copied());
-                    dropped += out.len() - pushed;
-                }
-                PushStats { pushed, dropped }
-            }
-        };
+        let stats = push_wasapi_bytes(
+            temp_queue.make_contiguous(),
+            capture.format,
+            &mut scratch,
+            &mut producer,
+        )?;
         if stats.dropped > 0 {
             dropped_samples.fetch_add(stats.dropped, Ordering::Relaxed);
         }
@@ -379,7 +319,6 @@ fn open_loopback_capture(device: Device) -> Result<LoopbackCapture> {
             .context("Unsupported WASAPI sample type")?,
         bits_per_sample: accepted_format.get_bitspersample(),
     };
-
     let mode = StreamMode::EventsShared {
         autoconvert: true,
         buffer_duration_hns,
@@ -388,6 +327,12 @@ fn open_loopback_capture(device: Device) -> Result<LoopbackCapture> {
     audio_client
         .initialize_client(&accepted_format, &Direction::Capture, &mode)
         .context("Failed to initialize WASAPI loopback client")?;
+    if format.sample_rate != DEFAULT_SAMPLE_RATE {
+        return Err(anyhow::anyhow!(
+            "WASAPI loopback did not accept {DEFAULT_SAMPLE_RATE} Hz (got {})",
+            format.sample_rate
+        ));
+    }
 
     let event = audio_client
         .set_get_eventhandle()
@@ -422,20 +367,16 @@ fn open_endpoint_loopback_client(device: &Device) -> Result<(AudioClient, WaveFo
         32,
         32,
         &SampleType::Float,
-        mix_format.get_samplespersec() as usize,
+        DEFAULT_SAMPLE_RATE as usize,
         mix_format.get_nchannels() as usize,
         Some(mix_format.get_dwchannelmask()),
     );
-    let accepted_format = audio_client
-        .is_supported(&desired_format, &ShareMode::Shared)
-        .context("Failed to query WASAPI shared-mode support")?
-        .unwrap_or(desired_format);
 
     let (_default_period, min_period) = audio_client
         .get_device_period()
         .context("Failed to get WASAPI device period")?;
 
-    Ok((audio_client, accepted_format, min_period))
+    Ok((audio_client, desired_format, min_period))
 }
 
 fn drain_packets(capture_client: &wasapi::AudioCaptureClient, queue: &mut VecDeque<u8>) {
@@ -659,29 +600,6 @@ mod tests {
             follower.observe("headset".into()),
             Some("headset".to_string())
         );
-    }
-
-    #[test]
-    fn endpoint_resampler_is_noop_for_matching_rate() {
-        assert!(build_endpoint_resampler(48_000, 48_000).unwrap().is_none());
-    }
-
-    #[test]
-    fn endpoint_resampler_converts_to_stream_rate() {
-        let mut resampler = build_endpoint_resampler(48_000, 44_100)
-            .unwrap()
-            .expect("different rates should create a resampler");
-
-        for index in 0..44_100 {
-            resampler.push_sample((index as f32 * 0.01).sin());
-        }
-        resampler.process_all_ready_blocks().unwrap();
-        resampler.process_partial_block(true).unwrap();
-
-        let output = resampler
-            .take_all_output()
-            .expect("resampler produced output");
-        assert!((47_000..=49_000).contains(&output.len()));
     }
 }
 
