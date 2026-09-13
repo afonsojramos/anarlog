@@ -171,6 +171,42 @@ impl EndpointFollower {
             None
         }
     }
+
+    fn reset(&mut self) {
+        self.pending = None;
+    }
+}
+
+// Old-rate samples still queued in the ring must be consumed before the new rate is published,
+// otherwise the consumer labels them with the new endpoint's rate.
+struct RateHandoff {
+    pending: Option<u32>,
+}
+
+impl RateHandoff {
+    fn new() -> Self {
+        Self { pending: None }
+    }
+
+    fn schedule(&mut self, current: u32, next: u32) {
+        if next != current {
+            self.pending = Some(next);
+        }
+    }
+
+    fn ready(&mut self, queued: usize, rate: &AtomicU32) -> bool {
+        let Some(pending) = self.pending else {
+            return true;
+        };
+
+        if queued > 0 {
+            return false;
+        }
+
+        rate.store(pending, Ordering::Release);
+        self.pending = None;
+        true
+    }
 }
 
 fn capture_audio_loop(
@@ -213,6 +249,7 @@ fn capture_audio_loop(
     let _ = init_tx.send(Ok(()));
 
     let mut follower = EndpointFollower::new(capture.device_id.clone());
+    let mut handoff = RateHandoff::new();
     let mut next_endpoint_poll = Instant::now() + ENDPOINT_POLL_INTERVAL;
     let mut temp_queue = VecDeque::new();
     let mut scratch = vec![0.0f32; crate::rt_ring::DEFAULT_SCRATCH_LEN];
@@ -226,7 +263,10 @@ fn capture_audio_loop(
                         let _ = capture.audio_client.stop_stream();
                         capture = next;
                         follower = EndpointFollower::new(capture.device_id.clone());
-                        current_sample_rate.store(capture.format.sample_rate, Ordering::Release);
+                        handoff.schedule(
+                            current_sample_rate.load(Ordering::Acquire),
+                            capture.format.sample_rate,
+                        );
                         tracing::info!(
                             anarlog.audio.sample_rate_hz = capture.format.sample_rate,
                             device = ?capture.device_name,
@@ -251,6 +291,10 @@ fn capture_audio_loop(
         drain_packets(&capture.capture_client, &mut temp_queue);
 
         if temp_queue.is_empty() {
+            continue;
+        }
+
+        if !handoff.ready(producer.occupied_len(), &current_sample_rate) {
             continue;
         }
 
@@ -281,8 +325,20 @@ fn poll_render_endpoint_switch(
     enumerator: &DeviceEnumerator,
     follower: &mut EndpointFollower,
 ) -> Option<Device> {
-    let device = open_render_device(enumerator).ok()?;
-    let device_id = device.get_id().ok()?;
+    let device = match open_render_device(enumerator) {
+        Ok(device) => device,
+        Err(_) => {
+            follower.reset();
+            return None;
+        }
+    };
+    let device_id = match device.get_id() {
+        Ok(device_id) => device_id,
+        Err(_) => {
+            follower.reset();
+            return None;
+        }
+    };
     follower.observe(device_id).map(|_| device)
 }
 
@@ -570,6 +626,41 @@ mod tests {
             follower.observe("monitor".into()),
             Some("monitor".to_string())
         );
+    }
+
+    #[test]
+    fn endpoint_follower_reset_clears_partial_confirmation() {
+        let mut follower = EndpointFollower::new("speakers".into());
+        assert_eq!(follower.observe("headset".into()), None);
+        follower.reset();
+        assert_eq!(follower.observe("headset".into()), None);
+        assert_eq!(
+            follower.observe("headset".into()),
+            Some("headset".to_string())
+        );
+    }
+
+    #[test]
+    fn rate_handoff_publishes_only_when_ring_drained() {
+        let mut handoff = RateHandoff::new();
+        let rate = AtomicU32::new(48_000);
+
+        handoff.schedule(48_000, 44_100);
+        assert!(!handoff.ready(10, &rate));
+        assert_eq!(rate.load(Ordering::Acquire), 48_000);
+        assert!(handoff.ready(0, &rate));
+        assert_eq!(rate.load(Ordering::Acquire), 44_100);
+        assert!(handoff.ready(5, &rate));
+    }
+
+    #[test]
+    fn rate_handoff_is_noop_for_same_rate() {
+        let mut handoff = RateHandoff::new();
+        let rate = AtomicU32::new(48_000);
+
+        handoff.schedule(48_000, 48_000);
+        assert!(handoff.ready(10, &rate));
+        assert_eq!(rate.load(Ordering::Acquire), 48_000);
     }
 }
 
