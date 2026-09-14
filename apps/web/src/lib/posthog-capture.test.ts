@@ -9,7 +9,6 @@ import { sanitizePostHogEvent } from "./analytics-sanitization.ts";
 import { isTelemetryPrivateLocation } from "./auth-route-privacy.ts";
 import { getPostHogPersistenceName } from "./private-route-analytics-identity.ts";
 
-const realSetTimeout = setTimeout;
 const require = createRequire(import.meta.url);
 const { JSDOM } = require("jsdom") as {
   JSDOM: new (
@@ -24,7 +23,6 @@ test(
   "PostHog capture authenticates after privacy filtering",
   { timeout: 15_000 },
   async (t) => {
-    t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
     const projectToken = `phc_${"a".repeat(40)}`;
     const requests: {
       events: CaptureResult[];
@@ -68,7 +66,11 @@ test(
       url: `${host}/pricing?token=private-query`,
       pretendToBeVisual: true,
     });
-    t.after(() => dom.window.close());
+    t.after(async () => {
+      // Let pageview scroll measurements finish before disposing the document.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      dom.window.close();
+    });
     for (const key of [
       "window",
       "document",
@@ -121,14 +123,13 @@ test(
             user_id: "raw-account-id",
             nested: { token: "private-nested-token", provider: "openai" },
           });
-          t.mock.timers.tick(251);
           const deadline = Date.now() + 5000;
           while (
             requests.slice(start).flatMap((request) => request.events).length <
               2 &&
             Date.now() < deadline
           ) {
-            await new Promise((resolve) => realSetTimeout(resolve, 25));
+            await new Promise((resolve) => setTimeout(resolve, 25));
           }
           const captured = requests.slice(start);
           const events = captured.flatMap((request) => request.events);
@@ -185,6 +186,7 @@ test(
           );
         } finally {
           client.opt_out_capturing();
+          client.sessionManager?.destroy();
         }
       });
       // opt_out_capturing persists across SDK instances.
