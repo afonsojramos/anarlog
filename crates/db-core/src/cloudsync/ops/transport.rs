@@ -2,6 +2,7 @@ use sqlx::SqliteConnection;
 
 use super::super::CloudsyncInterruptHandle;
 use super::payload::ensure_pending_payload_fits;
+use super::schema::cloudsync_has_local_unsent_changes_on;
 
 pub(crate) async fn guarded_interruptible_network_send_changes<F>(
     connection: &mut SqliteConnection,
@@ -58,7 +59,7 @@ async fn guarded_network_send_changes_with_interrupt(
             {
                 Ok(true) => {
                     let has_unsent_changes =
-                        anlg_cloudsync::network_has_unsent_changes(&mut *connection).await?;
+                        cloudsync_has_local_unsent_changes_on(&mut *connection).await?;
                     Ok(reconciled_send_result(batch, &status, has_unsent_changes))
                 }
                 Ok(false) => Err(send_error),
