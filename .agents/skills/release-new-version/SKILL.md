@@ -256,8 +256,10 @@ Prepare, validate, and merge stable notes before freezing the desktop candidate,
 but do not expose them on the website before the desktop release is published.
 Deployable web builds verify published, non-draft, non-prerelease GitHub
 `desktop_v<version>` releases and exclude every other version from both pages
-and bundles. Before publication, check that the public index omits the candidate
-and its direct changelog URL returns 404. After GitHub/CrabNebula publication,
+and bundles. Before publication, check the deployed production site: its index
+must omit the candidate and its direct changelog URL must return 404. A local
+production-mode build can verify the behavior before deployment; `vite dev`
+intentionally previews drafts and is not publication evidence. After GitHub/CrabNebula publication,
 verify the website deployment includes the released notes (normally the Linux
 APT web deploy); dispatch `web_cd.yaml` if no post-publication deploy covers it.
 Do not change the frozen desktop candidate merely to publish its website notes.
