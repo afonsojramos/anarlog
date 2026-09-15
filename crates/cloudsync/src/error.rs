@@ -92,7 +92,10 @@ fn classify_io_error(error: &std::io::Error) -> ErrorKind {
 }
 
 fn classify_error_message(message: &str) -> Option<ErrorKind> {
-    if message.contains("\"status\":\"409\"") && message.contains("\"code\":\"already_exists\"") {
+    if message.contains("\"status\":\"409\"")
+        && (message.contains("\"code\":\"already_exists\"")
+            || message.contains("\"code\":\"apply_batch_superseded\""))
+    {
         return Some(ErrorKind::Transient);
     }
     // SQLite Cloud wraps HTTP JSON in SQLITE_ERROR (code 1). A 404 here is
@@ -156,6 +159,34 @@ mod tests {
             classify_database_error(Some("1"), message),
             ErrorKind::Transient
         );
+    }
+
+    #[test]
+    fn superseded_cloud_batch_is_transient() {
+        let message =
+            r#"{"errors":[{"status":"409","code":"apply_batch_superseded","title":"Conflict"}]}"#;
+
+        assert_eq!(
+            classify_database_error(Some("1"), message),
+            ErrorKind::Transient
+        );
+        assert_eq!(
+            classify_io_error(&std::io::Error::other(format!("sqlx error: {message}"))),
+            ErrorKind::Transient
+        );
+    }
+
+    #[test]
+    fn unrelated_cloud_conflicts_remain_fatal() {
+        for message in [
+            r#"{"errors":[{"status":"409","code":"schema_conflict"}]}"#,
+            r#"{"errors":[{"status":"403","code":"apply_batch_superseded"}]}"#,
+        ] {
+            assert_eq!(
+                classify_database_error(Some("1"), message),
+                ErrorKind::Fatal
+            );
+        }
     }
 
     #[test]

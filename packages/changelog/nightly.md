@@ -20,7 +20,7 @@ When trying Nightly with cloud sync, use matching versions on your connected dev
 - Recognize speakers from recording context and keep each person's transcript color consistent.
 - See link access from the Share button, then copy the link or send it through email or Slack from one split action.
 - Choose a default export folder in Settings → General.
-- See clearer errors when sync needs attention. Cloud sync improvements are still being verified.
+- See clearer errors when sync needs attention, and retry interrupted uploads when an older attempt is replaced. Cloud sync recovery is still being verified.
 
 ## Teams
 
