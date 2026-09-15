@@ -1774,9 +1774,11 @@ async fn has_pending_e2ee_dirty_rows_for_status(
     for workspace_id in workspace_ids {
         separated.push_bind(workspace_id);
     }
-    separated.push_unseparated(
-        ")
-           AND NOT (
+    separated.push_unseparated(")");
+    query.push(" AND ");
+    query.push(anlg_db_app::E2EE_DIRTY_ROW_WRITE_COMPATIBILITY_PREDICATE);
+    query.push(
+        " AND NOT (
              dirty.table_name = 'transcripts'
              AND EXISTS (
                SELECT 1

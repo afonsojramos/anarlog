@@ -14,9 +14,10 @@ use super::replica_storage::{
 };
 use super::witness::has_pending_e2ee_witness_repairs;
 use super::{
-    ACTIVE_CAPTURE_MARKER_PREDICATE, DirtyRow, E2EE_DOMAIN_TABLES, E2EE_ENCRYPT_ROW_LIMIT,
-    E2eeReplicaError, E2eeReplicaResult, E2eeReplicaStats, LocalState, PreparedDirtyRow,
-    PreparedEncryptedField, ROW_MANIFEST_FIELD, WitnessVersion,
+    ACTIVE_CAPTURE_MARKER_PREDICATE, DirtyRow, E2EE_DIRTY_ROW_WRITE_COMPATIBILITY_PREDICATE,
+    E2EE_DOMAIN_TABLES, E2EE_ENCRYPT_ROW_LIMIT, E2eeReplicaError, E2eeReplicaResult,
+    E2eeReplicaStats, LocalState, PreparedDirtyRow, PreparedEncryptedField, ROW_MANIFEST_FIELD,
+    WitnessVersion,
 };
 
 pub async fn encrypt_e2ee_replica_changes(
@@ -288,6 +289,8 @@ async fn load_dirty_rows_after(
         separated.push_bind(workspace_id);
     }
     separated.push_unseparated(")");
+    query.push(" AND ");
+    query.push(E2EE_DIRTY_ROW_WRITE_COMPATIBILITY_PREDICATE);
     if defer_active_captures {
         push_active_capture_exclusion(&mut query);
     }
@@ -514,6 +517,10 @@ async fn prepare_dirty_row_cancellable(
             }
             let value = sqlite_value(row, index)?;
             if let Some(chunk_size) = chunk_size_for(&dirty.table_name, field_name)
+                && states.values().any(|state| {
+                    parse_chunk_field(&dirty.table_name, &state.field_name)
+                        .is_some_and(|(column, _)| column == field_name)
+                })
                 && let Some(items) = parse_array(&value)
             {
                 let chunks = split_chunks(&items, chunk_size);
