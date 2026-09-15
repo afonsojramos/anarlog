@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -157,10 +156,11 @@ test(
   "relative-directory dev preview discovers added and deleted notes without restarting",
   { timeout: 15_000 },
   async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), "anarlog-changelog-hmr-"));
+    const directory = await mkdtemp(join(process.cwd(), ".changelog-hmr-"));
     t.after(() => rm(directory, { recursive: true, force: true }));
     await writeFile(join(directory, "1.4.23.md"), "Released note");
     const inputDirectory = relative(process.cwd(), directory);
+    assert.ok(!isAbsolute(inputDirectory));
     assert.equal(
       await buildChangelogModule("serve", inputDirectory),
       await buildChangelogModule("serve", directory),
