@@ -128,6 +128,13 @@ compatible with stable. When a change is not, stable shows an update prompt and
 cannot open your notes until a stable release includes that change. Keep using
 Nightly until then. Your data is not modified by the older app.
 
+<Warning>
+  When trying Nightly with cloud sync, use matching versions on your connected
+  devices. Older builds may not read records written by a newer Nightly, even
+  when both apps can open the local database. Do not reset your notes or recovery
+  key to resolve a version mismatch; see [Cloud sync troubleshooting](/sync).
+</Warning>
+
 Nightly release notes are included in the app and its GitHub prerelease. Only
 stable changelogs appear on the Anarlog website. If you install the bundled CLI
 from Nightly, its command is `anarlog-nightly`; `anarlog` continues to use stable.

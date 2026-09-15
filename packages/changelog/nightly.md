@@ -1,6 +1,6 @@
 ---
-date: "2026-09-12"
-summary: "Try in-app team invitations, membership billing, and more reliable transcription and sync."
+date: "2026-09-15"
+summary: "Try in-app team invitations, membership billing, and more reliable transcription."
 ---
 
 ## Anarlog Nightly is back
@@ -8,6 +8,8 @@ summary: "Try in-app team invitations, membership billing, and more reliable tra
 Nightly is a separate app for trying upcoming improvements before they reach stable. It updates more frequently and may be less reliable. Your existing Anarlog installation stays on stable.
 
 Nightly opens the same local notes as your stable Anarlog, while sign-in and settings stay separate. Quit one app before opening the other. If Nightly updates the database format ahead of stable, stable asks for an update until a release includes that change; keep using Nightly until then.
+
+When trying Nightly with cloud sync, use matching versions on your connected devices. Older builds may not read records written by a newer Nightly.
 
 ## Try in your next meeting
 
@@ -18,7 +20,7 @@ Nightly opens the same local notes as your stable Anarlog, while sign-in and set
 - Recognize speakers from recording context and keep each person's transcript color consistent.
 - See link access from the Share button, then copy the link or send it through email or Slack from one split action.
 - Choose a default export folder in Settings → General.
-- Sync tags, folders, daily notes, and transcript chunks, with clearer errors when sync needs attention.
+- See clearer errors when sync needs attention. Cloud sync improvements are still being verified.
 
 ## Teams
 
