@@ -1,5 +1,5 @@
 ---
-date: "2026-09-15"
+date: "2026-09-16"
 summary: "Try in-app team invitations, membership billing, and more reliable transcription."
 ---
 
@@ -20,6 +20,7 @@ When trying Nightly with cloud sync, use matching versions on your connected dev
 - Recognize speakers from recording context and keep each person's transcript color consistent.
 - See link access from the Share button, then copy the link or send it through email or Slack from one split action.
 - Choose a default export folder in Settings → General.
+- Keep notes and ignored-event choices attached to rescheduled Apple Calendar occurrences without creating duplicates. Thanks [@Diaspar4u](https://github.com/Diaspar4u).
 - See clearer errors when sync needs attention, and retry interrupted uploads when an older attempt is replaced. Cloud sync recovery is still being verified.
 
 ## Teams
@@ -28,6 +29,7 @@ When trying Nightly with cloud sync, use matching versions on your connected dev
 - Invite members without buying seats first. Billing adjusts when members join or leave, with prorated changes on the next scheduled invoice.
 - Refresh Pro access automatically when workspace membership changes.
 - Let every Team member see the roster. Review member profiles and permissions in a table; ownership transfers now require the recipient to accept.
+- Confirm who will lose access before removing a Team member or canceling an invitation.
 
 ## Providers
 
