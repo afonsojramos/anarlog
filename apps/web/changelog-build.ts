@@ -1,5 +1,7 @@
 import { readdir } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Plugin } from "vite";
 
 import { getChangelogVersionFromPath } from "./src/lib/changelog-path.ts";
 
@@ -9,6 +11,7 @@ const contentDirectory = fileURLToPath(
 
 export async function getPublishedDesktopVersions(
   request: (input: string, init?: RequestInit) => Promise<Response> = fetch,
+  token?: string,
 ) {
   const versions = new Set<string>();
 
@@ -20,7 +23,9 @@ export async function getPublishedDesktopVersions(
           Accept: "application/vnd.github+json",
           "X-GitHub-Api-Version": "2022-11-28",
           "User-Agent": "Anarlog-Changelog-Build",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
+        redirect: "error",
         signal: AbortSignal.timeout(15_000),
       },
     );
@@ -56,12 +61,15 @@ export function renderChangelogModule(
   files: string[],
   publishedVersions: ReadonlySet<string> | null,
 ) {
-  const paths = files.filter((path) => {
-    const version = getChangelogVersionFromPath(path);
-    return (
-      version && (publishedVersions === null || publishedVersions.has(version))
-    );
-  });
+  const paths = files
+    .map((path) => path.replaceAll("\\", "/"))
+    .filter((path) => {
+      const version = getChangelogVersionFromPath(path);
+      return (
+        version &&
+        (publishedVersions === null || publishedVersions.has(version))
+      );
+    });
   return [
     ...paths.map(
       (path, index) =>
@@ -71,12 +79,57 @@ export function renderChangelogModule(
   ].join("\n");
 }
 
-export async function buildChangelogModule(command: "serve" | "build") {
-  const files = (await readdir(contentDirectory))
+export async function buildChangelogModule(
+  command: "serve" | "build",
+  directory = contentDirectory,
+) {
+  const files = (await readdir(directory))
     .sort()
-    .map((file) => `${contentDirectory}${file}`);
+    .map((file) => join(directory, file));
   // Local editing may preview drafts; every deployable build requires publication evidence.
   const publishedVersions =
-    command === "serve" ? null : await getPublishedDesktopVersions();
+    command === "serve"
+      ? null
+      : await getPublishedDesktopVersions(fetch, process.env.GITHUB_TOKEN);
   return renderChangelogModule(files, publishedVersions);
+}
+
+export async function publishedChangelogs(
+  command: "serve" | "build",
+  directory = contentDirectory,
+): Promise<Plugin> {
+  const moduleId = "\0virtual:published-changelogs";
+  const builtModule =
+    command === "build" ? await buildChangelogModule(command, directory) : null;
+  const normalizedDirectory = directory
+    .replaceAll("\\", "/")
+    .replace(/\/$/, "");
+
+  return {
+    name: "published-changelogs",
+    resolveId(id) {
+      if (id === "virtual:published-changelogs") return moduleId;
+    },
+    load(id) {
+      if (id === moduleId)
+        return builtModule ?? buildChangelogModule("serve", directory);
+    },
+    configureServer(server) {
+      server.watcher.add(directory);
+    },
+    hotUpdate({ file, type }) {
+      const path = file.replaceAll("\\", "/");
+      if (
+        type === "update" ||
+        dirname(path) !== normalizedDirectory ||
+        !getChangelogVersionFromPath(path)
+      )
+        return;
+      const module = this.environment.moduleGraph.getModuleById(moduleId);
+      if (!module) return;
+      this.environment.moduleGraph.invalidateModule(module);
+      this.environment.hot.send({ type: "full-reload" });
+      return [];
+    },
+  };
 }
