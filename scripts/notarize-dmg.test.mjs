@@ -2,7 +2,18 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { notarizeDmg } from "./notarize-dmg.mjs";
+import { notarizeDmg, runCommand } from "./notarize-dmg.mjs";
+
+test("process deadline bounds waits without cutting off a large upload", () => {
+  for (const command of ["submit", "wait"]) {
+    runCommand(["notarytool", command], (executable, args, options) => {
+      assert.equal(executable, "xcrun");
+      assert.equal(args[1], command);
+      assert.equal(options.timeout, command === "wait" ? 660_000 : undefined);
+      assert.equal(options.killSignal, "SIGKILL");
+    });
+  }
+});
 
 const id = "bb9d8b7c-582d-4111-a1e8-2d67289f0f2d";
 const reply = (status, exit = 0) => ({

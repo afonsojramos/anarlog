@@ -3,10 +3,10 @@ import { resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
-function runCommand(args) {
-  return spawnSync("xcrun", args, {
+export function runCommand(args, spawn = spawnSync) {
+  return spawn("xcrun", args, {
     encoding: "utf8",
-    timeout: 11 * 60 * 1000,
+    timeout: args[1] === "wait" ? 11 * 60 * 1000 : undefined,
     killSignal: "SIGKILL",
     stdio: ["ignore", "pipe", "pipe"],
   });
