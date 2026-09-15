@@ -465,7 +465,10 @@ impl E2eeSyncHook {
                             .map_err(|error| {
                                 std::io::Error::other(format!("E2EE witness hydration failed: {error}"))
                             })?;
-                            if !stats.remaining_replica_changes {
+                            // Deferred local edits need encryption or a later witness page.
+                            if !stats.remaining_replica_changes
+                                || (stats.skipped_local_changes > 0 && stats.applied_fields == 0)
+                            {
                                 return Ok(());
                             }
                         }

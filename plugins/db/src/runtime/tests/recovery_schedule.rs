@@ -1,6 +1,57 @@
 use super::*;
 
 #[test]
+fn recovery_reports_embedded_receive_failures_without_marking_progress() {
+    for (details, expected) in [
+        (
+            serde_json::json!({"error": "later chunk failed"}),
+            "receive error: later chunk failed",
+        ),
+        (
+            serde_json::json!({"lastFailure": {"code": "check_failed"}}),
+            "receive failure: {\"code\":\"check_failed\"}",
+        ),
+        (
+            serde_json::json!({
+                "error": "later chunk failed",
+                "lastFailure": {"code": "check_failed"}
+            }),
+            "receive error: later chunk failed; receive failure: {\"code\":\"check_failed\"}",
+        ),
+    ] {
+        let mut receive = serde_json::json!({
+            "rows": 1,
+            "tables": ["e2ee_records"],
+            "chunks": 1,
+            "complete": true
+        });
+        receive
+            .as_object_mut()
+            .unwrap()
+            .extend(details.as_object().unwrap().clone());
+        let result = serde_json::from_value(serde_json::json!({"receive": receive})).unwrap();
+
+        assert_eq!(
+            anlg_db_core::cloudsync_receive_error(&result).as_deref(),
+            Some(expected)
+        );
+        assert!(!cloudsync_recovery_snapshot_ready(true, &result));
+        assert!(!cloudsync_receive_delivered(&result));
+    }
+}
+
+#[test]
+fn recovery_does_not_report_healthy_partial_or_empty_receives_as_errors() {
+    for result in [
+        receive_result(1, false),
+        receive_result(0, true),
+        receive_result(1, true),
+    ] {
+        assert_eq!(anlg_db_core::cloudsync_receive_error(&result), None);
+    }
+}
+
+#[test]
 fn recovery_waits_longer_without_progress() {
     assert_eq!(
         cloudsync_recovery_step_delay(CloudsyncRecoveryStep::Progressed),
@@ -160,15 +211,25 @@ fn full_resync_schedule_tracks_generation_until_cancelled() {
     assert!(schedule.is_delayed("generation-1"));
     schedule.mark_progress("generation-1");
     assert!(!schedule.is_delayed("generation-1"));
-    schedule.mark_failure("generation-1");
+    schedule.mark_failure("generation-1", "NeedCleanReceive: witness timed out");
     assert!(schedule.is_delayed("generation-1"));
+    assert_eq!(
+        schedule.last_error("generation-1").as_deref(),
+        Some("NeedCleanReceive: witness timed out")
+    );
+    assert_eq!(schedule.last_error("generation-2"), None);
     schedule.mark_progress("generation-1");
     assert!(!schedule.is_delayed("generation-1"));
+    assert_eq!(schedule.last_error("generation-1"), None);
+    schedule.mark_failure("generation-1", "again");
     schedule.claim("generation-1");
     assert!(schedule.is_active("generation-1"));
+    assert_eq!(schedule.last_error("generation-1"), None);
 
+    schedule.mark_failure("generation-1", "again");
     schedule.cancel();
     assert!(!schedule.is_active("generation-1"));
+    assert_eq!(schedule.last_error("generation-1"), None);
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]

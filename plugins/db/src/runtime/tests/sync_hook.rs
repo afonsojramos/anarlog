@@ -2,6 +2,80 @@ use super::*;
 use crate::runtime::e2ee_sync::ReplicaSyncOutcome;
 
 #[tokio::test]
+async fn witness_hydration_yields_without_overwriting_unencrypted_local_edits() {
+    let db = std::sync::Arc::new(Db::connect_memory_plain().await.unwrap());
+    anlg_db_app::prepare_schema(db.as_ref()).await.unwrap();
+    let runtime = PluginDbRuntime::new(std::sync::Arc::clone(&db));
+    let key = anlg_e2ee::RecoveryKey::parse(
+        "anarlog-e2ee-v1:BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+    )
+    .unwrap()
+    .workspace_key("workspace-1")
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO sessions (id, workspace_id, title)
+         VALUES ('session-1', 'workspace-1', 'Unencrypted local edit')",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+    let events = [
+        ("$row", serde_json::json!(true)),
+        ("title", serde_json::json!("Remote")),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, (field, value))| {
+        let sealed = key
+            .seal_field(
+                "workspace-1",
+                "sessions",
+                "session-1",
+                field,
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                1,
+                false,
+                value,
+            )
+            .unwrap();
+        anlg_db_app::E2eeWitnessEvent {
+            sequence: index as u64 + 1,
+            record_id: sealed.record_id,
+            workspace_id: "workspace-1".to_string(),
+            payload_hash: anlg_e2ee::payload_hash(&sealed.payload),
+            payload: sealed.payload,
+        }
+    })
+    .collect::<Vec<_>>();
+    anlg_db_app::merge_e2ee_witness_events(db.pool(), &key, "workspace-1", &events)
+        .await
+        .unwrap();
+    let keys = HashMap::from([("workspace-1".to_string(), key.into())]);
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        runtime.materialize_authenticated_e2ee_changes(
+            &keys,
+            &crate::e2ee_witness::E2eeWitnessCancellation::default(),
+        ),
+    )
+    .await
+    .expect("hydration blocked encryption of a deferred local edit")
+    .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT title FROM sessions WHERE id = 'session-1'")
+            .fetch_one(db.pool())
+            .await
+            .unwrap(),
+        "Unencrypted local edit"
+    );
+    assert!(
+        anlg_db_app::has_pending_e2ee_dirty_rows_deferring_active_captures(db.pool(), &keys)
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
 async fn replica_transport_syncs_without_the_cloudsync_extension() {
     let db = Db::connect_memory_plain().await.unwrap();
     anlg_db_app::prepare_schema(&db).await.unwrap();
@@ -62,6 +136,76 @@ async fn replica_transport_syncs_without_the_cloudsync_extension() {
             .await
             .unwrap()
             > 0
+    );
+}
+
+#[tokio::test]
+async fn replica_initialization_encrypts_local_edits_after_deferred_hydration() {
+    let source = Db::connect_memory_plain().await.unwrap();
+    let target = Db::connect_memory_plain().await.unwrap();
+    anlg_db_app::prepare_schema(&source).await.unwrap();
+    anlg_db_app::prepare_schema(&target).await.unwrap();
+    let recovery_key = anlg_e2ee::RecoveryKey::parse(
+        "anarlog-e2ee-v1:BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+    )
+    .unwrap();
+    let (_server, witness_config) = crate::tests::support::setup_witness("workspace-1").await;
+    let configure = |hook: &E2eeSyncHook| {
+        hook.set_personal_workspace("workspace-1", &recovery_key)
+            .unwrap();
+        hook.set_replica_witness(
+            crate::e2ee_witness::E2eeWitnessClient::new(witness_config.clone(), "workspace-1")
+                .unwrap(),
+        );
+    };
+    let source_hook = E2eeSyncHook::default();
+    let target_hook = E2eeSyncHook::default();
+    configure(&source_hook);
+    configure(&target_hook);
+    for (db, title) in [(&source, "Remote"), (&target, "Unencrypted local edit")] {
+        sqlx::query(
+            "INSERT INTO sessions (id, workspace_id, title) VALUES ('session-1', 'workspace-1', ?)",
+        )
+        .bind(title)
+        .execute(db.pool())
+        .await
+        .unwrap();
+    }
+    source_hook
+        .sync_replica_transport(source.pool())
+        .await
+        .unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        target_hook.sync_replica_transport(target.pool()),
+    )
+    .await
+    .expect("replica initialization blocked encryption of a deferred local edit")
+    .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT title FROM sessions WHERE id = 'session-1'")
+            .fetch_one(target.pool())
+            .await
+            .unwrap(),
+        "Unencrypted local edit"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM e2ee_dirty_rows")
+            .fetch_one(target.pool())
+            .await
+            .unwrap(),
+        0
+    );
+    source_hook
+        .sync_replica_transport(source.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT title FROM sessions WHERE id = 'session-1'")
+            .fetch_one(source.pool())
+            .await
+            .unwrap(),
+        "Unencrypted local edit"
     );
 }
 

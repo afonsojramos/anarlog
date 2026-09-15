@@ -1351,7 +1351,10 @@ impl PluginDbRuntime {
                 remaining = stats.remaining_replica_changes,
                 "materialized authenticated E2EE changes"
             );
-            if !stats.remaining_replica_changes {
+            // Deferred local edits need encryption or a later witness page, not another identical pass.
+            if !stats.remaining_replica_changes
+                || (stats.skipped_local_changes > 0 && stats.applied_fields == 0)
+            {
                 return Ok(());
             }
         }
@@ -1497,6 +1500,7 @@ impl PluginDbRuntime {
                     serde_json::Value::Bool(false),
                 );
                 status_object.insert("recovery_phase".to_string(), serde_json::Value::Null);
+                status_object.insert("recovery_error".to_string(), serde_json::Value::Null);
                 return Ok(status);
             }
         }
@@ -1525,12 +1529,16 @@ impl PluginDbRuntime {
         .await;
         connection.return_to_pool().await;
         let (local_e2ee_work_pending, recovery) = enrichment?;
-        let recovery_delayed = recovery.as_ref().is_some_and(|state| {
-            self.scheduled_cloudsync_full_resync
-                .lock()
-                .unwrap()
-                .is_delayed(&state.generation)
-        });
+        let (recovery_delayed, recovery_error) = match recovery.as_ref() {
+            Some(state) => {
+                let schedule = self.scheduled_cloudsync_full_resync.lock().unwrap();
+                (
+                    schedule.is_delayed(&state.generation),
+                    schedule.last_error(&state.generation),
+                )
+            }
+            None => (false, None),
+        };
         let status_object = status.as_object_mut().ok_or_else(|| {
             std::io::Error::other("CloudSync status did not serialize to an object")
         })?;
@@ -1553,6 +1561,12 @@ impl PluginDbRuntime {
             recovery
                 .map(|state| serde_json::to_value(state.phase))
                 .transpose()?
+                .unwrap_or(serde_json::Value::Null),
+        );
+        status_object.insert(
+            "recovery_error".to_string(),
+            recovery_error
+                .map(serde_json::Value::String)
                 .unwrap_or(serde_json::Value::Null),
         );
         Ok(status)
@@ -1616,6 +1630,7 @@ impl PluginDbRuntime {
             "recovery_pending": false,
             "recovery_delayed": false,
             "recovery_phase": null,
+            "recovery_error": null,
             "activity_log": [],
         }))
     }

@@ -2,6 +2,7 @@ use sqlx::SqliteConnection;
 
 use super::super::CloudsyncInterruptHandle;
 use super::payload::ensure_pending_payload_fits;
+use super::schema::cloudsync_has_local_unsent_changes_on;
 
 pub(crate) async fn guarded_interruptible_network_send_changes<F>(
     connection: &mut SqliteConnection,
@@ -50,7 +51,11 @@ async fn guarded_network_send_changes_with_interrupt(
             match anlg_cloudsync::reconcile_confirmed_pending_payload(connection, batch, &status)
                 .await
             {
-                Ok(true) => Ok(reconciled_send_result(batch, &status)),
+                Ok(true) => {
+                    let has_unsent_changes =
+                        cloudsync_has_local_unsent_changes_on(&mut *connection).await?;
+                    Ok(reconciled_send_result(batch, &status, has_unsent_changes))
+                }
                 Ok(false) => Err(send_error),
                 Err(reconcile_error) => Err(reconcile_error),
             }
@@ -96,10 +101,16 @@ pub(super) async fn interruptible_network_status(
 pub(super) fn reconciled_send_result(
     batch: anlg_cloudsync::PendingPayloadBatch,
     status: &anlg_cloudsync::NetworkStatus,
+    has_unsent_changes: bool,
 ) -> anlg_cloudsync::NetworkResult {
     anlg_cloudsync::NetworkResult {
         send: Some(anlg_cloudsync::NetworkSendResult {
-            status: "synced".to_string(),
+            status: if has_unsent_changes {
+                "out-of-sync"
+            } else {
+                "synced"
+            }
+            .to_string(),
             local_version: batch.watermark_db_version.unwrap_or(batch.start_db_version),
             server_version: status.last_confirmed_version,
             chunks: i64::from(batch.chunks),
