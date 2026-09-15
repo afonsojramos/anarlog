@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
 import {
+  buildChangelogModule,
   getPublishedDesktopVersions,
   publishedChangelogs,
   renderChangelogModule,
@@ -153,18 +154,23 @@ test("normalizes Windows paths in both imports and entry keys", () => {
 });
 
 test(
-  "dev preview discovers added and deleted notes without restarting",
+  "relative-directory dev preview discovers added and deleted notes without restarting",
   { timeout: 15_000 },
   async (t) => {
     const directory = await mkdtemp(join(tmpdir(), "anarlog-changelog-hmr-"));
     t.after(() => rm(directory, { recursive: true, force: true }));
     await writeFile(join(directory, "1.4.23.md"), "Released note");
+    const inputDirectory = relative(process.cwd(), directory);
+    assert.equal(
+      await buildChangelogModule("serve", inputDirectory),
+      await buildChangelogModule("serve", directory),
+    );
     const { createServer } = await import("vite");
     const server = await createServer({
       root: directory,
       configFile: false,
       publicDir: false,
-      plugins: [await publishedChangelogs("serve", directory)],
+      plugins: [await publishedChangelogs("serve", inputDirectory)],
       optimizeDeps: { noDiscovery: true, include: [] },
       server: { host: "127.0.0.1", port: 0 },
       logLevel: "silent",

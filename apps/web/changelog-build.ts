@@ -1,5 +1,5 @@
 import { readdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Plugin } from "vite";
 
@@ -83,6 +83,7 @@ export async function buildChangelogModule(
   command: "serve" | "build",
   directory = contentDirectory,
 ) {
+  directory = resolve(directory);
   const files = (await readdir(directory))
     .sort()
     .map((file) => join(directory, file));
@@ -98,6 +99,7 @@ export async function publishedChangelogs(
   command: "serve" | "build",
   directory = contentDirectory,
 ): Promise<Plugin> {
+  directory = resolve(directory);
   const moduleId = "\0virtual:published-changelogs";
   const builtModule =
     command === "build" ? await buildChangelogModule(command, directory) : null;
