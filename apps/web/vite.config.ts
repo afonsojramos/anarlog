@@ -5,12 +5,14 @@ import viteReact from "@vitejs/plugin-react";
 import { nitro } from "nitro/vite";
 import { fileURLToPath } from "node:url";
 import { generateSitemap } from "tanstack-router-sitemap";
-import { defineConfig } from "vite";
+import { defineConfig, type UserConfig } from "vite";
 
+import { buildChangelogModule } from "./changelog-build.ts";
 import { getSitemap } from "./src/utils/sitemap";
 import { vercelBuildConfig } from "./vercel-build-config";
 
-const config = defineConfig(() => {
+const config = defineConfig(async ({ command }): Promise<UserConfig> => {
+  const changelogModule = await buildChangelogModule(command);
   const generateSourceMaps = Boolean(
     process.env.SENTRY_BUILD_SOURCEMAPS === "1" && process.env.VITE_APP_VERSION,
   );
@@ -21,6 +23,15 @@ const config = defineConfig(() => {
       rolldownOptions: { external: ["sharp"] },
     },
     plugins: [
+      {
+        name: "published-changelogs",
+        resolveId(id) {
+          if (id === "virtual:published-changelogs") return `\0${id}`;
+        },
+        load(id) {
+          if (id === "\0virtual:published-changelogs") return changelogModule;
+        },
+      },
       contentCollections(),
       tailwindcss(),
       tanstackStart({
