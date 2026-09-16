@@ -344,7 +344,7 @@ export function TranscriptViewer({
   );
 
   useHotkeys(
-    "meta+shift+up, meta+shift+down",
+    "mod+shift+up, mod+shift+down",
     (event) => {
       if (
         event.target instanceof Element &&

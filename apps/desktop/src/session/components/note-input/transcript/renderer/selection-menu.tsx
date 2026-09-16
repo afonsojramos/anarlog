@@ -178,7 +178,10 @@ export function MultiSelectionBar({
       <span className="text-muted-foreground whitespace-nowrap">
         <Trans>{entryCount} selected</Trans>
       </span>
-      <Popover open={speakerPickerOpen} onOpenChange={setSpeakerPickerOpen}>
+      <Popover
+        open={speakerPickerOpen && !deleteMutation.isPending}
+        onOpenChange={setSpeakerPickerOpen}
+      >
         <PopoverTrigger asChild>
           <button
             type="button"
