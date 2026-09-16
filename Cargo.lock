@@ -5241,6 +5241,7 @@ version = "0.1.0"
 dependencies = [
  "askama 0.15.6",
  "serde",
+ "serde_json",
  "serde_qs",
  "specta",
  "thiserror 2.0.18",
@@ -16103,6 +16104,7 @@ dependencies = [
  "db-app",
  "db-core",
  "language",
+ "search-index",
  "serde",
  "serde_json",
  "specta",
@@ -21266,7 +21268,9 @@ name = "tray-core"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
  "specta",
+ "tray-core",
  "unicode-width 0.2.2",
 ]
 
