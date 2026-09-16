@@ -3353,7 +3353,9 @@ dependencies = [
  "serde_json",
  "specta",
  "thiserror 2.0.18",
+ "tokio",
  "tracing",
+ "wiremock",
 ]
 
 [[package]]
@@ -4500,6 +4502,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "crash-reporting"
+version = "0.1.0"
+dependencies = [
+ "dirs 6.0.0",
+ "regex",
+ "sentry",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
+ "user-error",
+]
+
+[[package]]
 name = "crc"
 version = "3.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5241,6 +5256,7 @@ version = "0.1.0"
 dependencies = [
  "askama 0.15.6",
  "serde",
+ "serde_json",
  "serde_qs",
  "specta",
  "thiserror 2.0.18",
@@ -5380,6 +5396,7 @@ dependencies = [
  "audio-actual",
  "audio-mock",
  "chrono",
+ "crash-reporting",
  "db-app",
  "db-core",
  "db-sync",
@@ -5389,7 +5406,6 @@ dependencies = [
  "pico-args",
  "ractor",
  "search-index",
- "sentry",
  "serde",
  "serde_json",
  "specta",
@@ -5473,6 +5489,63 @@ dependencies = [
 ]
 
 [[package]]
+name = "desktop-auth"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "specta",
+ "storage",
+ "supabase-auth",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "desktop-bench"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "serde",
+ "serde_json",
+ "sysinfo 0.38.4",
+ "tempfile",
+]
+
+[[package]]
+name = "desktop-db-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "db-app",
+ "db-core",
+ "db-execute",
+ "db-migrate",
+ "db-reactive",
+ "db-sync",
+ "e2ee",
+ "fs-sync-core",
+ "futures-util",
+ "reqwest 0.13.2",
+ "serde",
+ "serde_json",
+ "session-ingest",
+ "sha2 0.11.0",
+ "specta",
+ "sqlx",
+ "storage",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+ "wiremock",
+]
+
+[[package]]
 name = "desktop-gpui"
 version = "0.0.0"
 dependencies = [
@@ -5485,9 +5558,12 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "chrono-tz 0.10.4",
+ "crash-reporting",
  "db-app",
  "db-core",
  "deeplink-core",
+ "desktop-auth",
+ "desktop-db-runtime",
  "desktop-updater",
  "detect",
  "dirs 6.0.0",
@@ -5496,6 +5572,7 @@ dependencies = [
  "futures-util",
  "gpui",
  "gtk",
+ "host",
  "hound",
  "html5ever 0.29.1",
  "iana-time-zone",
@@ -5526,6 +5603,8 @@ dependencies = [
  "smallvec 1.15.1",
  "sqlx",
  "storage",
+ "supabase-auth",
+ "sysinfo 0.38.4",
  "tempfile",
  "template-app",
  "template-app-legacy",
@@ -16117,6 +16196,7 @@ dependencies = [
  "db-app",
  "db-core",
  "language",
+ "search-index",
  "serde",
  "serde_json",
  "specta",
@@ -18902,6 +18982,7 @@ dependencies = [
 name = "tauri-plugin-auth"
 version = "0.1.0"
 dependencies = [
+ "desktop-auth",
  "serde",
  "serde_json",
  "specta",
@@ -19008,6 +19089,7 @@ dependencies = [
  "db-migrate",
  "db-reactive",
  "db-sync",
+ "desktop-db-runtime",
  "e2ee",
  "fs-sync-core",
  "futures-util",
@@ -19946,8 +20028,8 @@ dependencies = [
 name = "tauri-plugin-tracing"
 version = "0.1.0"
 dependencies = [
+ "crash-reporting",
  "dirs 6.0.0",
- "regex",
  "rquickjs 0.10.0",
  "sentry",
  "serde",
@@ -19956,14 +20038,12 @@ dependencies = [
  "specta-typescript",
  "tauri",
  "tauri-plugin",
- "tauri-plugin-sentry",
  "tauri-specta",
  "tempfile",
  "thiserror 2.0.18",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
- "user-error",
 ]
 
 [[package]]
@@ -21282,7 +21362,9 @@ name = "tray-core"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
  "specta",
+ "tray-core",
  "unicode-width 0.2.2",
 ]
 
