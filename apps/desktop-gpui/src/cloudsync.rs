@@ -806,25 +806,68 @@ impl<S: QueryEventSink> Cloudsync<S> {
         self.activate_with_enabled(enabled).await
     }
 
+    pub async fn connect_local_library(self: &Arc<Self>, enabled: bool) -> anyhow::Result<()> {
+        let session = self
+            .auth
+            .session()
+            .map_err(anyhow::Error::msg)?
+            .ok_or_else(|| anyhow!("authentication is required"))?;
+        let Some(user) = session.user.as_ref() else {
+            anyhow::bail!("authenticated session has no user");
+        };
+        let workspace_id = sqlx::query_scalar::<_, String>(
+            "SELECT json_extract(value_json, '$.workspace_id') \
+             FROM app_settings WHERE id = 'cloudsync_workspace_binding'",
+        )
+        .fetch_optional(self.runtime.pool())
+        .await
+        .map_err(|_| anyhow!("Local library unavailable"))?
+        .ok_or_else(|| anyhow!("Local library unavailable"))?;
+        self.runtime
+            .connect_local_library(user.id.clone(), workspace_id)
+            .await?;
+        self.activate_with_enabled(enabled).await
+    }
+
     pub async fn request_credentials(
         &self,
         access_token: &str,
         encryption_key_id: &str,
         member_public_key: &str,
+        account_user_id: &str,
     ) -> anyhow::Result<CredentialResponse> {
         let api_url = Self::api_url()?;
+        self.request_credentials_at(
+            api_url,
+            access_token,
+            encryption_key_id,
+            member_public_key,
+            Some(account_user_id),
+        )
+        .await
+    }
+
+    async fn request_credentials_at(
+        &self,
+        api_url: &str,
+        access_token: &str,
+        encryption_key_id: &str,
+        member_public_key: &str,
+        account_user_id: Option<&str>,
+    ) -> anyhow::Result<CredentialResponse> {
         let device_name = device_name();
-        let response = self
-            .credential_request(
-                format!("{api_url}/sync/token"),
-                access_token,
-                encryption_key_id,
-                member_public_key,
-                device_name.as_deref(),
+        let has_local_library = match account_user_id {
+            Some(account_user_id) => sqlx::query_scalar::<_, i64>(
+                "SELECT 1 FROM local_library_connections \
+                 WHERE account_user_id = ? LIMIT 1",
             )
-            .send()
-            .await?;
-        let response = if response.status() == reqwest::StatusCode::NOT_FOUND {
+            .bind(account_user_id)
+            .fetch_optional(self.runtime.pool())
+            .await?
+            .is_some(),
+            None => false,
+        };
+        let response = if has_local_library {
             self.credential_request(
                 format!("{api_url}/sync/replica/credentials"),
                 access_token,
@@ -835,7 +878,29 @@ impl<S: QueryEventSink> Cloudsync<S> {
             .send()
             .await?
         } else {
-            response
+            let response = self
+                .credential_request(
+                    format!("{api_url}/sync/token"),
+                    access_token,
+                    encryption_key_id,
+                    member_public_key,
+                    device_name.as_deref(),
+                )
+                .send()
+                .await?;
+            if response.status() == reqwest::StatusCode::NOT_FOUND {
+                self.credential_request(
+                    format!("{api_url}/sync/replica/credentials"),
+                    access_token,
+                    encryption_key_id,
+                    member_public_key,
+                    device_name.as_deref(),
+                )
+                .send()
+                .await?
+            } else {
+                response
+            }
         };
         match response.status() {
             reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::NOT_IMPLEMENTED => {
@@ -1168,6 +1233,7 @@ impl<S: QueryEventSink> Cloudsync<S> {
                 &session.access_token,
                 &recovery.key_id(),
                 &member_public_key,
+                &user.id,
             )
             .await
         {
@@ -1508,6 +1574,131 @@ impl<S: QueryEventSink> Cloudsync<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Clone, Default)]
+    struct TestQueryEventSink;
+
+    impl QueryEventSink for TestQueryEventSink {
+        fn send_result(&self, _rows: Vec<Value>) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn send_error(&self, _error: String) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    async fn credential_test_service(
+        responses: Vec<(u16, &'static str)>,
+    ) -> (String, Arc<Mutex<Vec<String>>>, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let paths = Arc::new(Mutex::new(Vec::new()));
+        let recorded_paths = Arc::clone(&paths);
+        let task = tokio::spawn(async move {
+            for (status, body) in responses {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0; 1024];
+                loop {
+                    let bytes = stream.read(&mut buffer).await.unwrap();
+                    request.extend_from_slice(&buffer[..bytes]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request_line = String::from_utf8_lossy(&request);
+                let path = request_line.split_whitespace().nth(1).unwrap().to_string();
+                recorded_paths.lock().unwrap().push(path);
+                let status_text = match status {
+                    200 => "OK",
+                    404 => "Not Found",
+                    _ => "Error",
+                };
+                let response = format!(
+                    "HTTP/1.1 {status} {status_text}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        (format!("http://{address}"), paths, task)
+    }
+
+    async fn credential_test_cloudsync(
+        with_local_library: bool,
+        auth: Arc<crate::auth::Auth>,
+    ) -> Cloudsync<TestQueryEventSink> {
+        let db = anlg_db_core::Db::connect_memory_plain().await.unwrap();
+        anlg_db_app::prepare_schema(&db).await.unwrap();
+        if with_local_library {
+            sqlx::query(
+                "INSERT INTO local_library_connections \
+                 (account_user_id, library_workspace_id) VALUES (?, ?)",
+            )
+            .bind("account")
+            .bind("library")
+            .execute(db.pool())
+            .await
+            .unwrap();
+        }
+        let runtime = Arc::new(DesktopDbRuntime::new(
+            Arc::new(db),
+            tokio::runtime::Handle::current(),
+        ));
+        Cloudsync::new(
+            runtime,
+            auth,
+            tokio::runtime::Handle::current(),
+            "cloudsync-request-credentials-test",
+        )
+    }
+
+    #[test]
+    fn request_credentials_uses_replica_for_connected_local_library() {
+        let auth = Arc::new(crate::auth::Auth::new(
+            "cloudsync-request-credentials-direct-test",
+        ));
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let cloudsync = credential_test_cloudsync(true, auth).await;
+            let body = r#"{"transport":"replica","encryptionVersion":2,"encryptionKeyId":"key","expiresAt":"2025-01-01T00:00:00Z","workspaceId":"workspace","accountUserId":"account"}"#;
+            let (api_url, paths, server) = credential_test_service(vec![(200, body)]).await;
+            let response = cloudsync
+                .request_credentials_at(&api_url, "token", "key", "public-key", Some("account"))
+                .await
+                .unwrap();
+            assert!(matches!(response, CredentialResponse::Replica(_)));
+            server.await.unwrap();
+            assert_eq!(
+                paths.lock().unwrap().as_slice(),
+                ["/sync/replica/credentials"]
+            );
+        });
+    }
+
+    #[test]
+    fn request_credentials_keeps_token_first_fallback_without_local_library() {
+        let auth = Arc::new(crate::auth::Auth::new(
+            "cloudsync-request-credentials-fallback-test",
+        ));
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let cloudsync = credential_test_cloudsync(false, auth).await;
+            let body = r#"{"transport":"replica","encryptionVersion":2,"encryptionKeyId":"key","expiresAt":"2025-01-01T00:00:00Z","workspaceId":"workspace","accountUserId":"account"}"#;
+            let (api_url, paths, server) =
+                credential_test_service(vec![(404, ""), (200, body)]).await;
+            let response = cloudsync
+                .request_credentials_at(&api_url, "token", "key", "public-key", Some("account"))
+                .await
+                .unwrap();
+            assert!(matches!(response, CredentialResponse::Replica(_)));
+            server.await.unwrap();
+            assert_eq!(
+                paths.lock().unwrap().as_slice(),
+                ["/sync/token", "/sync/replica/credentials"]
+            );
+        });
+    }
 
     #[test]
     fn sanitizes_device_names() {

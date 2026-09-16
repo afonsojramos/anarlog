@@ -1856,6 +1856,88 @@ impl Workspace {
         .detach();
     }
 
+    fn connect_local_library(&mut self, cx: &mut Context<Self>) {
+        if self.library_connect_pending {
+            return;
+        }
+        self.library_connect_pending = true;
+        self.library_connect_error = None;
+        let cloudsync = self.cloudsync_service.clone();
+        let enabled = self.provider_settings.bool_setting(
+            "cloud_sync_enabled",
+            &["general", "cloud_sync_enabled"],
+            true,
+        );
+        cx.spawn(async move |this, cx| {
+            let result = cloudsync.connect_local_library(enabled).await;
+            this.update(cx, |this, cx| {
+                this.library_connect_pending = false;
+                if let Err(error) = result {
+                    this.library_connect_error = Some(error.to_string());
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn render_library_connect(&self, cx: &Context<Self>) -> Div {
+        let theme = self.theme;
+        let pending = self.library_connect_pending;
+        let mut section = div()
+            .mt_3()
+            .rounded_md()
+            .border_1()
+            .border_color(theme.border)
+            .p_3()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .tw_text_sm()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.foreground)
+                    .child("Your local notes are available"),
+            )
+            .child(
+                div()
+                    .tw_text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(
+                        "Connect this library to sync it with your current account. Team and shared notes stay with their workspace.",
+                    ),
+            )
+            .child(
+                div()
+                    .id("library-connect")
+                    .px_2()
+                    .py_1()
+                    .rounded_sm()
+                    .tw_text_xs()
+                    .text_color(if pending {
+                        theme.muted_foreground
+                    } else {
+                        theme.foreground
+                    })
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.connect_local_library(cx);
+                    }))
+                    .child("Connect library"),
+            );
+        if let Some(error) = self.library_connect_error.as_deref() {
+            section = section.child(
+                div()
+                    .tw_text_xs()
+                    .text_color(rgb(0xdc2626))
+                    .child(error.to_string()),
+            );
+        }
+        section
+    }
+
     fn render_e2ee_setup(&self, cx: &Context<Self>) -> Div {
         let theme = self.theme;
         let pending = self.e2ee_setup_pending;
@@ -2050,6 +2132,8 @@ impl Workspace {
             .unwrap_or("Signed in");
         let setup_required = cloudsync.status == crate::cloudsync::CloudsyncStatus::Blocked
             && cloudsync.block == Some(crate::cloudsync::CredentialBlock::SetupRequired);
+        let identity_mismatch = cloudsync.status == crate::cloudsync::CloudsyncStatus::Blocked
+            && cloudsync.block == Some(crate::cloudsync::CredentialBlock::IdentityMismatch);
         let mut account_details = div()
             .flex()
             .flex_col()
@@ -2080,6 +2164,9 @@ impl Workspace {
             );
         if setup_required {
             account_details = account_details.child(self.render_e2ee_setup(cx));
+        }
+        if identity_mismatch {
+            account_details = account_details.child(self.render_library_connect(cx));
         }
         div()
             .flex()

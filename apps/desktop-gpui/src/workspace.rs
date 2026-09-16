@@ -260,6 +260,8 @@ pub struct Workspace {
     e2ee_setup_code_input: gpui::Entity<TextInput>,
     e2ee_setup_pending: bool,
     e2ee_setup_error: Option<String>,
+    library_connect_pending: bool,
+    library_connect_error: Option<String>,
     auth: toast::Auth,
     /// `getDismissedToasts` from `store.json`.
     dismissed_toasts: Vec<String>,
@@ -603,6 +605,8 @@ impl Workspace {
             e2ee_setup_code_input,
             e2ee_setup_pending: false,
             e2ee_setup_error: None,
+            library_connect_pending: false,
+            library_connect_error: None,
             auth: if auth.signed_in() {
                 toast::Auth::SignedIn
             } else {
