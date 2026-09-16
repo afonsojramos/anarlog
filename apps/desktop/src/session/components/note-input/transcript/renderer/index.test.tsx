@@ -3,6 +3,7 @@ import { createRef } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TranscriptViewer } from "./index";
+import type { TranscriptWordSelection } from "./selection";
 
 const mocks = vi.hoisted(() => ({
   scrollToBottom: vi.fn(),
@@ -17,9 +18,32 @@ const mocks = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("react-hotkeys-hook", () => ({
-  useHotkeys: vi.fn(),
-}));
+vi.mock("./selection-context", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./selection-context")>();
+  const { getTranscriptSectionSelection, getTranscriptSectionKeyFromElement } =
+    await import("./selection");
+  return {
+    ...actual,
+    useTranscriptSelectionSources: () => ({
+      registerSource: () => () => {},
+      collectEntries: () => {
+        const container = document.querySelector<HTMLElement>(
+          "[data-transcript-container]",
+        )!;
+        const entries = new Map(
+          [...container.querySelectorAll<HTMLElement>("section")].map(
+            (section) =>
+              [
+                getTranscriptSectionKeyFromElement(section)!,
+                getTranscriptSectionSelection(section, container)!,
+              ] as const,
+          ),
+        );
+        return { order: [...entries.keys()], entries };
+      },
+    }),
+  };
+});
 
 vi.mock("~/audio-player", () => ({
   useAudioPlayer: () => ({
@@ -38,8 +62,21 @@ vi.mock("~/audio-player/provider", () => ({
 
 vi.mock("./selection-menu", () => ({
   SelectionMenu: () => null,
-  MultiSelectionBar: ({ entryCount }: { entryCount: number }) => (
-    <div data-testid="multi-selection-bar">{entryCount}</div>
+  MultiSelectionBar: ({
+    entryCount,
+    selection,
+  }: {
+    entryCount: number;
+    selection: TranscriptWordSelection;
+  }) => (
+    <div
+      data-testid="multi-selection-bar"
+      data-selected-transcripts={selection.groups
+        .map((group) => group.transcriptId)
+        .join(",")}
+    >
+      {entryCount}
+    </div>
   ),
 }));
 
@@ -275,6 +312,84 @@ describe("TranscriptViewer", () => {
     });
 
     expect(screen.getByTestId("multi-selection-bar").textContent).toBe("2");
+  });
+
+  it.each([
+    ["ArrowUp", 2],
+    ["ArrowDown", 3],
+  ])("extends block selection with Command-Shift-%s", (key, count) => {
+    render(
+      <TranscriptViewer
+        transcriptIds={["1", "2", "3", "4"]}
+        liveSegments={[]}
+        currentActive={false}
+        editMode
+        scrollRef={createRef()}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("segment-header-2"));
+    const event = new KeyboardEvent("keydown", {
+      key,
+      code: key,
+      metaKey: true,
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    fireEvent(document, event);
+    expect(event.defaultPrevented).toBe(true);
+    expect(
+      screen
+        .getByTestId("multi-selection-bar")
+        .getAttribute("data-selected-transcripts"),
+    ).toBe(key === "ArrowUp" ? "1,2" : "2,3,4");
+    expect(screen.getByTestId("multi-selection-bar").textContent).toBe(
+      String(count),
+    );
+    fireEvent.keyUp(document, { key, code: key });
+
+    const opposite = key === "ArrowUp" ? "ArrowDown" : "ArrowUp";
+    fireEvent.keyDown(document, {
+      key: opposite,
+      code: opposite,
+      metaKey: true,
+      shiftKey: true,
+    });
+    expect(screen.getByTestId("multi-selection-bar").textContent).toBe(
+      String(5 - count),
+    );
+    fireEvent.keyUp(document, { key: opposite, code: opposite });
+  });
+
+  it("leaves shortcuts alone without a block selection or inside an editor", () => {
+    render(
+      <TranscriptViewer
+        transcriptIds={["1", "2", "3"]}
+        liveSegments={[]}
+        currentActive={false}
+        editMode
+        scrollRef={createRef()}
+      />,
+    );
+    fireEvent.keyDown(document, {
+      key: "ArrowUp",
+      code: "ArrowUp",
+      metaKey: true,
+      shiftKey: true,
+    });
+    expect(screen.queryByTestId("multi-selection-bar")).toBeNull();
+    fireEvent.keyUp(document, { key: "ArrowUp", code: "ArrowUp" });
+    fireEvent.click(screen.getByTestId("segment-header-2"));
+    const editor = screen.getByTestId("editor-2");
+    editor.setAttribute("contenteditable", "true");
+    fireEvent.keyDown(editor, {
+      key: "ArrowUp",
+      code: "ArrowUp",
+      metaKey: true,
+      shiftKey: true,
+    });
+    expect(screen.getByTestId("multi-selection-bar").textContent).toBe("1");
+    fireEvent.keyUp(editor, { key: "ArrowUp", code: "ArrowUp" });
   });
 
   it("lets entries be chosen without modifier keys while editing", () => {

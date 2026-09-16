@@ -319,6 +319,38 @@ export function TranscriptViewer({
     { enabled: editMode && selectedEntries.size > 0 },
   );
 
+  useHotkeys(
+    "meta+shift+up, meta+shift+down",
+    (event) => {
+      if (
+        event.target instanceof Element &&
+        event.target.closest("[data-transcript-editor], [contenteditable=true]")
+      ) {
+        return;
+      }
+      const { order, entries } = collectEntries(
+        visibleTranscriptIdsRef.current,
+      );
+      const anchorIndex = selectionAnchor ? order.indexOf(selectionAnchor) : -1;
+      if (anchorIndex === -1) {
+        return;
+      }
+
+      event.preventDefault();
+      window.getSelection()?.removeAllRanges();
+      const keys =
+        event.key === "ArrowUp"
+          ? order.slice(0, anchorIndex + 1)
+          : order.slice(anchorIndex);
+      setSelectedEntries(new Map(keys.map((key) => [key, entries.get(key)!])));
+    },
+    {
+      enabled: selectedEntries.size > 0,
+      enableOnFormTags: false,
+      enableOnContentEditable: false,
+    },
+  );
+
   const handleSegmentSelection = useCallback(
     (event: ReactMouseEvent<HTMLDivElement>) => {
       const target = event.target;
