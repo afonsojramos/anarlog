@@ -679,6 +679,52 @@ describe("EventListeners notification events", () => {
     expect(openNewMock).not.toHaveBeenCalled();
   });
 
+  test.each(["notification_confirm", "notification_accept"])(
+    "%s opens Team settings for an invitation without creating a session",
+    async (type) => {
+      render(<EventListeners />);
+      await vi.waitFor(() =>
+        expect(notificationListenMock).toHaveBeenCalledTimes(1),
+      );
+      notificationListenMock.mock.calls[0]?.[0]({
+        payload: {
+          type,
+          key: "team-invitation:inv-1",
+          source: null,
+        },
+      });
+      expect(createSessionMock).not.toHaveBeenCalled();
+      expect(openNewMock).toHaveBeenCalledWith({
+        type: "settings",
+        state: { tab: "team" },
+      });
+    },
+  );
+
+  test.each([
+    ["notification_confirm", "cloudsync-initial-sync-complete-user-1"],
+    ["notification_accept", "cloudsync-initial-sync-complete-user-1"],
+    ["notification_confirm", "unknown-informational-notification"],
+    ["notification_accept", "unknown-informational-notification"],
+  ])(
+    "%s for %s leaves the current note and recording alone",
+    async (type, key) => {
+      render(<EventListeners />);
+      await vi.waitFor(() =>
+        expect(notificationListenMock).toHaveBeenCalledTimes(1),
+      );
+
+      await notificationListenMock.mock.calls[0]?.[0]({
+        payload: { type, key, source: null },
+      });
+
+      expect(stopMock).not.toHaveBeenCalled();
+      expect(createSessionMock).not.toHaveBeenCalled();
+      expect(openNewMock).not.toHaveBeenCalled();
+      expect(setTriggerAppIdsMock).not.toHaveBeenCalled();
+    },
+  );
+
   test("notification_confirm with session source opens that session", async () => {
     render(<EventListeners />);
 
