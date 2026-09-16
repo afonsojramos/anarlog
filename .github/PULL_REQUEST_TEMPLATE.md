@@ -9,7 +9,15 @@ Title: state the intended outcome with a specific action. For example, use
 
 **Problem:** <!-- Replace this comment on the same line: what was wrong or missing, and why did it matter? -->
 
-**Fix:** <!-- Replace this comment on the same line: how does this PR resolve the problem at the decision and behavior level? -->
+**Fix:** <!-- Replace this comment on the same line: how does this PR resolve the problem, and what should it do differently now? -->
+
+## Demo
+
+<!--
+Attach a short screen recording or GIF (drag the file into this box, or paste a Loom/YouTube link) showing the problem and the fix in action. This is how maintainers understand intent quickly, since the code itself is reviewed by AI first.
+
+Docs-only or non-functional changes (formatting, comments, CI/config with no behavior change) can skip the video: write "N/A" plus one line on why nothing user-facing changed.
+-->
 
 ## Verification
 
