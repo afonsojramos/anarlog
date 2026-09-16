@@ -501,6 +501,9 @@ fn main() -> anyhow::Result<()> {
         deeplink_sender.clone(),
     );
     let reopen_sender = deeplink_sender.clone();
+    // The workspace unifies zbus's `tokio` feature, so GPUI's Linux portal
+    // client (ashpd/zbus) needs a tokio context on the main thread.
+    let _tokio_guard = runtime.enter();
     let app = Application::new().with_assets(assets::Assets);
     // macOS delivers scheme URLs to the running process (`on_open_url`)
     // instead of a second launch; a Dock click on a running app is a bare
