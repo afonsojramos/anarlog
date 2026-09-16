@@ -820,8 +820,7 @@ impl<S: QueryEventSink> Cloudsync<S> {
              FROM app_settings WHERE id = 'cloudsync_workspace_binding'",
         )
         .fetch_optional(self.runtime.pool())
-        .await
-        .map_err(|_| anyhow!("Local library unavailable"))?
+        .await?
         .ok_or_else(|| anyhow!("Local library unavailable"))?;
         self.runtime
             .connect_local_library(user.id.clone(), workspace_id)
@@ -842,7 +841,7 @@ impl<S: QueryEventSink> Cloudsync<S> {
             access_token,
             encryption_key_id,
             member_public_key,
-            Some(account_user_id),
+            account_user_id,
         )
         .await
     }
@@ -853,20 +852,17 @@ impl<S: QueryEventSink> Cloudsync<S> {
         access_token: &str,
         encryption_key_id: &str,
         member_public_key: &str,
-        account_user_id: Option<&str>,
+        account_user_id: &str,
     ) -> anyhow::Result<CredentialResponse> {
         let device_name = device_name();
-        let has_local_library = match account_user_id {
-            Some(account_user_id) => sqlx::query_scalar::<_, i64>(
-                "SELECT 1 FROM local_library_connections \
-                 WHERE account_user_id = ? LIMIT 1",
-            )
-            .bind(account_user_id)
-            .fetch_optional(self.runtime.pool())
-            .await?
-            .is_some(),
-            None => false,
-        };
+        let has_local_library = sqlx::query_scalar::<_, i64>(
+            "SELECT 1 FROM local_library_connections \
+             WHERE account_user_id = ? LIMIT 1",
+        )
+        .bind(account_user_id)
+        .fetch_optional(self.runtime.pool())
+        .await?
+        .is_some();
         let response = if has_local_library {
             self.credential_request(
                 format!("{api_url}/sync/replica/credentials"),
@@ -1665,7 +1661,7 @@ mod tests {
             let body = r#"{"transport":"replica","encryptionVersion":2,"encryptionKeyId":"key","expiresAt":"2025-01-01T00:00:00Z","workspaceId":"workspace","accountUserId":"account"}"#;
             let (api_url, paths, server) = credential_test_service(vec![(200, body)]).await;
             let response = cloudsync
-                .request_credentials_at(&api_url, "token", "key", "public-key", Some("account"))
+                .request_credentials_at(&api_url, "token", "key", "public-key", "account")
                 .await
                 .unwrap();
             assert!(matches!(response, CredentialResponse::Replica(_)));
@@ -1688,7 +1684,7 @@ mod tests {
             let (api_url, paths, server) =
                 credential_test_service(vec![(404, ""), (200, body)]).await;
             let response = cloudsync
-                .request_credentials_at(&api_url, "token", "key", "public-key", Some("account"))
+                .request_credentials_at(&api_url, "token", "key", "public-key", "account")
                 .await
                 .unwrap();
             assert!(matches!(response, CredentialResponse::Replica(_)));
