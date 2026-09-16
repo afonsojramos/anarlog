@@ -128,7 +128,7 @@
             "description": "Unauthorized"
           },
           "424": {
-            "description": "Calendar connection requires reconnect"
+            "description": "Calendar connection requires reconnect or mailbox is unavailable"
           },
           "500": {
             "description": "Internal server error"
@@ -172,7 +172,7 @@
             "description": "Unauthorized"
           },
           "424": {
-            "description": "Calendar connection requires reconnect"
+            "description": "Calendar connection requires reconnect or mailbox is unavailable"
           },
           "500": {
             "description": "Internal server error"
@@ -988,6 +988,9 @@
           },
           "401": {
             "description": "Authentication required"
+          },
+          "424": {
+            "description": "Notion plan does not include AI meeting notes"
           },
           "500": {
             "description": "Notion connection unavailable"

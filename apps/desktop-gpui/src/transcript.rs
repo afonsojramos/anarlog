@@ -474,6 +474,8 @@ pub fn build_render_request(
         return None;
     }
     Some(RenderTranscriptRequest {
+        speaker_context: None,
+        preview: None,
         transcripts,
         participant_human_ids: participant_human_ids.to_vec(),
         self_human_id: self_human_id.map(str::to_string),

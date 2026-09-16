@@ -33,6 +33,13 @@ const mocks = vi.hoisted(() => ({
   },
   createWorkspace: vi.fn(() => Promise.resolve({ workspaceId: "ws" })),
   client: {
+    ownershipRequests: [] as Array<{
+      id: string;
+      ownerUserId: string;
+      targetUserId: string;
+    }>,
+    transferOwnership: vi.fn(() => Promise.resolve()),
+    respondOwnershipRequest: vi.fn(() => Promise.resolve()),
     access: {
       role: "owner" as const,
       tier: "team" as "free" | "team" | "enterprise",
@@ -47,6 +54,8 @@ const mocks = vi.hoisted(() => ({
     members: [] as Array<{
       userId: string;
       email: string;
+      name?: string | null;
+      avatarUrl?: string | null;
       role: "owner" | "admin" | "member";
     }>,
     invitations: [] as Array<{
@@ -64,6 +73,7 @@ const mocks = vi.hoisted(() => ({
       usedSeats: 1,
       isBilled: true,
     },
+    removeMember: vi.fn(() => Promise.resolve()),
     revokeInvitation: vi.fn(() => Promise.resolve()),
     deleteWorkspace: vi.fn(() => Promise.resolve()),
     renameWorkspace: vi.fn(() => Promise.resolve()),
@@ -92,6 +102,8 @@ const mocks = vi.hoisted(() => ({
       Promise.resolve("available" as "available" | "taken" | "invalid"),
     ),
     getWorkspaceAccess: vi.fn(),
+    listWorkspaceMembers: vi.fn(),
+    listWorkspaceInvitations: vi.fn(),
     acceptMyWorkspaceInvitation: vi.fn(() =>
       Promise.resolve({ workspaceId: "ws-joined" }),
     ),
@@ -189,14 +201,16 @@ vi.mock("./client", () => ({
   getSeatUsage: () =>
     Promise.resolve({ seatLimit: null, usedSeats: 1, isBilled: false }),
   leaveWorkspace: vi.fn(() => Promise.resolve()),
-  listWorkspaceInvitations: () => Promise.resolve(mocks.client.invitations),
-  listWorkspaceMembers: () => Promise.resolve(mocks.client.members),
-  removeMember: vi.fn(() => Promise.resolve()),
+  listWorkspaceInvitations: mocks.client.listWorkspaceInvitations,
+  listWorkspaceMembers: mocks.client.listWorkspaceMembers,
+  removeMember: mocks.client.removeMember,
   renameWorkspace: mocks.client.renameWorkspace,
   setWorkspaceLogo: mocks.client.setWorkspaceLogo,
   revokeInvitation: mocks.client.revokeInvitation,
   setMemberRole: vi.fn(() => Promise.resolve()),
-  transferOwnership: vi.fn(() => Promise.resolve()),
+  transferOwnership: mocks.client.transferOwnership,
+  listOwnershipRequests: () => Promise.resolve(mocks.client.ownershipRequests),
+  respondOwnershipRequest: mocks.client.respondOwnershipRequest,
   getWorkspaceUsageOverview: () => Promise.resolve(mocks.client.usage),
   getWorkspaceAccess: mocks.client.getWorkspaceAccess,
   getWorkspacePolicy: mocks.client.getWorkspacePolicy,
@@ -247,6 +261,9 @@ describe("SettingsTeam", () => {
     mocks.client.declineMyWorkspaceInvitation.mockResolvedValue(undefined);
     mocks.workspaces.isPending = false;
     mocks.client.members = [];
+    mocks.client.ownershipRequests = [];
+    mocks.client.transferOwnership.mockClear();
+    mocks.client.respondOwnershipRequest.mockClear();
     mocks.client.invitations = [];
     mocks.client.usage = {
       memberCount: 1,
@@ -277,7 +294,16 @@ describe("SettingsTeam", () => {
     mocks.client.getWorkspaceAccess.mockImplementation(() =>
       Promise.resolve(mocks.client.access),
     );
-    mocks.client.revokeInvitation.mockClear();
+    mocks.client.listWorkspaceMembers.mockReset();
+    mocks.client.listWorkspaceMembers.mockImplementation(() =>
+      Promise.resolve(mocks.client.members),
+    );
+    mocks.client.listWorkspaceInvitations.mockReset();
+    mocks.client.listWorkspaceInvitations.mockImplementation(() =>
+      Promise.resolve(mocks.client.invitations),
+    );
+    mocks.client.removeMember.mockReset();
+    mocks.client.revokeInvitation.mockReset();
     mocks.client.deleteWorkspace.mockClear();
     mocks.client.renameWorkspace.mockClear();
     mocks.client.setWorkspaceLogo.mockClear();
@@ -829,6 +855,253 @@ describe("SettingsTeam", () => {
     expect(screen.getByText("SCIM bearer token")).toBeTruthy();
   });
 
+  it("shows profile details in the roster and keeps owner controls hidden", async () => {
+    mocks.workspaces.data = [
+      {
+        workspaceId: "ws",
+        name: "Fastrepl",
+        ownerUserId: "user-1",
+        role: "owner",
+      },
+    ];
+    mocks.client.members = [
+      {
+        userId: "user-1",
+        email: "owner@example.com",
+        name: "Team Owner",
+        avatarUrl: "https://example.com/owner.png",
+        role: "owner",
+      },
+      {
+        userId: "user-2",
+        email: "member@example.com",
+        name: null,
+        avatarUrl: null,
+        role: "member",
+      },
+    ];
+    renderTeam();
+    const table = await screen.findByRole("table", { name: "Members" });
+    for (const name of ["Name", "Email", "Permissions", "Actions"]) {
+      expect(within(table).getByRole("columnheader", { name })).toBeTruthy();
+    }
+    const ownerRow = within(table).getByText("Team Owner").closest("tr")!;
+    expect(within(ownerRow).getByText("owner@example.com")).toBeTruthy();
+    expect(ownerRow.querySelector("img")?.getAttribute("src")).toBe(
+      "https://example.com/owner.png",
+    );
+    expect(within(ownerRow).queryByRole("button")).toBeNull();
+    expect(
+      within(table).getByRole("combobox", {
+        name: "Permissions for member@example.com",
+      }),
+    ).toBeTruthy();
+    fireEvent.keyDown(
+      within(table).getByRole("button", {
+        name: "Actions for member@example.com",
+      }),
+      { key: "Enter" },
+    );
+    expect(screen.queryByRole("menuitem", { name: "Make owner" })).toBeNull();
+    expect(
+      screen.getByRole("menuitem", { name: "Remove member" }),
+    ).toBeTruthy();
+  });
+
+  it.each(["member", "invitation"] as const)(
+    "confirms %s removal and allows cancellation and retry",
+    async (kind) => {
+      mocks.workspaces.data = [
+        {
+          workspaceId: "ws",
+          name: "Fastrepl",
+          ownerUserId: "user-1",
+          role: "owner",
+        },
+      ];
+      mocks.client.members = [
+        { userId: "user-2", email: "member@example.com", role: "member" },
+      ];
+      mocks.client.invitations = [
+        {
+          invitationId: "invite",
+          email: "pending@example.com",
+          expiresAt: "2027-01-01",
+        },
+      ];
+      const email =
+        kind === "member" ? "member@example.com" : "pending@example.com";
+      const label = kind === "member" ? "Remove member" : "Cancel invitation";
+      const mutation =
+        kind === "member"
+          ? mocks.client.removeMember
+          : mocks.client.revokeInvitation;
+      mutation.mockRejectedValueOnce(new Error("Try again later"));
+      renderTeam();
+      const openDialog = async () => {
+        fireEvent.keyDown(
+          await screen.findByRole("button", { name: `Actions for ${email}` }),
+          { key: "Enter" },
+        );
+        fireEvent.click(screen.getByRole("menuitem", { name: label }));
+        return screen.findByRole("dialog", { name: `${label}?` });
+      };
+      let dialog = await openDialog();
+      expect(dialog.textContent).toContain(email);
+      expect(mutation).not.toHaveBeenCalled();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(mutation).not.toHaveBeenCalled();
+      dialog = await openDialog();
+      fireEvent.click(within(dialog).getByRole("button", { name: label }));
+      expect(await within(dialog).findByRole("alert")).toHaveProperty(
+        "textContent",
+        "Try again later",
+      );
+      fireEvent.click(within(dialog).getByRole("button", { name: label }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(mutation).toHaveBeenCalledTimes(2);
+      expect(mutation).toHaveBeenCalledWith(
+        ...(kind === "member"
+          ? [expect.anything(), "ws", "user-2"]
+          : [expect.anything(), "invite"]),
+      );
+    },
+  );
+
+  it("lets ordinary members see the roster without management controls", async () => {
+    mocks.workspaces.data = [
+      {
+        workspaceId: "ws",
+        name: "Team",
+        ownerUserId: "user-2",
+        role: "member",
+      },
+    ];
+    mocks.client.access.tier = "free";
+    mocks.client.access.capabilities = [];
+    mocks.client.members = [
+      {
+        userId: "user-2",
+        email: "owner@example.com",
+        name: "Team Owner",
+        role: "owner",
+      },
+      { userId: "user-1", email: "member@example.com", role: "member" },
+    ];
+    mocks.client.invitations = [
+      {
+        invitationId: "invite",
+        email: "pending@example.com",
+        expiresAt: "2027-01-01",
+      },
+    ];
+
+    renderTeam();
+
+    const table = await screen.findByRole("table", { name: "Members" });
+    expect(within(table).getByText("Team Owner")).toBeTruthy();
+    expect(within(table).getByText("owner@example.com")).toBeTruthy();
+    expect(within(table).getByText("member@example.com")).toBeTruthy();
+    expect(within(table).queryByRole("combobox")).toBeNull();
+    expect(within(table).queryByRole("button")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add members" })).toBeNull();
+    expect(screen.queryByText("pending@example.com")).toBeNull();
+    expect(mocks.client.listWorkspaceInvitations).not.toHaveBeenCalled();
+  });
+
+  it("retries loading the roster after a failure", async () => {
+    mocks.workspaces.data = [
+      {
+        workspaceId: "ws",
+        name: "Team",
+        ownerUserId: "user-2",
+        role: "member",
+      },
+    ];
+    mocks.client.members = [
+      { userId: "user-1", email: "member@example.com", role: "member" },
+    ];
+    mocks.client.listWorkspaceMembers.mockRejectedValueOnce(
+      new Error("network unavailable"),
+    );
+
+    renderTeam();
+
+    expect(
+      await screen.findByText("Could not load workspace members."),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    const table = await screen.findByRole("table", { name: "Members" });
+    expect(within(table).getByText("member@example.com")).toBeTruthy();
+    expect(mocks.client.listWorkspaceMembers).toHaveBeenCalledTimes(2);
+  });
+
+  it("requires confirmation before requesting ownership from the role select", async () => {
+    mocks.workspaces.data = [
+      { workspaceId: "ws", name: "Team", ownerUserId: "user-1", role: "owner" },
+    ];
+    mocks.client.members = [
+      { userId: "user-2", email: "member@example.com", role: "admin" },
+    ];
+    renderTeam();
+    Element.prototype.scrollIntoView = vi.fn();
+    const select = await screen.findByRole("combobox", {
+      name: "Permissions for member@example.com",
+    });
+    fireEvent.keyDown(select, { key: "Enter" });
+    fireEvent.click(await screen.findByRole("option", { name: "Owner" }));
+    expect(
+      await screen.findByRole("dialog", {
+        name: "Request ownership transfer?",
+      }),
+    ).toBeTruthy();
+    expect(mocks.client.transferOwnership).not.toHaveBeenCalled();
+    expect(select.textContent).toContain("Admin");
+    fireEvent.click(screen.getByRole("button", { name: "Request transfer" }));
+    await waitFor(() =>
+      expect(mocks.client.transferOwnership).toHaveBeenCalledWith(
+        expect.anything(),
+        "ws",
+        "user-2",
+      ),
+    );
+  });
+
+  it("lets a member review and accept a pending ownership request", async () => {
+    mocks.workspaces.data = [
+      {
+        workspaceId: "ws",
+        name: "Team",
+        ownerUserId: "user-2",
+        role: "member",
+      },
+    ];
+    mocks.client.ownershipRequests = [
+      { id: "request", ownerUserId: "user-2", targetUserId: "user-1" },
+    ];
+    renderTeam();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Review transfer" }),
+    );
+    expect(
+      await screen.findByRole("dialog", {
+        name: "Accept workspace ownership?",
+      }),
+    ).toBeTruthy();
+    expect(mocks.client.respondOwnershipRequest).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Accept ownership" }));
+    await waitFor(() =>
+      expect(mocks.client.respondOwnershipRequest).toHaveBeenCalledWith(
+        expect.anything(),
+        "ws",
+        "request",
+        "accept",
+      ),
+    );
+  });
+
   it("resends a pending invitation by delivering a fresh invite", async () => {
     mocks.workspaces.data = [
       {
@@ -848,8 +1121,14 @@ describe("SettingsTeam", () => {
 
     renderTeam();
 
+    fireEvent.keyDown(
+      await screen.findByRole("button", {
+        name: "Actions for teammate@company.com",
+      }),
+      { key: "Enter" },
+    );
     fireEvent.click(
-      await screen.findByRole("button", { name: "Resend invitation" }),
+      await screen.findByRole("menuitem", { name: "Resend invitation" }),
     );
 
     await waitFor(() =>
