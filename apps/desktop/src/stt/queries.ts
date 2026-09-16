@@ -799,13 +799,17 @@ export function splitTranscriptSpeaker({
     const tokens = [...text.matchAll(/\S+/g)];
     if (!selected.length || !text.slice(offset).trim()) return false;
 
+    const lastToken = tokens[tokens.length - 1];
+    const textEnd = lastToken
+      ? lastToken.index + lastToken[0].length
+      : text.length;
     const replacements = new Map<string, WordWithId[]>();
     const followingIds: string[] = [];
     for (const [index, word] of selected.entries()) {
       const start = tokens[index]?.index ?? text.length;
       const end =
         index === selected.length - 1
-          ? text.length
+          ? textEnd
           : start + (tokens[index]?.[0].length ?? 0);
       const nextText = text.slice(start, end).trim();
       if (offset > start && offset < end) {
