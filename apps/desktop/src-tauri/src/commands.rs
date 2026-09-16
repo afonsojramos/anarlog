@@ -143,7 +143,7 @@ pub async fn set_recently_opened_sessions<R: tauri::Runtime>(
 #[tauri::command]
 #[specta::specta]
 pub fn is_crash_reporting_enabled() -> Result<bool, String> {
-    Ok(crate::CRASH_REPORTING_ENABLED.load(std::sync::atomic::Ordering::SeqCst))
+    Ok(anlg_crash_reporting::enabled())
 }
 
 #[tauri::command]

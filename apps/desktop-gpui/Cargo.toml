@@ -79,7 +79,9 @@ unicode-normalization = "0.1"
 unicode-segmentation = "1"
 url = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
-zbus = { version = "5", default-features = false, features = ["tokio"] }
+# Must stay off zbus's `tokio` feature: GPUI's Linux portal client runs on its own
+# executor threads, and the feature is unified across the whole binary.
+zbus = { version = "5", default-features = false, features = ["async-io"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
