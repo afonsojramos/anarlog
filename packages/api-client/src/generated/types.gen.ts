@@ -2242,7 +2242,7 @@ export type OutlookListCalendarsErrors = {
      */
     401: unknown;
     /**
-     * Calendar connection requires reconnect
+     * Calendar connection requires reconnect or mailbox is unavailable
      */
     424: unknown;
     /**
@@ -2273,7 +2273,7 @@ export type OutlookListEventsErrors = {
      */
     401: unknown;
     /**
-     * Calendar connection requires reconnect
+     * Calendar connection requires reconnect or mailbox is unavailable
      */
     424: unknown;
     /**
@@ -2867,6 +2867,10 @@ export type NotionImportMeetingsErrors = {
      * Authentication required
      */
     401: unknown;
+    /**
+     * Notion plan does not include AI meeting notes
+     */
+    424: unknown;
     /**
      * Notion connection unavailable
      */
