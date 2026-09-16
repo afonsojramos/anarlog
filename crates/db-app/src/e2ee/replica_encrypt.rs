@@ -9,6 +9,7 @@ use super::chunks::{
     split_chunks,
 };
 use super::cooperative::yield_once;
+use super::library::LibraryIdentity;
 use super::replica_storage::{
     load_or_create_writer_id, load_row_local_states_from_pool, sqlite_value, upsert_local_state,
 };
@@ -452,9 +453,10 @@ async fn prepare_dirty_row_cancellable(
         "SELECT * FROM {} WHERE id = ? AND workspace_id = ? LIMIT 1",
         dirty.table_name
     );
+    let identity = LibraryIdentity::load(pool, &dirty.workspace_id).await?;
     let row = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
-        .bind(&dirty.row_id)
-        .bind(&dirty.workspace_id)
+        .bind(identity.local_row_id(&dirty.table_name, &dirty.row_id))
+        .bind(&identity.local_workspace_id)
         .fetch_optional(pool)
         .await?;
     check_e2ee_cancellation(is_cancelled)?;
@@ -515,7 +517,15 @@ async fn prepare_dirty_row_cancellable(
             if matches!(field_name, "id" | "workspace_id") {
                 continue;
             }
-            let value = sqlite_value(row, index)?;
+            let value = identity
+                .remote_value(
+                    pool,
+                    &dirty.table_name,
+                    &dirty.row_id,
+                    field_name,
+                    sqlite_value(row, index)?,
+                )
+                .await?;
             if let Some(chunk_size) = chunk_size_for(&dirty.table_name, field_name)
                 && states.values().any(|state| {
                     parse_chunk_field(&dirty.table_name, &state.field_name)

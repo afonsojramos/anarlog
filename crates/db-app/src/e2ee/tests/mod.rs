@@ -97,6 +97,7 @@ mod convergence_fuzz;
 mod dirty_rows;
 mod document_versions;
 mod edit_conflicts;
+mod library;
 mod replica_apply;
 mod revision_conflicts;
 mod roundtrip;
