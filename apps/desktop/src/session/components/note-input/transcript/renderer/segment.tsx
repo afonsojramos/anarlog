@@ -1,5 +1,10 @@
-import { Fragment, memo, useCallback, useMemo } from "react";
+import { Fragment, memo, useCallback, useMemo, useState } from "react";
 
+import {
+  Popover,
+  PopoverAnchor,
+  PopoverContent,
+} from "@anlg/ui/components/ui/popover";
 import { cn } from "@anlg/utils";
 
 import { SegmentHeader } from "./segment-header";
@@ -8,6 +13,7 @@ import {
   getTranscriptSegmentDomId,
 } from "./selection";
 import { useTranscriptSelectionState } from "./selection-context";
+import { SpeakerParticipantPicker } from "./speaker-assign";
 import {
   getActiveLineIndex,
   groupWordsIntoLines,
@@ -17,7 +23,10 @@ import { WordSpan } from "./word-span";
 
 import { createHighlightSegments } from "~/session/components/note-input/search/matching";
 import type { Segment, SegmentWord } from "~/stt/live-segment";
-import { updateTranscriptSegmentText } from "~/stt/queries";
+import {
+  splitTranscriptSpeaker,
+  updateTranscriptSegmentText,
+} from "~/stt/queries";
 
 export type TranscriptSearchRenderState = {
   query: string;
@@ -124,7 +133,11 @@ export const SegmentRenderer = memo(
         />
 
         {editMode ? (
-          <EditableSegmentText segment={segment} transcriptId={transcriptId} />
+          <EditableSegmentText
+            segment={segment}
+            transcriptId={transcriptId}
+            sessionId={sessionId}
+          />
         ) : (
           <div
             data-transcript-segment-content
@@ -221,10 +234,16 @@ export const SegmentRenderer = memo(
 const EditableSegmentText = memo(function EditableSegmentText({
   segment,
   transcriptId,
+  sessionId,
 }: {
   segment: Segment;
   transcriptId: string;
+  sessionId?: string;
 }) {
+  const [speakerChange, setSpeakerChange] = useState<{
+    text: string;
+    offset: number;
+  } | null>(null);
   const originalText = normalizeEditableTranscriptText(
     segment.words.map(getWordDisplayText).join(" "),
   );
@@ -263,37 +282,84 @@ const EditableSegmentText = memo(function EditableSegmentText({
         return;
       }
 
+      if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229)
+        return;
+
       if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
         event.currentTarget.blur();
+        return;
       }
+      if (event.key !== "Enter" || event.shiftKey || event.altKey) return;
+      const selection = window.getSelection();
+      if (!selection?.isCollapsed || !selection.rangeCount) return;
+      const range = selection.getRangeAt(0);
+      if (!event.currentTarget.contains(range.startContainer)) return;
+      const before = range.cloneRange();
+      before.selectNodeContents(event.currentTarget);
+      before.setEnd(range.startContainer, range.startOffset);
+      const text = event.currentTarget.textContent ?? "";
+      const offset = before.toString().length;
+      event.preventDefault();
+      if (text.slice(offset).trim()) setSpeakerChange({ text, offset });
     },
     [originalText],
   );
 
   return (
-    <div
-      data-transcript-segment-content
-      data-transcript-editor
-      data-transcript-edit-word-ids={JSON.stringify(wordIds)}
-      data-transcript-edit-word-start-ms={JSON.stringify(
-        segment.words.map((word) => word.start_ms),
-      )}
-      data-transcript-edit-word-texts={JSON.stringify(
-        segment.words.map(getWordDisplayText),
-      )}
-      contentEditable
-      suppressContentEditableWarning
-      spellCheck
-      className={cn([
-        "overflow-wrap-anywhere mt-1.5 rounded-md text-sm leading-relaxed wrap-break-word outline-hidden",
-        "select-text-deep",
-      ])}
-      onBlur={handleBlur}
-      onKeyDown={handleKeyDown}
+    <Popover
+      open={speakerChange !== null}
+      onOpenChange={(open) => {
+        if (!open) setSpeakerChange(null);
+      }}
     >
-      {originalText}
-    </div>
+      <PopoverAnchor asChild>
+        <div
+          data-transcript-segment-content
+          data-transcript-editor
+          data-transcript-edit-word-ids={JSON.stringify(wordIds)}
+          data-transcript-edit-word-start-ms={JSON.stringify(
+            segment.words.map((word) => word.start_ms),
+          )}
+          data-transcript-edit-word-texts={JSON.stringify(
+            segment.words.map(getWordDisplayText),
+          )}
+          contentEditable
+          suppressContentEditableWarning
+          spellCheck
+          className={cn([
+            "overflow-wrap-anywhere mt-1.5 rounded-md text-sm leading-relaxed wrap-break-word outline-hidden",
+            "select-text-deep",
+          ])}
+          onBlur={handleBlur}
+          onKeyDown={handleKeyDown}
+        >
+          {originalText}
+        </div>
+      </PopoverAnchor>
+      <PopoverContent
+        variant="app"
+        side="bottom"
+        align="start"
+        className="w-80"
+      >
+        <SpeakerParticipantPicker
+          sessionId={sessionId}
+          showAssignmentScope={false}
+          onSelect={async (humanId) => {
+            if (!speakerChange) return;
+            await splitTranscriptSpeaker({
+              transcriptId,
+              segmentKey: segment.key,
+              wordIds,
+              ...speakerChange,
+              humanId,
+            });
+            setSpeakerChange(null);
+          }}
+        />
+      </PopoverContent>
+    </Popover>
   );
 });
 

@@ -1,4 +1,4 @@
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -11,6 +11,7 @@ import { TranscriptSelectionProvider } from "./selection-context";
 import type { Segment, SegmentWord } from "~/stt/live-segment";
 
 const mocks = vi.hoisted(() => ({
+  splitTranscriptSpeaker: vi.fn(() => Promise.resolve()),
   updateTranscriptSegmentText: vi.fn(() => Promise.resolve()),
   wordSpan: vi.fn(
     ({
@@ -31,16 +32,28 @@ vi.mock("./segment-header", () => ({
   SegmentHeader: () => null,
 }));
 
+vi.mock("./speaker-assign", () => ({
+  SpeakerParticipantPicker: ({
+    onSelect,
+  }: {
+    onSelect: (id: string) => Promise<void>;
+  }) => (
+    <button onClick={() => void onSelect("human-2")}>Choose speaker</button>
+  ),
+}));
+
 vi.mock("./word-span", () => ({
   WordSpan: mocks.wordSpan,
 }));
 
 vi.mock("~/stt/queries", () => ({
   updateTranscriptSegmentText: mocks.updateTranscriptSegmentText,
+  splitTranscriptSpeaker: mocks.splitTranscriptSpeaker,
 }));
 
 describe("SegmentRenderer", () => {
   beforeEach(() => {
+    mocks.splitTranscriptSpeaker.mockClear();
     mocks.wordSpan.mockClear();
     mocks.updateTranscriptSegmentText.mockClear();
   });
@@ -293,6 +306,48 @@ describe("SegmentRenderer", () => {
         text: "Corrected transcript text",
       });
     });
+  });
+  it("opens speaker selection on Enter and assigns the text after the cursor", async () => {
+    const view = render(
+      <SegmentRenderer
+        segment={createSegment()}
+        offsetMs={0}
+        transcriptId="transcript-1"
+        sessionId="session-1"
+        speakerLabel="Speaker 1"
+        currentMs={0}
+        seekAndPlay={vi.fn()}
+        audioExists
+        search={EMPTY_TRANSCRIPT_SEARCH}
+        editMode
+      />,
+    );
+    const editor = view.container.querySelector<HTMLElement>(
+      "[data-transcript-editor]",
+    )!;
+    const range = document.createRange();
+    range.setStart(editor.firstChild!, 12);
+    range.collapse(true);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    fireEvent.keyDown(editor, { key: "Enter", isComposing: true });
+    expect(screen.queryByRole("button", { name: "Choose speaker" })).toBeNull();
+    fireEvent.keyDown(editor, { key: "Enter", shiftKey: true });
+    expect(screen.queryByRole("button", { name: "Choose speaker" })).toBeNull();
+    fireEvent.keyDown(editor, { key: "Enter" });
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Choose speaker" }),
+    );
+    await waitFor(() =>
+      expect(mocks.splitTranscriptSpeaker).toHaveBeenCalledWith({
+        transcriptId: "transcript-1",
+        segmentKey: createSegment().key,
+        wordIds: ["word-1", "word-2", "word-3", "word-4"],
+        text: "First line. Second line.",
+        offset: 12,
+        humanId: "human-2",
+      }),
+    );
   });
 });
 

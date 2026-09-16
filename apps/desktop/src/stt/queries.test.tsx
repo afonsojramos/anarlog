@@ -63,6 +63,7 @@ import {
   getSessionTranscriptRecords,
   mergeTranscriptSegments,
   removeHumanSpeakerAssignments,
+  splitTranscriptSpeaker,
   updateTranscriptSegmentText,
   useSessionParticipantHumanIds,
   useSessionTranscriptMetadata,
@@ -992,6 +993,62 @@ describe("transcript SQLite queries", () => {
     ]);
     expect(JSON.parse(String(statement?.params[1]))).toEqual(hints);
   });
+
+  it.each([
+    [6, ["word-1", "word-2"]],
+    [8, ["word-2"]],
+  ])(
+    "changes only the text after cursor offset %s",
+    async (offset, followingIds) => {
+      const words = ["Hello", "world", "again", "untouched"].map(
+        (text, index) => ({
+          id: `word-${index}`,
+          text,
+          start_ms: index * 100,
+          end_ms: (index + 1) * 100,
+          channel: 1,
+        }),
+      );
+      mocks.execute.mockResolvedValueOnce([
+        { words_json: JSON.stringify(words), speaker_hints_json: "[]" },
+      ]);
+      await splitTranscriptSpeaker({
+        transcriptId: "transcript-1",
+        segmentKey: { channel: "RemoteParty", speaker_index: 1 },
+        wordIds: ["word-0", "word-1", "word-2"],
+        text: "Hello world again",
+        offset,
+        humanId: "human-2",
+      });
+      const statement = mocks.executeTransaction.mock.calls[0]?.[0]?.[0];
+      const saved = JSON.parse(String(statement?.params[0]));
+      expect(saved.at(-1)).toEqual(words[3]);
+      expect(saved[0]).toEqual(words[0]);
+      const hints = JSON.parse(String(statement?.params[1]));
+      const assignment = JSON.parse(hints.at(-1).value);
+      expect(assignment).toMatchObject({
+        human_id: "human-2",
+        scope: "segment",
+        extend_to_adjacent: false,
+      });
+      expect(assignment.word_ids).toEqual(expect.arrayContaining(followingIds));
+      expect(assignment.word_ids).not.toContain("word-0");
+      if (offset === 8) {
+        expect(saved[1]).toMatchObject({
+          id: "word-1",
+          text: "wo",
+          start_ms: 100,
+          end_ms: 140,
+        });
+        expect(saved[2]).toMatchObject({
+          text: "rld",
+          start_ms: 140,
+          end_ms: 200,
+        });
+        expect(assignment.word_ids).toEqual([saved[2].id, "word-2"]);
+      }
+    },
+  );
 
   it("removes one human's assignments from every session transcript", async () => {
     mocks.execute
