@@ -18860,6 +18860,7 @@ name = "tauri-plugin-attachment-sync"
 version = "0.1.0"
 dependencies = [
  "attachment-sync-core",
+ "db-app",
  "e2ee",
  "fs-sync-core",
  "serde",
