@@ -153,7 +153,7 @@ enum DeviceEnrollmentStatus {
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct DeviceEnrollmentResponse {
     request_id: String,
     expires_at: String,
@@ -1149,18 +1149,6 @@ impl<S: QueryEventSink> Cloudsync<S> {
             if generation != self.generation.load(Ordering::SeqCst) {
                 return Ok(());
             }
-            if recovery.is_none() {
-                self.suspend_and_set_state(
-                    generation,
-                    false,
-                    State {
-                        status: CloudsyncStatus::Blocked,
-                        block: Some(CredentialBlock::SetupRequired),
-                    },
-                )
-                .await?;
-                return Ok(());
-            }
         }
         let Some(recovery) = recovery else {
             self.suspend_and_set_state(
@@ -1675,7 +1663,7 @@ mod tests {
         assert!(pending.package.is_none());
 
         let sealed = serde_json::from_str::<DeviceEnrollmentResponse>(
-            r#"{"requestId":"request","expiresAt":"2025-01-01T00:00:00Z","status":"sealed","package":{"ephemeralPublicKey":"key","nonce":"nonce","ciphertext":"ciphertext"}}"#,
+            r#"{"requestId":"request","expiresAt":"2025-01-01T00:00:00Z","status":"sealed","package":{"ephemeralPublicKey":"key","nonce":"nonce","ciphertext":"ciphertext"},"serverVersion":2}"#,
         )
         .unwrap();
         assert_eq!(sealed.status, DeviceEnrollmentStatus::Sealed);
