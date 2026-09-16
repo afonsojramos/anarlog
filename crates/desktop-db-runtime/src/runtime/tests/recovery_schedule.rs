@@ -284,7 +284,9 @@ async fn run_witness_repair(scenario: WitnessRepairScenario) {
     .await
     .unwrap();
     db.cloudsync_init("sync_probe", None, None).await.unwrap();
-    let runtime = std::sync::Arc::new(PluginDbRuntime::new(std::sync::Arc::clone(&db)));
+    let runtime = std::sync::Arc::new(DesktopDbRuntime::<TestQueryEventSink>::for_test(
+        std::sync::Arc::clone(&db),
+    ));
     let recovery_key = anlg_e2ee::RecoveryKey::parse(
         "anarlog-e2ee-v1:BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
     )
@@ -724,7 +726,9 @@ async fn activity_drains_stalled_full_resync_before_immediate_local_write() {
     db.cloudsync_init(CLOUDSYNC_REPLICA_TABLE, None, None)
         .await
         .unwrap();
-    let runtime = std::sync::Arc::new(PluginDbRuntime::new(std::sync::Arc::clone(&db)));
+    let runtime = std::sync::Arc::new(DesktopDbRuntime::<TestQueryEventSink>::for_test(
+        std::sync::Arc::clone(&db),
+    ));
     let recovery_key = anlg_e2ee::RecoveryKey::parse(
         "anarlog-e2ee-v1:BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
     )

@@ -26,7 +26,7 @@ async fn poisoned_replica_recovery_requires_the_disposable_e2ee_table_only() {
     .execute(db.pool())
     .await
     .unwrap();
-    let runtime = PluginDbRuntime::new(std::sync::Arc::clone(&db));
+    let runtime = DesktopDbRuntime::<TestQueryEventSink>::for_test(std::sync::Arc::clone(&db));
 
     require_disposable_cloudsync_replica(runtime.db.as_ref(), CloudsyncOperationCancellation::None)
         .await
@@ -226,7 +226,7 @@ async fn legacy_cutover_snapshots_local_state_before_initializing_the_witness() 
         0
     );
 
-    let runtime = PluginDbRuntime::new(std::sync::Arc::clone(&db));
+    let runtime = DesktopDbRuntime::<TestQueryEventSink>::for_test(std::sync::Arc::clone(&db));
     let recovery_key = anlg_e2ee::RecoveryKey::parse(
         "anarlog-e2ee-v1:BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
     )
@@ -289,7 +289,7 @@ async fn witness_hydration_drains_applicable_rows_around_incomplete_transcripts(
 async fn check_witness_hydration_drains(incomplete_transcript: bool) {
     let db = std::sync::Arc::new(Db::connect_memory_plain().await.unwrap());
     anlg_db_app::prepare_schema(db.as_ref()).await.unwrap();
-    let runtime = PluginDbRuntime::new(std::sync::Arc::clone(&db));
+    let runtime = DesktopDbRuntime::<TestQueryEventSink>::for_test(std::sync::Arc::clone(&db));
     let workspace_key = anlg_e2ee::RecoveryKey::parse(
         "anarlog-e2ee-v1:BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
     )
@@ -385,7 +385,7 @@ async fn check_witness_hydration_drains(incomplete_transcript: bool) {
 async fn witness_hydration_leaves_incomplete_transcripts_for_the_next_page() {
     let db = std::sync::Arc::new(Db::connect_memory_plain().await.unwrap());
     anlg_db_app::prepare_schema(db.as_ref()).await.unwrap();
-    let runtime = PluginDbRuntime::new(std::sync::Arc::clone(&db));
+    let runtime = DesktopDbRuntime::<TestQueryEventSink>::for_test(std::sync::Arc::clone(&db));
     let key = anlg_e2ee::RecoveryKey::parse(
         "anarlog-e2ee-v1:BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
     )
@@ -463,7 +463,7 @@ async fn witness_hydration_leaves_incomplete_transcripts_for_the_next_page() {
 #[tokio::test]
 async fn reconciliation_barrier_blocks_renderer_writes() {
     let db = std::sync::Arc::new(Db::connect_memory_plain().await.unwrap());
-    let runtime = std::sync::Arc::new(PluginDbRuntime::new(db));
+    let runtime = std::sync::Arc::new(DesktopDbRuntime::<TestQueryEventSink>::for_test(db));
     let guard = runtime.synced_write_barrier.write().await;
 
     let execute_runtime = std::sync::Arc::clone(&runtime);
@@ -521,7 +521,7 @@ async fn reconciliation_barrier_blocks_renderer_writes() {
 #[tokio::test]
 async fn reconciliation_barrier_blocks_native_synced_writes() {
     let db = std::sync::Arc::new(Db::connect_memory_plain().await.unwrap());
-    let runtime = std::sync::Arc::new(PluginDbRuntime::new(db));
+    let runtime = std::sync::Arc::new(DesktopDbRuntime::<TestQueryEventSink>::for_test(db));
     let guard = runtime.synced_write_barrier.write().await;
     let write_runtime = std::sync::Arc::clone(&runtime);
     let mut write = tokio::spawn(async move {
