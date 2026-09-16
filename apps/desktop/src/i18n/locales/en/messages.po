@@ -1451,6 +1451,11 @@ msgstr "Connect GitHub for private repos."
 msgid "Connect Google Calendar"
 msgstr "Connect Google Calendar"
 
+#: src/auth/connect-local-library-dialog.tsx
+#: src/auth/context.tsx
+msgid "Connect library"
+msgstr "Connect library"
+
 #: src/settings/automations/starter-config.tsx
 msgid "Connect Linear"
 msgstr "Connect Linear"
@@ -1498,6 +1503,7 @@ msgstr "Connected with your {0} subscription."
 msgid "Connected with your existing subscription."
 msgstr "Connected with your existing subscription."
 
+#: src/auth/connect-local-library-dialog.tsx
 #: src/settings/sync/index.tsx
 msgid "Connecting..."
 msgstr "Connecting..."
@@ -1597,6 +1603,10 @@ msgstr "Could not check the CLI: {0}"
 msgid "Could not clear the selected model"
 msgstr "Could not clear the selected model"
 
+#: src/auth/connect-local-library-dialog.tsx
+msgid "Could not connect this library. Your local notes are unchanged. Try again."
+msgstr "Could not connect this library. Your local notes are unchanged. Try again."
+
 #: src/settings/developers/cli.tsx
 msgid "Could not copy the MCP configuration"
 msgstr "Could not copy the MCP configuration"
@@ -1668,6 +1678,14 @@ msgstr "Could not prepare this upload. Please try again."
 #: src/session-sharing/management-panel.tsx
 msgid "Could not publish the desktop edits. Check the latest web copy and try again."
 msgstr "Could not publish the desktop edits. Check the latest web copy and try again."
+
+#: src/auth/connect-local-library-dialog.tsx
+msgid "Could not read the local library"
+msgstr "Could not read the local library"
+
+#: src/auth/connect-local-library-dialog.tsx
+msgid "Could not read the local library. Close this dialog and try again."
+msgstr "Could not read the local library. Close this dialog and try again."
 
 #: src/automations/actions.ts
 msgid "Could not remove the automation"
@@ -2850,6 +2868,10 @@ msgstr "Keep synced notes readable only on your devices."
 msgid "Keep this version"
 msgstr "Keep this version"
 
+#: src/auth/connect-local-library-dialog.tsx
+msgid "Keep using locally"
+msgstr "Keep using locally"
+
 #: src/settings/sync/index.tsx
 msgid "Keep your recovery key saved somewhere safe. You can still use it if another approved device is unavailable."
 msgstr "Keep your recovery key saved somewhere safe. You can still use it if another approved device is unavailable."
@@ -2933,6 +2955,10 @@ msgstr "Less"
 #: src/session-sharing/attachment-controls.tsx
 msgid "Let people with access play the recording."
 msgstr "Let people with access play the recording."
+
+#: src/auth/connect-local-library-dialog.tsx
+msgid "Library connected, but sync could not restart. Try again in sync settings."
+msgstr "Library connected, but sync could not restart. Try again in sync settings."
 
 #: src/settings/appearance/theme.tsx
 msgid "Light"
@@ -5070,7 +5096,6 @@ msgstr "Start a Pro trial or add your own LLM API key to generate a summary from
 msgid "Start Anarlog at login"
 msgstr "Start Anarlog at login"
 
-#: src/auth/context.tsx
 #: src/auth/start-fresh-dialog.tsx
 msgid "Start fresh"
 msgstr "Start fresh"
@@ -5307,6 +5332,10 @@ msgstr "Sync paused"
 msgid "Sync status unavailable"
 msgstr "Sync status unavailable"
 
+#: src/auth/connect-local-library-dialog.tsx
+msgid "Sync this local library with {email}?"
+msgstr "Sync this local library with {email}?"
+
 #: src/settings/general/account.tsx
 msgid "Sync your changes before signing out."
 msgstr "Sync your changes before signing out."
@@ -5422,10 +5451,6 @@ msgstr "The link may have expired or its access may have changed."
 #: src/shared-notes/index.tsx
 msgid "The note may have been unshared or moved out of a workspace you can access."
 msgstr "The note may have been unshared or moved out of a workspace you can access."
-
-#: src/auth/context.tsx
-msgid "The notes on this device are linked to another Anarlog account. Sign in with the account previously used here, or start fresh on this device."
-msgstr "The notes on this device are linked to another Anarlog account. Sign in with the account previously used here, or start fresh on this device."
 
 #: src/auth/start-fresh-dialog.tsx
 msgid "The notes on this device belong to another Anarlog account. Starting fresh sets them aside as a backup file and restarts Anarlog with an empty workspace for the account you signed in with. Nothing from the old notes is uploaded."
@@ -6105,6 +6130,10 @@ msgstr "Your dictionary is empty"
 msgid "Your insights"
 msgstr "Your insights"
 
+#: src/auth/context.tsx
+msgid "Your local notes are available. Connect this library to sync with your current account."
+msgstr "Your local notes are available. Connect this library to sync with your current account."
+
 #: src/billing/trial-ended-dialog.tsx
 msgid "Your notes and recordings are safe. Free local transcription still works. Upgrade anytime to keep Pro features."
 msgstr "Your notes and recordings are safe. Free local transcription still works. Upgrade anytime to keep Pro features."
@@ -6124,6 +6153,10 @@ msgstr "Your notes remain available locally. Anarlog will keep retrying."
 #: src/settings/sync/index.tsx
 msgid "Your notes remain available locally. Try again in a moment."
 msgstr "Your notes remain available locally. Try again in a moment."
+
+#: src/auth/connect-local-library-dialog.tsx
+msgid "Your personal notes and recordings stay on this device. Sync will connect them to this account and bring in its existing notes. Copies already in your previous account remain there. Team and shared notes stay with their workspace. Reconnect integrations for this account. After connecting, this library requires an app version that supports account switching."
+msgstr "Your personal notes and recordings stay on this device. Sync will connect them to this account and bring in its existing notes. Copies already in your previous account remain there. Team and shared notes stay with their workspace. Reconnect integrations for this account. After connecting, this library requires an app version that supports account switching."
 
 #: src/auth/cloudsync.ts
 msgid "Your plan’s sync device limit is reached. Remove another device to sync here."
