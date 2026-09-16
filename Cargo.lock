@@ -5473,50 +5473,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "desktop-auth"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "specta",
- "storage",
- "supabase-auth",
- "tempfile",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "desktop-db-runtime"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "db-app",
- "db-core",
- "db-execute",
- "db-migrate",
- "db-reactive",
- "db-sync",
- "e2ee",
- "fs-sync-core",
- "futures-util",
- "reqwest 0.13.2",
- "serde",
- "serde_json",
- "session-ingest",
- "sha2 0.11.0",
- "specta",
- "sqlx",
- "storage",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
- "wiremock",
-]
-
-[[package]]
 name = "desktop-gpui"
 version = "0.0.0"
 dependencies = [
@@ -5532,8 +5488,7 @@ dependencies = [
  "db-app",
  "db-core",
  "deeplink-core",
- "desktop-auth",
- "desktop-db-runtime",
+ "desktop-updater",
  "detect",
  "dirs 6.0.0",
  "export-core",
@@ -5541,7 +5496,6 @@ dependencies = [
  "futures-util",
  "gpui",
  "gtk",
- "host",
  "hound",
  "html5ever 0.29.1",
  "iana-time-zone",
@@ -5555,6 +5509,7 @@ dependencies = [
  "local-api-core",
  "markdown",
  "mime_guess",
+ "minisign-verify",
  "notification",
  "open",
  "owhisper-interface",
@@ -5564,14 +5519,13 @@ dependencies = [
  "reqwest 0.13.2",
  "rodio",
  "search-index",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "smallvec 1.15.1",
  "sqlx",
  "storage",
- "supabase-auth",
- "sysinfo 0.38.4",
  "tempfile",
  "template-app",
  "template-app-legacy",
@@ -5590,6 +5544,17 @@ dependencies = [
  "x11-clipboard",
  "x11rb",
  "zbus",
+]
+
+[[package]]
+name = "desktop-updater"
+version = "0.1.0"
+dependencies = [
+ "semver",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -18937,7 +18902,6 @@ dependencies = [
 name = "tauri-plugin-auth"
 version = "0.1.0"
 dependencies = [
- "desktop-auth",
  "serde",
  "serde_json",
  "specta",
@@ -19044,7 +19008,6 @@ dependencies = [
  "db-migrate",
  "db-reactive",
  "db-sync",
- "desktop-db-runtime",
  "e2ee",
  "fs-sync-core",
  "futures-util",
@@ -20083,6 +20046,7 @@ dependencies = [
 name = "tauri-plugin-updater2"
 version = "0.1.0"
 dependencies = [
+ "desktop-updater",
  "semver",
  "serde",
  "specta",
@@ -24579,6 +24543,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "pathdiff",
+ "serde_json",
  "tempfile",
  "toml 0.8.23",
  "xshell",
