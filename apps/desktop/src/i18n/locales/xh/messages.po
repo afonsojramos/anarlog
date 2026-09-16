@@ -120,11 +120,11 @@ msgstr ""
 msgid "{title} deleted"
 msgstr ""
 
-#: src/settings/general/account.tsx
+#: src/settings/general/billing.tsx
 msgid "{trialDaysRemaining} day left"
 msgstr ""
 
-#: src/settings/general/account.tsx
+#: src/settings/general/billing.tsx
 msgid "{trialDaysRemaining} days left"
 msgstr ""
 
@@ -409,7 +409,7 @@ msgid "Add organization"
 msgstr ""
 
 #: src/billing/trial-payment-reminder-dialog.tsx
-#: src/settings/general/account.tsx
+#: src/settings/general/billing.tsx
 msgid "Add payment method"
 msgstr ""
 
@@ -833,7 +833,12 @@ msgstr ""
 msgid "Beta"
 msgstr ""
 
-#: src/settings/general/account.tsx
+#: src/settings/general/billing.tsx
+#: src/sidebar/settings.tsx
+msgid "Billing"
+msgstr ""
+
+#: src/settings/general/billing.tsx
 msgid "Billing period"
 msgstr ""
 
@@ -873,6 +878,10 @@ msgstr ""
 
 #: src/settings/stats/insights.tsx
 msgid "Busiest day"
+msgstr ""
+
+#: src/calendar/components/event-chip.tsx
+msgid "Busy"
 msgstr ""
 
 #: src/settings/general/permissions.tsx
@@ -989,6 +998,7 @@ msgstr ""
 
 #: src/contacts/details.tsx
 #: src/contacts/organization-details.tsx
+#: src/settings/general/account-profile.tsx
 msgid "Change photo"
 msgstr ""
 
@@ -1365,10 +1375,11 @@ msgid "comments"
 msgstr ""
 
 #: src/contacts/details.tsx
+#: src/settings/general/account-profile.tsx
 msgid "Company"
 msgstr ""
 
-#: src/settings/general/account.tsx
+#: src/settings/general/billing.tsx
 msgid "Compare Free, Pro, Team, and Enterprise."
 msgstr ""
 
@@ -1390,10 +1401,6 @@ msgstr ""
 
 #: src/composer/index.tsx
 msgid "Composer"
-msgstr ""
-
-#: src/session/components/floating/options-menu.tsx
-msgid "Configure"
 msgstr ""
 
 #: src/composer/index.tsx
@@ -1671,10 +1678,6 @@ msgstr ""
 msgid "Could not open the web copy."
 msgstr ""
 
-#: src/shared/useNewNote.ts
-msgid "Could not prepare this upload. Please try again."
-msgstr ""
-
 #: src/session-sharing/management-panel.tsx
 msgid "Could not publish the desktop edits. Check the latest web copy and try again."
 msgstr ""
@@ -1774,12 +1777,12 @@ msgstr ""
 msgid "Couldn't load your badges. Reopen this page to try again."
 msgstr ""
 
-#: src/settings/stats/insights.tsx
+#: src/settings/stats/index.tsx
 msgid "Couldn't load your insights. Reopen this page to try again."
 msgstr ""
 
-#: src/settings/stats/index.tsx
-msgid "Couldn't load your stats. Reopen this page to try again."
+#: src/settings/general/account-profile.tsx
+msgid "Couldn't load your profile. Reopen this page to try again."
 msgstr ""
 
 #: src/settings/general/account.tsx
@@ -1788,6 +1791,10 @@ msgstr ""
 
 #: src/settings/stats/badge-collection.tsx
 msgid "Couldn't save your new badges."
+msgstr ""
+
+#: src/settings/general/account-profile.tsx
+msgid "Couldn't save your profile. Try again."
 msgstr ""
 
 #: src/folders/sidebar.tsx
@@ -1868,7 +1875,7 @@ msgstr ""
 msgid "Crisp"
 msgstr ""
 
-#: src/settings/general/account.tsx
+#: src/settings/general/billing.tsx
 msgid "Current"
 msgstr ""
 
@@ -1879,6 +1886,10 @@ msgstr ""
 
 #: src/settings/team/index.tsx
 msgid "Current domain"
+msgstr ""
+
+#: src/settings/general/billing.tsx
+msgid "Current plan"
 msgstr ""
 
 #: src/templates/template-sidebar.tsx
@@ -1929,6 +1940,7 @@ msgstr ""
 
 #: src/contacts/contact-page-header.tsx
 #: src/folders/folder-editor.tsx
+#: src/session/components/note-input/transcript/renderer/selection-menu.tsx
 #: src/session/components/outer-header/overflow/delete.tsx
 #: src/sidebar/automations.tsx
 #: src/sidebar/timeline/index.tsx
@@ -2163,6 +2175,7 @@ msgstr ""
 
 #: src/contacts/details.tsx
 #: src/session-sharing/delivery-panel.tsx
+#: src/settings/general/account-profile.tsx
 #: src/settings/team/index.tsx
 msgid "Email"
 msgstr ""
@@ -2460,7 +2473,7 @@ msgstr ""
 msgid "Forever"
 msgstr ""
 
-#: src/settings/general/account.tsx
+#: src/settings/general/billing.tsx
 msgid "Free"
 msgstr ""
 
@@ -2496,6 +2509,7 @@ msgid "Generating transcript..."
 msgstr ""
 
 #: src/session/components/note-input/enhanced/config-error.tsx
+#: src/settings/general/billing.tsx
 msgid "Get Pro"
 msgstr ""
 
@@ -2816,6 +2830,7 @@ msgid "Invited to join"
 msgstr ""
 
 #: src/contacts/details.tsx
+#: src/settings/general/account-profile.tsx
 msgid "Job Title"
 msgstr ""
 
@@ -2977,6 +2992,7 @@ msgid "Linear team"
 msgstr ""
 
 #: src/contacts/details.tsx
+#: src/settings/general/account-profile.tsx
 msgid "LinkedIn"
 msgstr ""
 
@@ -3046,16 +3062,13 @@ msgstr ""
 msgid "Loading your badges…"
 msgstr ""
 
-#: src/settings/stats/insights.tsx
-msgid "Loading your insights…"
-msgstr ""
-
 #: src/settings/stats/index.tsx
-msgid "Loading your stats…"
+msgid "Loading your insights…"
 msgstr ""
 
 #: src/changelog/index.tsx
 #: src/contacts/details.tsx
+#: src/settings/general/account-profile.tsx
 #: src/task/resource-view.tsx
 msgid "Loading..."
 msgstr ""
@@ -3094,7 +3107,7 @@ msgstr ""
 msgid "Main language"
 msgstr "Ulwimi oluphambili"
 
-#: src/settings/general/account.tsx
+#: src/settings/general/billing.tsx
 msgid "Manage billing"
 msgstr ""
 
@@ -3306,7 +3319,7 @@ msgstr ""
 msgid "Monday"
 msgstr ""
 
-#: src/settings/general/account.tsx
+#: src/settings/general/billing.tsx
 msgid "Monthly · ${monthlyPrice}/mo"
 msgstr ""
 
@@ -3315,7 +3328,6 @@ msgid "More"
 msgstr ""
 
 #: src/session-sharing/delivery-panel.tsx
-#: src/session/components/floating/options-menu.tsx
 msgid "More options"
 msgstr ""
 
@@ -3337,6 +3349,7 @@ msgstr ""
 
 #: src/contacts/details.tsx
 #: src/contacts/organization-details.tsx
+#: src/settings/general/account-profile.tsx
 #: src/settings/team/index.tsx
 msgid "Name"
 msgstr ""
@@ -3611,6 +3624,7 @@ msgid "notes"
 msgstr ""
 
 #: src/contacts/details.tsx
+#: src/settings/general/account-profile.tsx
 msgid "Notes"
 msgstr ""
 
@@ -3666,7 +3680,7 @@ msgstr ""
 msgid "On-device models can take a few minutes to warm up before text appears."
 msgstr ""
 
-#: src/settings/general/account.tsx
+#: src/settings/general/billing.tsx
 msgid "On-device transcription, recordings, and your own keys."
 msgstr ""
 
@@ -3755,7 +3769,7 @@ msgid "Open Settings"
 msgstr ""
 
 #: src/resource-sharing/share-dialog.tsx
-#: src/settings/general/account.tsx
+#: src/settings/general/billing.tsx
 msgid "Open Teams"
 msgstr ""
 
@@ -3864,10 +3878,6 @@ msgstr ""
 msgid "Paste the localhost redirect URL"
 msgstr ""
 
-#: src/settings/stats/insights.tsx
-msgid "Patterns in your captured conversations."
-msgstr ""
-
 #: src/settings/developers/webhooks.tsx
 msgid "Pause"
 msgstr ""
@@ -3926,6 +3936,7 @@ msgid "Permissions granted"
 msgstr ""
 
 #: src/contacts/details.tsx
+#: src/settings/general/account-profile.tsx
 msgid "Phone"
 msgstr ""
 
@@ -3933,11 +3944,11 @@ msgstr ""
 msgid "Pin"
 msgstr ""
 
-#: src/settings/general/account.tsx
+#: src/settings/general/billing.tsx
 msgid "Plan & Billing"
 msgstr ""
 
-#: src/settings/general/account.tsx
+#: src/settings/general/billing.tsx
 msgid "Plans"
 msgstr ""
 
@@ -4010,7 +4021,7 @@ msgstr ""
 msgid "Pro for every member, shared workspaces, roles, and centralized billing. $20 per person monthly or $200 yearly."
 msgstr ""
 
-#: src/settings/general/account.tsx
+#: src/settings/general/billing.tsx
 msgid "Pro trial"
 msgstr ""
 
@@ -4136,7 +4147,7 @@ msgstr ""
 msgid "Redo"
 msgstr ""
 
-#: src/settings/general/account.tsx
+#: src/settings/general/billing.tsx
 msgid "Refresh billing status"
 msgstr ""
 
@@ -4215,6 +4226,7 @@ msgid "Remove member?"
 msgstr ""
 
 #: src/contacts/contact-page-header.tsx
+#: src/settings/general/account-profile.tsx
 msgid "Remove photo"
 msgstr ""
 
@@ -4382,7 +4394,7 @@ msgstr ""
 msgid "Restoring cloud sync..."
 msgstr ""
 
-#: src/settings/general/account.tsx
+#: src/settings/general/billing.tsx
 msgid "Resume"
 msgstr ""
 
@@ -4424,6 +4436,7 @@ msgid "Runs once the AI summary for the meeting is ready."
 msgstr ""
 
 #: src/settings/dictionary/index.tsx
+#: src/settings/general/account-profile.tsx
 #: src/settings/sync/index.tsx
 #: src/templates/auto-form.tsx
 msgid "Save"
@@ -4469,8 +4482,16 @@ msgstr ""
 msgid "Save visible chat from supported meetings using Accessibility."
 msgstr ""
 
+#: src/settings/general/account-profile.tsx
+msgid "Saved"
+msgstr ""
+
 #: src/settings/sync/index.tsx
 msgid "Saved locally"
+msgstr ""
+
+#: src/settings/general/account-profile.tsx
+msgid "Saving..."
 msgstr ""
 
 #: src/settings/team/index.tsx
@@ -4912,6 +4933,7 @@ msgid "Sign in to add this folder"
 msgstr ""
 
 #: src/settings/general/account.tsx
+#: src/settings/general/billing.tsx
 msgid "Sign in to Anarlog"
 msgstr ""
 
@@ -5055,6 +5077,7 @@ msgstr ""
 msgid "Software Engineer"
 msgstr ""
 
+#: src/session/components/note-input/transcript/renderer/selection-menu.tsx
 #: src/shared/control.tsx
 msgid "Something went wrong"
 msgstr ""
@@ -5095,6 +5118,10 @@ msgstr ""
 #: src/settings/general/app-settings.tsx
 msgid "Start Anarlog at login"
 msgstr "Qalisa i-Anarlog ekungeneni"
+
+#: src/settings/general/billing.tsx
+msgid "Start free trial"
+msgstr ""
 
 #: src/auth/start-fresh-dialog.tsx
 msgid "Start fresh"
@@ -5162,10 +5189,6 @@ msgstr ""
 
 #: src/chat/components/input/index.tsx
 msgid "Starting…"
-msgstr ""
-
-#: src/sidebar/settings.tsx
-msgid "Stats"
 msgstr ""
 
 #: src/settings/general/app-settings.tsx
@@ -5294,6 +5317,10 @@ msgstr ""
 msgid "Switch"
 msgstr ""
 
+#: src/settings/general/billing.tsx
+msgid "Switch to Pro"
+msgstr ""
+
 #: src/templates/template-icon-picker.tsx
 msgid "Symbols"
 msgstr ""
@@ -5374,7 +5401,7 @@ msgstr ""
 msgid "Take the enhanced note with decisions and follow-ups."
 msgstr ""
 
-#: src/settings/general/account.tsx
+#: src/settings/general/billing.tsx
 msgid "Talk to sales"
 msgstr ""
 
@@ -5567,10 +5594,6 @@ msgstr ""
 msgid "Tomorrow"
 msgstr ""
 
-#: src/shared/useNewNote.ts
-msgid "Too many uploads are waiting. Open an existing upload and try again."
-msgstr ""
-
 #: src/settings/general/spoken-languages.tsx
 msgid "Transcribe meetings that use more than one language."
 msgstr ""
@@ -5615,7 +5638,7 @@ msgstr ""
 msgid "Travel & Places"
 msgstr ""
 
-#: src/settings/general/account.tsx
+#: src/settings/general/billing.tsx
 msgid "Trial"
 msgstr ""
 
@@ -5771,6 +5794,10 @@ msgstr ""
 msgid "Update project notes in Notion"
 msgstr ""
 
+#: src/settings/general/account-profile.tsx
+msgid "Update your personal contact card. Your sign-in email is managed separately."
+msgstr ""
+
 #: src/session-sharing/access-management.tsx
 msgid "Updating access"
 msgstr ""
@@ -5808,28 +5835,18 @@ msgstr ""
 msgid "Upgrade to use"
 msgstr ""
 
-#: src/session/components/floating/options-menu.tsx
 #: src/session/components/note-input/transcript/screens/empty.tsx
 #: src/session/components/outer-header/overflow/index.tsx
 msgid "Upload audio"
-msgstr ""
-
-#: src/shared/useNewNote.ts
-msgid "Upload Audio"
 msgstr ""
 
 #: src/session/components/note-input/transcript/screens/empty.tsx
 msgid "Upload audio or a transcript file to populate this note."
 msgstr ""
 
-#: src/session/components/floating/options-menu.tsx
 #: src/session/components/note-input/transcript/screens/empty.tsx
 #: src/session/components/outer-header/overflow/index.tsx
 msgid "Upload transcript"
-msgstr ""
-
-#: src/shared/useNewNote.ts
-msgid "Upload Transcript"
 msgstr ""
 
 #: src/settings/developers/cloud-api.tsx
@@ -6036,11 +6053,11 @@ msgstr ""
 msgid "Write to a folder"
 msgstr ""
 
-#: src/settings/general/account.tsx
+#: src/settings/general/billing.tsx
 msgid "Yearly · ${yearlyPrice}/yr"
 msgstr ""
 
-#: src/settings/general/account.tsx
+#: src/settings/general/billing.tsx
 msgid "Yearly · ${yearlyPrice}/yr (save ${yearlySavings})"
 msgstr ""
 
@@ -6081,7 +6098,7 @@ msgstr ""
 msgid "You're on a Pro trial"
 msgstr ""
 
-#: src/settings/general/account.tsx
+#: src/settings/general/billing.tsx
 msgid "You're on the <0>{planLabel}</0> plan"
 msgstr ""
 
@@ -6126,7 +6143,11 @@ msgstr ""
 msgid "Your dictionary is empty"
 msgstr ""
 
-#: src/settings/stats/insights.tsx
+#: src/settings/general/account-profile.tsx
+msgid "Your info"
+msgstr ""
+
+#: src/settings/stats/index.tsx
 msgid "Your insights"
 msgstr ""
 
@@ -6175,7 +6196,7 @@ msgid "Your Pro trial ends in 1 day"
 msgstr ""
 
 #: src/billing/trial-ended-dialog.tsx
-#: src/settings/general/account.tsx
+#: src/settings/general/billing.tsx
 msgid "Your Pro trial has ended"
 msgstr ""
 
@@ -6185,10 +6206,6 @@ msgstr ""
 
 #: src/settings/general/e2ee-setup.tsx
 msgid "Your recovery key encrypts synced notes before they leave this device. Anarlog cannot read or recover it."
-msgstr ""
-
-#: src/settings/stats/index.tsx
-msgid "Your stats"
 msgstr ""
 
 #: src/settings/sync/index.tsx
