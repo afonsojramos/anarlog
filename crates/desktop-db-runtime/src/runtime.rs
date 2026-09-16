@@ -1144,6 +1144,24 @@ impl<S: QueryEventSink> DesktopDbRuntime<S> {
             .await
     }
 
+    pub async fn connect_local_library(
+        &self,
+        account_user_id: String,
+        expected_library_workspace_id: String,
+    ) -> Result<()> {
+        self.suspend_cloudsync().await?;
+        let _control_operation = self.cloudsync_control_guard().await?;
+        let _write_guard = self.synced_write_barrier.write().await;
+        self.ensure_app_schema().await?;
+        anlg_db_app::connect_local_library(
+            self.db.pool(),
+            &account_user_id,
+            &expected_library_workspace_id,
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn bind_cloudsync_account_with_lock_timeout(
         &self,
         account_user_id: String,
