@@ -38,6 +38,22 @@ pub const E2EE_DOMAIN_TABLES: &[&str] = &[
     "transcripts",
 ];
 
+/// SQL predicate for the `dirty` alias, shared by encryption and pending-work status.
+/// 1.4.23 rejects new tables. Keep their new rows local until the compatible
+/// reader has shipped, without stranding rows already synced by Nightly.
+pub const E2EE_DIRTY_ROW_WRITE_COMPATIBILITY_PREDICATE: &str = "(
+  dirty.table_name IN (
+    'action_items', 'humans', 'organizations', 'session_attachments',
+    'session_documents', 'session_participants', 'sessions',
+    'synced_preferences', 'transcripts'
+  ) OR EXISTS (
+    SELECT 1 FROM e2ee_local_state AS previous
+    WHERE previous.workspace_id = dirty.workspace_id
+      AND previous.table_name = dirty.table_name
+      AND previous.row_id = dirty.row_id
+  )
+)";
+
 const ROW_MANIFEST_FIELD: &str = "$row";
 const E2EE_ENCRYPT_ROW_LIMIT: i64 = 64;
 const E2EE_APPLY_ROW_LIMIT: usize = 16;
@@ -103,6 +119,7 @@ pub struct E2eeReplicaStats {
     pub encrypted_fields: u64,
     pub applied_fields: u64,
     pub skipped_local_changes: u64,
+    pub incomplete_chunk_columns: u64,
     pub rejected_rollbacks: u64,
     pub rejected_unwitnessed: u64,
     pub parked_records: u64,
