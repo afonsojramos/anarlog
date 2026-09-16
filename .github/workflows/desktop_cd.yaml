@@ -215,6 +215,7 @@ jobs:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN_HYPRNOTE_2 }}
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_API_URL: "https://api.anarlog.so"
       - uses: ./.github/actions/apple_cert
         id: apple-cert
         with:
@@ -458,6 +459,7 @@ jobs:
           TAURI_ENV_TARGET_TRIPLE: ${{ matrix.target }}
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_API_URL: https://api.anarlog.so
       - run: |
           BUILD_ARGS=(
             --ci
