@@ -621,6 +621,14 @@ pub(super) async fn apply_e2ee_replica_changes_inner(
                 upsert_local_state(&mut transaction, &state).await?;
                 rollback_if_cancelled!(transaction, is_cancelled);
                 stats.applied_fields += 1;
+                super::library::queue_other_connections(
+                    &mut transaction,
+                    &workspace_id,
+                    &table,
+                    &row_id,
+                    state.edited_at_ms.unwrap_or(0),
+                )
+                .await?;
                 remove_apply_guard(&mut transaction, &workspace_id, &table, &row_id).await?;
                 rollback_if_cancelled!(transaction, is_cancelled);
                 delete_reconciled_replica_entries_in_transaction(&mut transaction, &pending)
@@ -958,14 +966,29 @@ pub(super) async fn apply_e2ee_replica_changes_inner(
             queue_dirty_row(&mut transaction, &workspace_id, &table, &row_id).await?;
             rollback_if_cancelled!(transaction, is_cancelled);
         }
-        remove_apply_guard(&mut transaction, &workspace_id, &table, &row_id).await?;
-        rollback_if_cancelled!(transaction, is_cancelled);
-        pending.retain(|(record_id, _)| !deferred_pending_ids.contains(record_id));
-        crate::session_deletion::reconcile_session_deletion(
+        let edited_at_ms = states
+            .values()
+            .filter_map(|state| state.edited_at_ms)
+            .max()
+            .unwrap_or(0);
+        super::library::queue_other_connections(
             &mut transaction,
             &workspace_id,
             &table,
             &row_id,
+            edited_at_ms,
+        )
+        .await?;
+        remove_apply_guard(&mut transaction, &workspace_id, &table, &row_id).await?;
+        rollback_if_cancelled!(transaction, is_cancelled);
+        pending.retain(|(record_id, _)| !deferred_pending_ids.contains(record_id));
+        let identity =
+            super::library::LibraryIdentity::load(&mut *transaction, &workspace_id).await?;
+        crate::session_deletion::reconcile_session_deletion(
+            &mut transaction,
+            &identity.local_workspace_id,
+            &table,
+            identity.local_row_id(&table, &row_id),
         )
         .await?;
         rollback_if_cancelled!(transaction, is_cancelled);
