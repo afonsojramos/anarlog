@@ -335,9 +335,19 @@ describe("SegmentRenderer", () => {
     fireEvent.keyDown(editor, { key: "Enter", shiftKey: true });
     expect(screen.queryByRole("button", { name: "Choose speaker" })).toBeNull();
     fireEvent.keyDown(editor, { key: "Enter" });
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Choose speaker" }),
-    );
+    const chooseSpeaker = await screen.findByRole("button", {
+      name: "Choose speaker",
+    });
+    expect(
+      view.container.querySelector("[data-transcript-speaker-split]")
+        ?.textContent,
+    ).toBe("Second line.");
+    expect(editor.hidden).toBe(true);
+    expect(view.container.contains(chooseSpeaker)).toBe(false);
+    expect(
+      chooseSpeaker.closest("[data-radix-popper-content-wrapper]"),
+    ).not.toBeNull();
+    fireEvent.click(chooseSpeaker);
     await waitFor(() =>
       expect(mocks.splitTranscriptSpeaker).toHaveBeenCalledWith({
         transcriptId: "transcript-1",
@@ -348,6 +358,47 @@ describe("SegmentRenderer", () => {
         humanId: "human-2",
       }),
     );
+  });
+  it("cancels the split preview without saving or losing edited text", async () => {
+    const view = render(
+      <SegmentRenderer
+        segment={createSegment()}
+        offsetMs={0}
+        transcriptId="transcript-1"
+        speakerLabel="Speaker 1"
+        currentMs={0}
+        seekAndPlay={vi.fn()}
+        audioExists
+        search={EMPTY_TRANSCRIPT_SEARCH}
+        editMode
+      />,
+    );
+    const editor = view.container.querySelector<HTMLElement>(
+      "[data-transcript-editor]",
+    )!;
+    editor.textContent = "Edited sentence. Next speaker.";
+    const range = document.createRange();
+    range.setStart(editor.firstChild!, 17);
+    range.collapse(true);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    fireEvent.keyDown(editor, { key: "Enter" });
+    const picker = await screen.findByRole("button", {
+      name: "Choose speaker",
+    });
+    expect(
+      view.container.querySelector("[data-transcript-speaker-split]")
+        ?.textContent,
+    ).toBe("Next speaker.");
+    fireEvent.keyDown(picker, { key: "Escape" });
+    await waitFor(() =>
+      expect(
+        view.container.querySelector("[data-transcript-split-preview]"),
+      ).toBeNull(),
+    );
+    expect(editor.hidden).toBe(false);
+    expect(editor.textContent).toBe("Edited sentence. Next speaker.");
+    expect(mocks.splitTranscriptSpeaker).not.toHaveBeenCalled();
   });
 });
 

@@ -75,7 +75,7 @@ export function SelectionMenu({
   audioExists,
   onContextClose,
   onAction,
-  onAssignSpeaker,
+  onChangeSpeaker,
   onEdit,
 }: {
   containerRef: React.RefObject<HTMLElement | null>;
@@ -87,10 +87,7 @@ export function SelectionMenu({
     selection: TranscriptWordSelection,
   ) => void;
   onEdit?: (selection: TranscriptWordSelection) => void;
-  onAssignSpeaker?: (
-    selection: TranscriptWordSelection,
-    humanId: string,
-  ) => void | Promise<void>;
+  onChangeSpeaker?: (selection: TranscriptWordSelection) => void;
 }) {
   return (
     <>
@@ -99,7 +96,7 @@ export function SelectionMenu({
         suspended={contextRequest !== null}
         audioExists={audioExists}
         onAction={onAction}
-        onAssignSpeaker={onAssignSpeaker}
+        onChangeSpeaker={onChangeSpeaker}
         onEdit={onEdit}
       />
       {contextRequest && (
@@ -110,7 +107,7 @@ export function SelectionMenu({
           audioExists={audioExists}
           onClose={onContextClose}
           onAction={onAction}
-          onAssignSpeaker={onAssignSpeaker}
+          onChangeSpeaker={onChangeSpeaker}
           onEdit={onEdit}
         />
       )}
@@ -254,7 +251,7 @@ function TextSelectionMenu({
   suspended,
   audioExists,
   onAction,
-  onAssignSpeaker,
+  onChangeSpeaker,
   onEdit,
 }: {
   containerRef: React.RefObject<HTMLElement | null>;
@@ -265,10 +262,7 @@ function TextSelectionMenu({
     selection: TranscriptWordSelection,
   ) => void;
   onEdit?: (selection: TranscriptWordSelection) => void;
-  onAssignSpeaker?: (
-    selection: TranscriptWordSelection,
-    humanId: string,
-  ) => void | Promise<void>;
+  onChangeSpeaker?: (selection: TranscriptWordSelection) => void;
 }) {
   const { isVisible, selection, hide, refs, floatingStyles, storedRange } =
     useSelectionMenuState({ containerRef });
@@ -302,7 +296,7 @@ function TextSelectionMenu({
       audioExists={audioExists}
       onClose={handleClose}
       onAction={onAction}
-      onAssignSpeaker={onAssignSpeaker}
+      onChangeSpeaker={onChangeSpeaker}
       onEdit={onEdit}
     />
   );
@@ -314,7 +308,7 @@ function ContextSelectionMenu({
   audioExists,
   onClose,
   onAction,
-  onAssignSpeaker,
+  onChangeSpeaker,
   onEdit,
 }: {
   request: TranscriptContextMenuRequest;
@@ -326,10 +320,7 @@ function ContextSelectionMenu({
     selection: TranscriptWordSelection,
   ) => void;
   onEdit?: (selection: TranscriptWordSelection) => void;
-  onAssignSpeaker?: (
-    selection: TranscriptWordSelection,
-    humanId: string,
-  ) => void | Promise<void>;
+  onChangeSpeaker?: (selection: TranscriptWordSelection) => void;
 }) {
   const virtualRect = useMemo(
     () => new DOMRect(request.x, request.y, 0, 0),
@@ -375,7 +366,7 @@ function ContextSelectionMenu({
       audioExists={audioExists}
       onClose={handleClose}
       onAction={onAction}
-      onAssignSpeaker={onAssignSpeaker}
+      onChangeSpeaker={onChangeSpeaker}
       onEdit={onEdit}
     />
   );
@@ -390,7 +381,7 @@ function SelectionFloatingMenu({
   audioExists,
   onClose,
   onAction,
-  onAssignSpeaker,
+  onChangeSpeaker,
   onEdit,
 }: {
   selection: TranscriptWordSelection;
@@ -405,25 +396,14 @@ function SelectionFloatingMenu({
     selection: TranscriptWordSelection,
   ) => void;
   onEdit?: (selection: TranscriptWordSelection) => void;
-  onAssignSpeaker?: (
-    selection: TranscriptWordSelection,
-    humanId: string,
-  ) => void | Promise<void>;
+  onChangeSpeaker?: (selection: TranscriptWordSelection) => void;
 }) {
-  const [view, setView] = useState<"actions" | "speaker">("actions");
   const handleAction = useCallback(
     (action: "copy" | "play") => {
       onAction?.(action, selection);
       onClose();
     },
     [onAction, onClose, selection],
-  );
-  const handleAssign = useCallback(
-    async (humanId: string) => {
-      await onAssignSpeaker?.(selection, humanId);
-      onClose();
-    },
-    [onAssignSpeaker, onClose, selection],
   );
   const handleMouseDown = useCallback((event: MouseEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -440,65 +420,55 @@ function SelectionFloatingMenu({
         <div
           ref={floatingRef}
           style={{ ...floatingStyles, zIndex: 50 }}
-          className={cn([
-            MENU_CONTAINER_CLASSES,
-            view === "speaker"
-              ? "max-h-[min(28rem,calc(100vh-1rem))] w-80"
-              : "min-w-40",
-          ])}
-          onMouseDown={view === "actions" ? handleMouseDown : undefined}
+          className={cn([MENU_CONTAINER_CLASSES, "min-w-40"])}
+          onMouseDown={handleMouseDown}
         >
-          {view === "actions" ? (
-            <div className="flex flex-col gap-0.5">
-              {onEdit && (
-                <button
-                  type="button"
-                  className={cn(MENU_BUTTON_CLASSES)}
-                  onClick={() => {
-                    onClose();
-                    onEdit(selection);
-                  }}
-                >
-                  <Pencil className="size-3.5 shrink-0" />
-                  <Trans>Edit</Trans>
-                </button>
-              )}
-              {selection.sessionId && onAssignSpeaker && (
-                <button
-                  type="button"
-                  className={cn(MENU_BUTTON_CLASSES)}
-                  onClick={() => setView("speaker")}
-                >
-                  <UserSwitch className="size-3.5" />
-                  <Trans>Change speaker from here</Trans>
-                </button>
-              )}
-              {audioExists && (
-                <button
-                  type="button"
-                  className={cn(MENU_BUTTON_CLASSES)}
-                  onClick={() => handleAction("play")}
-                >
-                  <Play className="size-3.5" />
-                  <Trans>Play from here</Trans>
-                </button>
-              )}
+          <div className="flex flex-col gap-0.5">
+            {onEdit && (
               <button
                 type="button"
                 className={cn(MENU_BUTTON_CLASSES)}
-                onClick={() => handleAction("copy")}
+                onClick={() => {
+                  onClose();
+                  onEdit(selection);
+                }}
               >
-                <Copy className="size-3.5 shrink-0" />
-                <Trans>Copy</Trans>
+                <Pencil className="size-3.5 shrink-0" />
+                <Trans>Edit</Trans>
               </button>
-            </div>
-          ) : (
-            <SpeakerParticipantPicker
-              sessionId={selection.sessionId}
-              showAssignmentScope={false}
-              onSelect={handleAssign}
-            />
-          )}
+            )}
+            {selection.sessionId && onChangeSpeaker && (
+              <button
+                type="button"
+                className={cn(MENU_BUTTON_CLASSES)}
+                onClick={() => {
+                  onClose();
+                  onChangeSpeaker?.(selection);
+                }}
+              >
+                <UserSwitch className="size-3.5" />
+                <Trans>Change speaker from here</Trans>
+              </button>
+            )}
+            {audioExists && (
+              <button
+                type="button"
+                className={cn(MENU_BUTTON_CLASSES)}
+                onClick={() => handleAction("play")}
+              >
+                <Play className="size-3.5" />
+                <Trans>Play from here</Trans>
+              </button>
+            )}
+            <button
+              type="button"
+              className={cn(MENU_BUTTON_CLASSES)}
+              onClick={() => handleAction("copy")}
+            >
+              <Copy className="size-3.5 shrink-0" />
+              <Trans>Copy</Trans>
+            </button>
+          </div>
         </div>
       </FloatingPortal>
     </>

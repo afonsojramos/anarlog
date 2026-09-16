@@ -20,7 +20,6 @@ import {
   getTranscriptMergeTarget,
   getTranscriptSectionKeyFromElement,
   getTranscriptSectionSelection,
-  getTranscriptSelectionFromHere,
   mergeTranscriptSelections,
   type TranscriptWordSelection,
 } from "./selection";
@@ -212,18 +211,23 @@ export function TranscriptViewer({
     },
     [onEditModeChange],
   );
-  const handleAssignSpeakerFromHere = useCallback(
-    async (selection: TranscriptWordSelection, humanId: string) => {
-      const { entries } = collectEntries(visibleTranscriptIdsRef.current);
-      const fromHere = getTranscriptSelectionFromHere(
-        selection,
-        entries.values(),
+  const handleChangeSpeakerSelection = useCallback(
+    (selection: TranscriptWordSelection) => {
+      flushSync(() => onEditModeChange?.(true));
+      const container = containerRef.current;
+      if (!container) return;
+      const editor = focusTranscriptSelection(selection, container);
+      if (!editor) return;
+      window.getSelection()?.collapseToStart();
+      editor.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+        }),
       );
-      if (fromHere) {
-        await handleAssignSpeaker(fromHere, humanId, false);
-      }
     },
-    [collectEntries, handleAssignSpeaker],
+    [onEditModeChange],
   );
   const handleMergeSegments = useCallback(async () => {
     const { order, entries } = collectEntries(visibleTranscriptIdsRef.current);
@@ -508,7 +512,7 @@ export function TranscriptViewer({
             onContextClose={handleContextClose}
             onAction={handleSelectionAction}
             onEdit={onEditModeChange ? handleEditSelection : undefined}
-            onAssignSpeaker={handleAssignSpeakerFromHere}
+            onChangeSpeaker={handleChangeSpeakerSelection}
           />
         </div>
 

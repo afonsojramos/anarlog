@@ -97,28 +97,25 @@ describe("SelectionMenu", () => {
     ).not.toBeNull();
   });
 
-  it("keeps the speaker picker inside the viewport without a back row", () => {
+  it("closes the text menu and requests a speaker split instead of expanding the picker", () => {
     const request = createContextRequest();
-
+    const calls: string[] = [];
+    const onChangeSpeaker = vi.fn(() => calls.push("split"));
     render(
       <SelectionMenu
         containerRef={createRef()}
         contextRequest={request}
         audioExists={false}
-        onContextClose={vi.fn()}
-        onAssignSpeaker={vi.fn()}
+        onContextClose={() => calls.push("close")}
+        onChangeSpeaker={onChangeSpeaker}
       />,
     );
-
     fireEvent.click(
       screen.getByRole("button", { name: "Change speaker from here" }),
     );
-
-    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
-    const confirm = screen.getByRole("button", { name: "Confirm" });
-    expect(confirm.parentElement?.className).toContain(
-      "max-h-[min(28rem,calc(100vh-1rem))]",
-    );
+    expect(onChangeSpeaker).toHaveBeenCalledWith(request.selection);
+    expect(calls).toEqual(["close", "split"]);
+    expect(screen.queryByRole("button", { name: "Confirm" })).toBeNull();
   });
 
   it("hides playback when the transcript has no audio", () => {
@@ -128,7 +125,7 @@ describe("SelectionMenu", () => {
         contextRequest={createContextRequest()}
         audioExists={false}
         onContextClose={vi.fn()}
-        onAssignSpeaker={vi.fn()}
+        onChangeSpeaker={vi.fn()}
       />,
     );
 
@@ -146,7 +143,7 @@ describe("SelectionMenu", () => {
         contextRequest={createContextRequest()}
         audioExists
         onContextClose={vi.fn()}
-        onAssignSpeaker={vi.fn()}
+        onChangeSpeaker={vi.fn()}
       />,
     );
 
@@ -163,7 +160,7 @@ describe("SelectionMenu", () => {
         contextRequest={request}
         audioExists={false}
         onContextClose={vi.fn()}
-        onAssignSpeaker={vi.fn()}
+        onChangeSpeaker={vi.fn()}
       />,
     );
 

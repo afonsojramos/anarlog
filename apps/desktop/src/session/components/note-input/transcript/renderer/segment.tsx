@@ -1,4 +1,4 @@
-import { Fragment, memo, useCallback, useMemo, useState } from "react";
+import { Fragment, memo, useCallback, useMemo, useRef, useState } from "react";
 
 import {
   Popover,
@@ -240,6 +240,7 @@ const EditableSegmentText = memo(function EditableSegmentText({
   transcriptId: string;
   sessionId?: string;
 }) {
+  const editorRef = useRef<HTMLDivElement>(null);
   const [speakerChange, setSpeakerChange] = useState<{
     text: string;
     offset: number;
@@ -256,8 +257,9 @@ const EditableSegmentText = memo(function EditableSegmentText({
   );
   const handleBlur = useCallback(
     (event: React.FocusEvent<HTMLDivElement>) => {
+      if (speakerChange) return;
       const nextText = normalizeEditableTranscriptText(
-        event.currentTarget.innerText,
+        event.currentTarget.innerText ?? event.currentTarget.textContent ?? "",
       );
       if (nextText === originalText || wordIds.length === 0) {
         return;
@@ -271,7 +273,7 @@ const EditableSegmentText = memo(function EditableSegmentText({
         console.error("[transcript] failed to update text", error);
       });
     },
-    [originalText, transcriptId, wordIds],
+    [originalText, speakerChange, transcriptId, wordIds],
   );
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -313,35 +315,55 @@ const EditableSegmentText = memo(function EditableSegmentText({
         if (!open) setSpeakerChange(null);
       }}
     >
-      <PopoverAnchor asChild>
+      <div
+        ref={editorRef}
+        hidden={speakerChange !== null}
+        data-transcript-segment-content
+        data-transcript-editor
+        data-transcript-edit-word-ids={JSON.stringify(wordIds)}
+        data-transcript-edit-word-start-ms={JSON.stringify(
+          segment.words.map((word) => word.start_ms),
+        )}
+        data-transcript-edit-word-texts={JSON.stringify(
+          segment.words.map(getWordDisplayText),
+        )}
+        contentEditable
+        suppressContentEditableWarning
+        spellCheck
+        className={cn([
+          "overflow-wrap-anywhere mt-1.5 rounded-md text-sm leading-relaxed wrap-break-word outline-hidden",
+          "select-text-deep",
+        ])}
+        onBlur={handleBlur}
+        onKeyDown={handleKeyDown}
+      >
+        {originalText}
+      </div>
+      {speakerChange && (
         <div
-          data-transcript-segment-content
-          data-transcript-editor
-          data-transcript-edit-word-ids={JSON.stringify(wordIds)}
-          data-transcript-edit-word-start-ms={JSON.stringify(
-            segment.words.map((word) => word.start_ms),
-          )}
-          data-transcript-edit-word-texts={JSON.stringify(
-            segment.words.map(getWordDisplayText),
-          )}
-          contentEditable
-          suppressContentEditableWarning
-          spellCheck
-          className={cn([
-            "overflow-wrap-anywhere mt-1.5 rounded-md text-sm leading-relaxed wrap-break-word outline-hidden",
-            "select-text-deep",
-          ])}
-          onBlur={handleBlur}
-          onKeyDown={handleKeyDown}
+          data-transcript-split-preview
+          className="mt-1.5 text-sm leading-relaxed wrap-break-word"
         >
-          {originalText}
+          {speakerChange.text.slice(0, speakerChange.offset).trim()}
+          <PopoverAnchor asChild>
+            <div data-transcript-speaker-split className="mt-5">
+              {speakerChange.text.slice(speakerChange.offset).trim()}
+            </div>
+          </PopoverAnchor>
         </div>
-      </PopoverAnchor>
+      )}
       <PopoverContent
         variant="app"
         side="bottom"
         align="start"
-        className="w-80"
+        collisionPadding={12}
+        className="flex max-h-(--radix-popover-content-available-height) w-80 max-w-[calc(100vw-24px)] flex-col overflow-hidden"
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          requestAnimationFrame(() =>
+            editorRef.current?.focus({ preventScroll: true }),
+          );
+        }}
       >
         <SpeakerParticipantPicker
           sessionId={sessionId}
