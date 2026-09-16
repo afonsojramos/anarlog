@@ -8,6 +8,7 @@ import {
 } from "@floating-ui/react";
 import { t } from "@lingui/core/macro";
 import { Trans } from "@lingui/react/macro";
+import { useMutation } from "@tanstack/react-query";
 import {
   type MouseEvent,
   useCallback,
@@ -23,6 +24,7 @@ import {
   Copy,
   Pencil,
   Play,
+  Trash,
   UserSwitch,
   X,
 } from "@anlg/ui/components/icons";
@@ -31,6 +33,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@anlg/ui/components/ui/popover";
+import { sonnerToast } from "@anlg/ui/components/ui/toast";
 import { cn } from "@anlg/utils";
 
 import {
@@ -122,6 +125,7 @@ export function MultiSelectionBar({
   onClear,
   onAssignSpeaker,
   onMerge,
+  onDelete,
 }: {
   selection: TranscriptWordSelection;
   entryCount: number;
@@ -132,6 +136,7 @@ export function MultiSelectionBar({
     humanId: string,
   ) => void | Promise<void>;
   onMerge?: () => void | Promise<void>;
+  onDelete?: (selection: TranscriptWordSelection) => Promise<void>;
 }) {
   const fabSelectionHost = useSyncExternalStore(
     subscribeSessionFabSelectionHost,
@@ -152,6 +157,14 @@ export function MultiSelectionBar({
     onClear();
   }, [onClear, onMerge]);
 
+  const deleteMutation = useMutation({
+    mutationFn: async () => {
+      await onDelete?.(selection);
+    },
+    onSuccess: onClear,
+    onError: () => sonnerToast.error(t`Something went wrong`),
+  });
+
   const bar = (
     <div
       className={cn([
@@ -169,6 +182,7 @@ export function MultiSelectionBar({
         <PopoverTrigger asChild>
           <button
             type="button"
+            disabled={deleteMutation.isPending}
             className="bg-primary text-primary-foreground hover:bg-primary/90 flex h-7 items-center gap-1.5 rounded-full px-3 font-medium"
           >
             <UserSwitch className="size-3.5" />
@@ -192,7 +206,7 @@ export function MultiSelectionBar({
       {onMerge ? (
         <button
           type="button"
-          disabled={!canMerge}
+          disabled={!canMerge || deleteMutation.isPending}
           className={cn([
             "hover:bg-accent flex h-7 items-center gap-1.5 rounded-full px-2 font-medium",
             "disabled:pointer-events-none disabled:opacity-50",
@@ -203,9 +217,24 @@ export function MultiSelectionBar({
           <Trans>Merge</Trans>
         </button>
       ) : null}
+      {onDelete && (
+        <button
+          type="button"
+          disabled={deleteMutation.isPending}
+          className={cn([
+            "text-destructive hover:bg-destructive/10 flex h-7 items-center gap-1.5 rounded-full px-2 font-medium",
+            "disabled:pointer-events-none disabled:opacity-50",
+          ])}
+          onClick={() => deleteMutation.mutate()}
+        >
+          <Trash className="size-3.5" />
+          <Trans>Delete</Trans>
+        </button>
+      )}
       <button
         type="button"
         aria-label={t`Clear selection`}
+        disabled={deleteMutation.isPending}
         className="hover:bg-accent flex size-7 items-center justify-center rounded-full"
         onClick={onClear}
       >

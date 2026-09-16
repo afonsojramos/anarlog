@@ -957,6 +957,42 @@ describe("transcript SQLite queries", () => {
     ]);
   });
 
+  it("clears only selected transcript words while preserving timing and speaker metadata", async () => {
+    const words = ["one", "two", "three"].map((text, index) => ({
+      id: `word-${index}`,
+      text,
+      start_ms: index * 100,
+      end_ms: (index + 1) * 100,
+      channel: 1,
+    }));
+    const hints = [
+      {
+        id: "hint-1",
+        word_id: "word-0",
+        type: "user_speaker_assignment",
+        value: JSON.stringify({ human_id: "human-1" }),
+      },
+    ];
+    mocks.execute.mockResolvedValueOnce([
+      {
+        words_json: JSON.stringify(words),
+        speaker_hints_json: JSON.stringify(hints),
+      },
+    ]);
+    await updateTranscriptSegmentText({
+      transcriptId: "transcript-1",
+      wordIds: ["word-0", "word-2"],
+      text: "",
+    });
+    const statement = mocks.executeTransaction.mock.calls[0]?.[0]?.[0];
+    expect(JSON.parse(String(statement?.params[0]))).toEqual([
+      { ...words[0], text: "" },
+      words[1],
+      { ...words[2], text: "" },
+    ]);
+    expect(JSON.parse(String(statement?.params[1]))).toEqual(hints);
+  });
+
   it("removes one human's assignments from every session transcript", async () => {
     mocks.execute
       .mockResolvedValueOnce([{ id: "transcript-1" }])

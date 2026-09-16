@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { createRef } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -6,6 +12,7 @@ import { TranscriptViewer } from "./index";
 import type { TranscriptWordSelection } from "./selection";
 
 const mocks = vi.hoisted(() => ({
+  updateTranscriptSegmentText: vi.fn().mockResolvedValue(undefined),
   scrollToBottom: vi.fn(),
   scrollToTop: vi.fn(),
   scrollDetection: {
@@ -45,6 +52,11 @@ vi.mock("./selection-context", async (importOriginal) => {
   };
 });
 
+vi.mock("~/stt/queries", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("~/stt/queries")>()),
+  updateTranscriptSegmentText: mocks.updateTranscriptSegmentText,
+}));
+
 vi.mock("~/audio-player", () => ({
   useAudioPlayer: () => ({
     state: "stopped",
@@ -65,9 +77,11 @@ vi.mock("./selection-menu", () => ({
   MultiSelectionBar: ({
     entryCount,
     selection,
+    onDelete,
   }: {
     entryCount: number;
     selection: TranscriptWordSelection;
+    onDelete?: (selection: TranscriptWordSelection) => Promise<void>;
   }) => (
     <div
       data-testid="multi-selection-bar"
@@ -76,6 +90,9 @@ vi.mock("./selection-menu", () => ({
         .join(",")}
     >
       {entryCount}
+      {onDelete && (
+        <button aria-label="Delete" onClick={() => void onDelete(selection)} />
+      )}
     </div>
   ),
 }));
@@ -145,6 +162,10 @@ vi.mock("./transcript", () => ({
 }));
 
 vi.mock("./viewport-hooks", () => ({
+  preserveScrollPosition: (
+    _container: unknown,
+    action: () => Promise<unknown>,
+  ) => action(),
   useAutoScroll: vi.fn(),
   usePlaybackAutoScroll: vi.fn(),
   useScrollDetection: () => ({
@@ -157,6 +178,7 @@ vi.mock("./viewport-hooks", () => ({
 describe("TranscriptViewer", () => {
   beforeEach(() => {
     cleanup();
+    mocks.updateTranscriptSegmentText.mockClear();
     mocks.scrollToBottom.mockReset();
     mocks.scrollToTop.mockReset();
     mocks.scrollDetection.isAtTop = true;
@@ -391,6 +413,56 @@ describe("TranscriptViewer", () => {
     expect(screen.getByTestId("multi-selection-bar").textContent).toBe("1");
     fireEvent.keyUp(editor, { key: "ArrowUp", code: "ArrowUp" });
   });
+
+  it("saves removal of selected blocks across transcripts", async () => {
+    render(
+      <TranscriptViewer
+        transcriptIds={["1", "2", "3"]}
+        liveSegments={[]}
+        currentActive={false}
+        editMode
+        scrollRef={createRef()}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("segment-header-1"));
+    fireEvent.click(screen.getByTestId("segment-header-3"));
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await waitFor(() =>
+      expect(mocks.updateTranscriptSegmentText).toHaveBeenCalledTimes(2),
+    );
+    expect(mocks.updateTranscriptSegmentText).toHaveBeenCalledWith({
+      transcriptId: "1",
+      wordIds: ["word-1"],
+      text: "",
+    });
+    expect(mocks.updateTranscriptSegmentText).toHaveBeenCalledWith({
+      transcriptId: "3",
+      wordIds: ["word-3"],
+      text: "",
+    });
+  });
+
+  it.each([
+    [false, false],
+    [true, true],
+  ])(
+    "does not offer deletion outside inactive edit mode (%s, %s)",
+    (editMode, currentActive) => {
+      render(
+        <TranscriptViewer
+          transcriptIds={["1"]}
+          liveSegments={[]}
+          currentActive={currentActive}
+          editMode={editMode}
+          scrollRef={createRef()}
+        />,
+      );
+      fireEvent.click(screen.getByTestId("segment-header-1"), {
+        metaKey: true,
+      });
+      expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+    },
+  );
 
   it("lets entries be chosen without modifier keys while editing", () => {
     render(

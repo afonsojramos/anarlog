@@ -1,7 +1,8 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   cleanup,
   fireEvent,
-  render,
+  render as testingRender,
   screen,
   waitFor,
 } from "@testing-library/react";
@@ -12,6 +13,18 @@ import { MultiSelectionBar, SelectionMenu } from "./selection-menu";
 import type { TranscriptContextMenuRequest } from "./selection-menu";
 
 import { setSessionFabSelectionHost } from "~/session/components/floating/selection-slot";
+
+function render(ui: ReactNode) {
+  return testingRender(
+    <QueryClientProvider
+      client={
+        new QueryClient({ defaultOptions: { mutations: { retry: false } } })
+      }
+    >
+      {ui}
+    </QueryClientProvider>,
+  );
+}
 
 vi.mock("@floating-ui/react", () => ({
   autoUpdate: vi.fn(),
@@ -236,6 +249,65 @@ describe("MultiSelectionBar", () => {
       expect(onMerge).toHaveBeenCalled();
       expect(onClear).toHaveBeenCalled();
     });
+  });
+
+  it("deletes the selected blocks and clears selection only after saving", async () => {
+    let finish!: () => void;
+    const onDelete = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const onClear = vi.fn();
+    render(
+      <MultiSelectionBar
+        selection={selection}
+        entryCount={2}
+        onClear={onClear}
+        onAssignSpeaker={vi.fn()}
+        onDelete={onDelete}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(onDelete).toHaveBeenCalledWith(selection));
+    expect(onClear).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("button", { name: "Delete" }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(true),
+    );
+    finish();
+    await waitFor(() => expect(onClear).toHaveBeenCalledTimes(1));
+  });
+
+  it("keeps the selection available for retry if deleting fails", async () => {
+    const onDelete = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("save failed"))
+      .mockResolvedValueOnce(undefined);
+    const onClear = vi.fn();
+    render(
+      <MultiSelectionBar
+        selection={selection}
+        entryCount={2}
+        onClear={onClear}
+        onAssignSpeaker={vi.fn()}
+        onDelete={onDelete}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(onDelete).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("button", { name: "Delete" }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(false),
+    );
+    expect(onClear).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(onClear).toHaveBeenCalledTimes(1));
   });
 
   it("renders into the session FAB selection slot when it is present", () => {

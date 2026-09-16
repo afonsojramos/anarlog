@@ -1932,6 +1932,7 @@ msgstr "Default sharing"
 
 #: src/contacts/contact-page-header.tsx
 #: src/folders/folder-editor.tsx
+#: src/session/components/note-input/transcript/renderer/selection-menu.tsx
 #: src/session/components/outer-header/overflow/delete.tsx
 #: src/sidebar/automations.tsx
 #: src/sidebar/timeline/index.tsx
@@ -5068,6 +5069,7 @@ msgstr "Smileys & People"
 msgid "Software Engineer"
 msgstr "Software Engineer"
 
+#: src/session/components/note-input/transcript/renderer/selection-menu.tsx
 #: src/shared/control.tsx
 msgid "Something went wrong"
 msgstr "Something went wrong"
