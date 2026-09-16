@@ -2,6 +2,7 @@ import type { TranscriptSpeakerHint } from "@anlg/plugin-fs-sync";
 import { commands as listenerCommands } from "@anlg/plugin-transcription";
 import type {
   IdentityAssignment,
+  SpeakerContext,
   RenderTranscriptHuman,
   RenderTranscriptInput,
   RenderTranscriptRequest,
@@ -89,6 +90,8 @@ export function getRenderTranscriptRequestKey(
   };
 
   writeValue(request.self_human_id);
+  writeValue(request.speaker_context);
+  writeValue(request.preview);
 
   for (const humanId of request.participant_human_ids) {
     writeValue(humanId);
@@ -143,8 +146,51 @@ export function buildRenderTranscriptRequestFromRows(
   transcripts: TranscriptRow[],
   humans?: RenderTranscriptRequestHumans,
   participantHumanIds?: string[],
+  speakerContext?: SpeakerContext,
 ): RenderTranscriptRequest | null {
-  return buildRenderTranscriptRequest(transcripts, humans, participantHumanIds);
+  const request = buildRenderTranscriptRequest(
+    transcripts,
+    humans,
+    participantHumanIds,
+  );
+  return request && speakerContext
+    ? { ...request, speaker_context: speakerContext }
+    : request;
+}
+
+export function resolveScopedWordHumanIds(
+  transcript: RenderTranscriptInput,
+): Map<string, string> {
+  const humansByWord = new Map<string, string>();
+  const humansBySpeaker = new Map<string, string>();
+  for (const assignment of transcript.assignments) {
+    if (!assignment.human_id.trim()) continue;
+    if (assignment.scope.kind === "words") {
+      for (const wordId of assignment.scope.word_ids) {
+        humansByWord.set(wordId, assignment.human_id);
+      }
+    } else if (assignment.scope.kind === "channel_speaker") {
+      humansBySpeaker.set(
+        `${assignment.scope.channel}:${assignment.scope.speaker_index}`,
+        assignment.human_id,
+      );
+    }
+  }
+
+  return new Map(
+    transcript.words.flatMap((word) => {
+      const channel =
+        word.channel === 0
+          ? "DirectMic"
+          : word.channel === 1
+            ? "RemoteParty"
+            : "MixedCapture";
+      const humanId =
+        humansByWord.get(word.id) ??
+        humansBySpeaker.get(`${channel}:${word.speaker_index}`);
+      return humanId ? [[word.id, humanId] as const] : [];
+    }),
+  );
 }
 
 export function collectAssignedHumanIdsFromTranscriptRows(

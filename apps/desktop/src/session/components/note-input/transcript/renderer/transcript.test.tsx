@@ -1,4 +1,5 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { cleanup, render as renderUi, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -10,6 +11,18 @@ import type {
 import { RenderTranscript } from "./transcript";
 
 import type { Segment } from "~/stt/live-segment";
+
+function render(ui: ReactNode, options?: Parameters<typeof renderUi>[1]) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return renderUi(ui, {
+    ...options,
+    wrapper: ({ children }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    ),
+  });
+}
 
 const mocks = vi.hoisted(() => ({
   assignTranscriptSpeaker: vi.fn(),
@@ -244,6 +257,45 @@ describe("RenderTranscript", () => {
         transcriptId="transcript-1"
         currentActive
         liveSegments={[live]}
+        currentMs={0}
+        seek={vi.fn()}
+        startPlayback={vi.fn()}
+        audioExists
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Ada" })).toBeTruthy();
+  });
+
+  it("renders identities resolved by the native settled renderer", () => {
+    const settled = createSegment("settled", 0);
+    settled.key.speaker_human_id = "human-1";
+    const assignments: IdentityAssignment[] = [
+      {
+        human_id: "human-1",
+        scope: {
+          kind: "channel_speaker",
+          channel: "MixedCapture",
+          speaker_index: 0,
+        },
+      },
+    ];
+    const request = createRenderRequest([settled], assignments);
+    request.humans = [{ human_id: "human-1", name: "Ada" }];
+    mocks.useRenderedTranscriptData.mockReturnValue({
+      maxSpeakerNumber: undefined,
+      request,
+      segments: [settled],
+    });
+
+    render(
+      <RenderTranscript
+        scrollElement={null}
+        isLastTranscript
+        shouldScrollToEnd={false}
+        transcriptId="transcript-1"
+        currentActive={false}
+        liveSegments={[]}
         currentMs={0}
         seek={vi.fn()}
         startPlayback={vi.fn()}

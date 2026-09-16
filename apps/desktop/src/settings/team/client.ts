@@ -10,6 +10,8 @@ export type WorkspaceRole = "owner" | "admin" | "member";
 export type WorkspaceMember = {
   userId: string;
   email: string;
+  name: string | null;
+  avatarUrl: string | null;
   role: WorkspaceRole;
 };
 
@@ -153,7 +155,7 @@ export async function listWorkspaceMembers(
 ): Promise<WorkspaceMember[]> {
   assertWorkspaceId(workspaceId);
   return rows(
-    await callRpc(context, "list_workspace_memberships", {
+    await callRpc(context, "list_workspace_members_with_profiles", {
       p_workspace_id: workspaceId,
     }),
   )
@@ -161,6 +163,9 @@ export async function listWorkspaceMembers(
     .map((row) => ({
       userId: text(row.user_id),
       email: text(row.user_email),
+      name: typeof row.user_name === "string" ? row.user_name : null,
+      avatarUrl:
+        typeof row.user_avatar_url === "string" ? row.user_avatar_url : null,
       role: role(row.role),
     }));
 }
@@ -181,6 +186,66 @@ export async function listWorkspaceInvitations(
       email: text(row.invitee_email),
       expiresAt: text(row.expires_at),
     }));
+}
+
+export type MyWorkspaceInvitation = {
+  invitationId: string;
+  workspaceId: string;
+  workspaceName: string;
+  workspaceLogoDataUrl: string | null;
+  invitedByEmail: string | null;
+  expiresAt: string;
+};
+
+export async function listMyWorkspaceInvitations(
+  context: TeamContext,
+): Promise<MyWorkspaceInvitation[]> {
+  return rows(await callRpc(context, "list_my_workspace_invitations", {})).map(
+    (row) => {
+      const invitationId = text(row.invitation_id);
+      const workspaceId = text(row.workspace_id);
+      assertWorkspaceId(invitationId);
+      assertWorkspaceId(workspaceId);
+      return {
+        invitationId,
+        workspaceId,
+        workspaceName: text(row.workspace_name),
+        workspaceLogoDataUrl:
+          typeof row.workspace_logo_data === "string"
+            ? row.workspace_logo_data
+            : null,
+        invitedByEmail:
+          typeof row.invited_by_email === "string"
+            ? row.invited_by_email
+            : null,
+        expiresAt: text(row.expires_at),
+      };
+    },
+  );
+}
+
+export async function acceptMyWorkspaceInvitation(
+  context: TeamContext,
+  invitationId: string,
+): Promise<{ workspaceId: string }> {
+  assertWorkspaceId(invitationId);
+  const row = rows(
+    await callRpc(context, "accept_my_workspace_invitation", {
+      p_invitation_id: invitationId,
+    }),
+  )[0];
+  if (!row) throw new TeamError();
+  return { workspaceId: text(row.workspace_id) };
+}
+
+export async function declineMyWorkspaceInvitation(
+  context: TeamContext,
+  invitationId: string,
+): Promise<void> {
+  assertWorkspaceId(invitationId);
+  await callRpc(context, "decline_my_workspace_invitation", {
+    p_invitation_id: invitationId,
+  });
 }
 
 export async function getSeatUsage(
@@ -377,6 +442,37 @@ export async function transferOwnership(
   await callRpc(context, "transfer_workspace_ownership", {
     p_workspace_id: workspaceId,
     p_user_id: userId,
+  });
+}
+
+export async function listOwnershipRequests(
+  context: TeamContext,
+  workspaceId: string,
+) {
+  assertWorkspaceId(workspaceId);
+  return rows(
+    await callRpc(context, "list_workspace_ownership_requests", {
+      p_workspace_id: workspaceId,
+    }),
+  ).map((row) => ({
+    id: text(row.id),
+    ownerUserId: text(row.owner_user_id),
+    targetUserId: text(row.target_user_id),
+  }));
+}
+
+export async function respondOwnershipRequest(
+  context: TeamContext,
+  workspaceId: string,
+  requestId: string,
+  action: "accept" | "decline" | "cancel",
+) {
+  assertWorkspaceId(workspaceId);
+  assertWorkspaceId(requestId);
+  await callRpc(context, "respond_workspace_ownership_request", {
+    p_workspace_id: workspaceId,
+    p_request_id: requestId,
+    p_action: action,
   });
 }
 

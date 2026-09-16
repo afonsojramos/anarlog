@@ -6,8 +6,39 @@ import {
   fetchWorkspacePlan,
   formatAccountPlanDate,
   getAccountPlanCopy,
+  getAccountPlanPriceText,
   getSubscriptionAccessEnd,
 } from "./account-plan.ts";
+
+test("account plan prices follow the selected billing period", () => {
+  assert.equal(
+    getAccountPlanPriceText(
+      { kind: "fixed", monthly: 15, yearly: 150 },
+      "monthly",
+    ),
+    "$15/mo",
+  );
+  assert.equal(
+    getAccountPlanPriceText(
+      {
+        kind: "fixed",
+        monthly: 20,
+        yearly: 200,
+        billingUnit: "person",
+      },
+      "yearly",
+    ),
+    "$200/person/yr",
+  );
+});
+
+test("non-billed account plans keep their price copy across periods", () => {
+  assert.equal(getAccountPlanPriceText({ kind: "free" }, "yearly"), "$0");
+  assert.equal(
+    getAccountPlanPriceText({ kind: "custom" }, "monthly"),
+    "Custom",
+  );
+});
 
 test("prefers cancel_at, then item period end, then subscription period end", () => {
   assert.equal(
@@ -123,7 +154,6 @@ test("a Team member with the shared Pro entitlement is shown as Team", () => {
     getAccountPlanCopy({
       isTrialing: false,
       isPaid: true,
-      isPro: true,
       trialDaysRemaining: null,
       trialEnd: null,
       cancelAtPeriodEnd: false,
@@ -142,7 +172,6 @@ test("Enterprise takes precedence over personal Pro and Team copy", () => {
     getAccountPlanCopy({
       isTrialing: true,
       isPaid: true,
-      isPro: true,
       trialDaysRemaining: 3,
       trialEnd: new Date("2026-09-17T00:00:00.000Z"),
       cancelAtPeriodEnd: false,
@@ -161,7 +190,6 @@ test("a free workspace does not upgrade an individual Pro subscription", () => {
     getAccountPlanCopy({
       isTrialing: false,
       isPaid: true,
-      isPro: true,
       trialDaysRemaining: null,
       trialEnd: null,
       cancelAtPeriodEnd: false,

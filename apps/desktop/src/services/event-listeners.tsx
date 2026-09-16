@@ -542,6 +542,11 @@ function useNotificationEvents() {
             return;
           }
 
+          if (payload.key?.startsWith("team-invitation:")) {
+            openNewRef.current({ type: "settings", state: { tab: "team" } });
+            return;
+          }
+
           const eventId =
             payload.source?.type === "calendar_event"
               ? payload.source.event_id
@@ -562,6 +567,13 @@ function useNotificationEvents() {
               id: sourceSessionId,
               state: { view: null, autoStart: null },
             });
+            return;
+          }
+
+          if (
+            payload.source?.type !== "calendar_event" &&
+            payload.source?.type !== "mic_detected"
+          ) {
             return;
           }
 

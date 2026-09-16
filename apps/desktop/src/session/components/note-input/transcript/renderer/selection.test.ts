@@ -2,10 +2,14 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   canMergeTranscriptEntries,
+  focusTranscriptSelection,
   getTranscriptContextSelection,
   getTranscriptMergeTarget,
+  getTranscriptRangeRects,
   getTranscriptSelectionFromRange,
+  getTranscriptSelectionFromHere,
   getTranscriptSelectionFromSegment,
+  isRangeCoveredBySelection,
   mergeTranscriptSelections,
 } from "./selection";
 
@@ -14,6 +18,45 @@ afterEach(() => {
 });
 
 describe("transcript word selection", () => {
+  it("changes from the anchor to the segment end, preserving earlier words", () => {
+    const { container, words } = createReadSegment();
+    const fullRange = document.createRange();
+    fullRange.setStartBefore(words[0]);
+    fullRange.setEndAfter(words[2]);
+    const full = getTranscriptSelectionFromRange(fullRange, container)!;
+    const range = document.createRange();
+    range.selectNodeContents(words[1]);
+    const selected = getTranscriptSelectionFromRange(range, container)!;
+    const result = getTranscriptSelectionFromHere(selected, [full]);
+    expect(result?.groups[0].wordIds).toEqual(["word-2", "word-3"]);
+    expect(getTranscriptSelectionFromHere(selected, [])).toBeNull();
+  });
+
+  it("focuses and selects the chosen word after entering edit mode", () => {
+    const { container, words } = createReadSegment();
+    const range = document.createRange();
+    range.selectNodeContents(words[1]);
+    const selection = getTranscriptSelectionFromRange(range, container)!;
+    const editor = document.createElement("div");
+    editor.tabIndex = 0;
+    editor.dataset.transcriptEditor = "";
+    editor.dataset.transcriptEditWordIds = JSON.stringify([
+      "word-1",
+      "word-2",
+      "word-3",
+    ]);
+    editor.dataset.transcriptEditWordTexts = JSON.stringify([
+      "One",
+      "Two",
+      "Three",
+    ]);
+    editor.textContent = "One Two Three";
+    words[0].parentElement!.replaceWith(editor);
+    focusTranscriptSelection(selection, container);
+    expect(document.activeElement).toBe(editor);
+    expect(window.getSelection()?.toString()).toBe("Two");
+  });
+
   it("maps a native text range to stable word ids", () => {
     const { container, words } = createReadSegment();
     const range = document.createRange();
@@ -279,4 +322,87 @@ function createSection() {
   section.dataset.segmentSpeakerHumanId = "";
   section.dataset.transcriptOffsetMs = "1000";
   return section;
+}
+
+describe("transcript selection overlay", () => {
+  afterEach(() => {
+    Reflect.deleteProperty(Range.prototype, "getClientRects");
+    window.getSelection()?.removeAllRanges();
+  });
+
+  it("collects text rects per line instead of element boxes", () => {
+    const container = document.createElement("div");
+    container.innerHTML =
+      '<span data-line="0"><span>One</span> <span>two</span></span><span data-line="1"><span>three</span></span>';
+    document.body.append(container);
+    const offsets = new Map<Node, number>();
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    let offset = 0;
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      offsets.set(node, offset);
+      offset += node.textContent?.length ?? 0;
+    }
+    Object.assign(Range.prototype, {
+      getClientRects(this: Range) {
+        const text = this.toString();
+        if (!text) {
+          return [];
+        }
+        const line = Number(
+          this.startContainer.parentElement
+            ?.closest("[data-line]")
+            ?.getAttribute("data-line") ?? 0,
+        );
+        const left =
+          ((offsets.get(this.startContainer) ?? 0) + this.startOffset) * 10;
+        return [new DOMRect(left, line * 20, text.length * 10, 20)];
+      },
+    });
+    const textNodes = [...offsets.keys()];
+
+    const range = document.createRange();
+    range.setStart(textNodes[0]!, 0);
+    range.setEnd(textNodes[3]!, 5);
+    expect(getTranscriptRangeRects(range).map(toPlainRect)).toEqual([
+      { left: 0, top: 0, width: 70, height: 20 },
+      { left: 70, top: 20, width: 50, height: 20 },
+    ]);
+
+    range.setStart(textNodes[2]!, 1);
+    range.setEnd(textNodes[3]!, 3);
+    expect(getTranscriptRangeRects(range).map(toPlainRect)).toEqual([
+      { left: 50, top: 0, width: 20, height: 20 },
+      { left: 70, top: 20, width: 30, height: 20 },
+    ]);
+  });
+
+  it("treats the range as covered while the native selection spans it", () => {
+    const container = document.createElement("div");
+    container.textContent = "One two three";
+    document.body.append(container);
+    const text = container.firstChild!;
+    const range = document.createRange();
+    range.setStart(text, 4);
+    range.setEnd(text, 7);
+    const selection = window.getSelection()!;
+
+    expect(isRangeCoveredBySelection(range, selection)).toBe(false);
+
+    const wider = document.createRange();
+    wider.setStart(text, 0);
+    wider.setEnd(text, 13);
+    selection.addRange(wider);
+    expect(isRangeCoveredBySelection(range, selection)).toBe(true);
+
+    const narrower = document.createRange();
+    narrower.setStart(text, 5);
+    narrower.setEnd(text, 7);
+    selection.removeAllRanges();
+    selection.addRange(narrower);
+    expect(isRangeCoveredBySelection(range, selection)).toBe(false);
+  });
+});
+
+function toPlainRect({ left, top, width, height }: DOMRect) {
+  return { left, top, width, height };
 }

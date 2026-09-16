@@ -5,9 +5,10 @@ import { useDebounceValue } from "usehooks-ts";
 
 import { commands as openerCommands } from "@anlg/plugin-opener2";
 import { openUrlWithInstruction } from "@anlg/plugin-windows";
+import { Avatar } from "@anlg/ui/components/avatar";
 import {
   CircleNotch,
-  Crown,
+  DotsThree,
   PaperPlaneTilt,
   Plus,
   Trash,
@@ -20,6 +21,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@anlg/ui/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@anlg/ui/components/ui/dropdown-menu";
 import { Input } from "@anlg/ui/components/ui/input";
 import {
   InputGroup,
@@ -33,13 +40,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@anlg/ui/components/ui/select";
+import { sonnerToast } from "@anlg/ui/components/ui/toast";
 import { useSquircleRef } from "@anlg/ui/hooks/use-squircle";
 import { cn } from "@anlg/utils";
 
 import {
+  acceptMyWorkspaceInvitation,
   checkWorkspaceShareSlugAvailability,
   claimWorkspaceDomain,
   createWorkspace,
+  declineMyWorkspaceInvitation,
   deleteWorkspace,
   getWorkspaceAccess,
   getWorkspacePolicy,
@@ -57,6 +67,9 @@ import {
   setWorkspacePolicy,
   setWorkspaceShareSlug,
   transferOwnership,
+  listOwnershipRequests,
+  respondOwnershipRequest,
+  type MyWorkspaceInvitation,
   type WorkspaceCapability,
   type WorkspaceMember,
   type WorkspacePolicy,
@@ -70,6 +83,10 @@ import {
 } from "./invitation";
 import { WorkspaceLogoButton, WorkspaceLogoMark } from "./logo-button";
 import { MY_WORKSPACES_QUERY_KEY, useMyWorkspacesWithMirror } from "./mirror";
+import {
+  MY_INVITATIONS_QUERY_KEY,
+  useMyWorkspaceInvitations,
+} from "./my-invitations";
 
 import { useAuth } from "~/auth";
 import { useBillingAccess } from "~/auth/billing-context";
@@ -101,6 +118,7 @@ export function SettingsTeam() {
   // Shares the query (and therefore the mirror refresh) with the app-level
   // mount, so opening this page is never what makes sharing scopes appear.
   const workspaces = useMyWorkspacesWithMirror();
+  const invitations = useMyWorkspaceInvitations();
   const selectedWorkspace =
     isCreating || !workspaces.data
       ? undefined
@@ -145,6 +163,16 @@ export function SettingsTeam() {
   return (
     <div className="flex flex-col gap-8">
       <SettingsPageTitle title={<Trans>Teams</Trans>} />
+
+      {invitations.data && invitations.data.length > 0 ? (
+        <PendingInvitations
+          invitations={invitations.data}
+          onJoined={(workspaceId) => {
+            setIsCreating(false);
+            setSelectedId(workspaceId);
+          }}
+        />
+      ) : null}
 
       {workspaces.isPending ? (
         <TeamSkeleton />
@@ -192,6 +220,120 @@ export function SettingsTeam() {
   );
 }
 
+function PendingInvitations({
+  invitations,
+  onJoined,
+}: {
+  invitations: MyWorkspaceInvitation[];
+  onJoined: (workspaceId: string) => void;
+}) {
+  const auth = useAuth();
+  const { t } = useLingui();
+  const queryClient = useQueryClient();
+
+  const accept = useMutation({
+    mutationFn: (invitation: MyWorkspaceInvitation) =>
+      acceptMyWorkspaceInvitation(
+        requireTeamContext(auth),
+        invitation.invitationId,
+      ),
+    onSuccess: (result, invitation) => {
+      onJoined(result.workspaceId);
+      void queryClient.invalidateQueries({
+        queryKey: [MY_WORKSPACES_QUERY_KEY],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: [MY_INVITATIONS_QUERY_KEY],
+      });
+      sonnerToast.success(t`Joined ${invitation.workspaceName}`);
+      sonnerToast.dismiss(`team-invitation:${invitation.invitationId}`);
+    },
+    onError: (error) => {
+      sonnerToast.error(error.message);
+    },
+  });
+  const decline = useMutation({
+    mutationFn: (invitation: MyWorkspaceInvitation) =>
+      declineMyWorkspaceInvitation(
+        requireTeamContext(auth),
+        invitation.invitationId,
+      ),
+    onSuccess: (_result, invitation) => {
+      void queryClient.invalidateQueries({
+        queryKey: [MY_INVITATIONS_QUERY_KEY],
+      });
+      sonnerToast.dismiss(`team-invitation:${invitation.invitationId}`);
+    },
+    onError: (error) => {
+      sonnerToast.error(error.message);
+    },
+  });
+
+  return (
+    <section className="flex flex-col gap-3">
+      <h2 className="font-sans text-lg font-semibold">
+        <Trans>Invitations</Trans>
+      </h2>
+      {invitations.map((invitation) => {
+        const accepting =
+          accept.isPending &&
+          accept.variables?.invitationId === invitation.invitationId;
+        const declining =
+          decline.isPending &&
+          decline.variables?.invitationId === invitation.invitationId;
+        return (
+          <div
+            key={invitation.invitationId}
+            className="flex items-center gap-3"
+          >
+            <WorkspaceLogoMark
+              logoDataUrl={invitation.workspaceLogoDataUrl}
+              className="size-8 rounded-lg"
+            />
+            <div className="flex min-w-0 flex-col">
+              <span className="text-sm font-medium">
+                {invitation.workspaceName}
+              </span>
+              <span className="text-muted-foreground text-xs">
+                {invitation.invitedByEmail ? (
+                  <Trans>Invited by {invitation.invitedByEmail}</Trans>
+                ) : (
+                  <Trans>Invited to join</Trans>
+                )}
+              </span>
+            </div>
+            <div className="ml-auto flex items-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                disabled={accept.isPending || decline.isPending}
+                onClick={() => accept.mutate(invitation)}
+              >
+                {accepting ? (
+                  <CircleNotch className="size-4 animate-spin" />
+                ) : null}
+                <Trans>Accept</Trans>
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                disabled={accept.isPending || decline.isPending}
+                onClick={() => decline.mutate(invitation)}
+              >
+                {declining ? (
+                  <CircleNotch className="size-4 animate-spin" />
+                ) : null}
+                <Trans>Decline</Trans>
+              </Button>
+            </div>
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+
 function WorkspaceTabs({
   workspaces,
   selectedId,
@@ -225,7 +367,7 @@ function WorkspaceTabs({
             aria-pressed={selected}
             onClick={() => onSelect(workspace.workspaceId)}
             className={cn([
-              "flex items-center gap-2 rounded-full px-3 py-1.5 text-sm transition-colors",
+              "flex items-center gap-2 rounded-full py-1.5 pr-3 pl-1.5 text-sm transition-colors",
               selected
                 ? "bg-muted text-foreground font-medium"
                 : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
@@ -334,12 +476,23 @@ function WorkspacePanel({
   const auth = useAuth();
   const { t } = useLingui();
   const queryClient = useQueryClient();
+  const [transferTarget, setTransferTarget] = useState<WorkspaceMember | null>(
+    null,
+  );
+  const [isAcceptTransferOpen, setIsAcceptTransferOpen] = useState(false);
   const [email, setEmail] = useState("");
   const [nameDraft, setNameDraft] = useState(workspaceName);
   const [isOpeningBilling, setIsOpeningBilling] = useState(false);
   const [isInviteDialogOpen, setIsInviteDialogOpen] = useState(false);
   const [isDeleteWorkspaceDialogOpen, setIsDeleteWorkspaceDialogOpen] =
     useState(false);
+  const [removeTarget, setRemoveTarget] = useState<WorkspaceMember | null>(
+    null,
+  );
+  const [cancelInviteTarget, setCancelInviteTarget] = useState<{
+    invitationId: string;
+    email: string;
+  } | null>(null);
   const isManager = workspaceRole === "owner" || workspaceRole === "admin";
 
   const access = useQuery({
@@ -370,18 +523,26 @@ function WorkspacePanel({
   const hasPaidWorkspacePlan =
     access.data?.tier === "team" || access.data?.tier === "enterprise";
 
-  // The roster, invitation, and seat RPCs are manager-only, so a plain member
-  // gets a permission error rather than data. Retrying cannot fix that.
   const members = useQuery({
     queryKey: ["team-members", workspaceId],
     queryFn: () => listWorkspaceMembers(requireTeamContext(auth), workspaceId),
     retry: false,
   });
+  // Credentials and the Supabase client are not serializable cache identity.
+  // eslint-disable-next-line @tanstack/query/exhaustive-deps
+  const ownershipRequests = useQuery({
+    queryKey: ["team-ownership-requests", workspaceId, auth.session?.user.id],
+    queryFn: () => listOwnershipRequests(requireTeamContext(auth), workspaceId),
+    retry: false,
+    refetchInterval: 15_000,
+  });
+  const ownershipRequest = ownershipRequests.data?.[0];
   const invitations = useQuery({
     queryKey: ["team-invitations", workspaceId],
     queryFn: () =>
       listWorkspaceInvitations(requireTeamContext(auth), workspaceId),
     retry: false,
+    enabled: isManager,
   });
   const usage = useQuery({
     queryKey: ["team-usage", workspaceId],
@@ -398,6 +559,9 @@ function WorkspacePanel({
   });
 
   const refresh = () => {
+    void queryClient.invalidateQueries({
+      queryKey: ["team-ownership-requests", workspaceId],
+    });
     void queryClient.invalidateQueries({
       queryKey: ["team-access", workspaceId],
     });
@@ -444,12 +608,18 @@ function WorkspacePanel({
   const remove = useMutation({
     mutationFn: (userId: string) =>
       removeMember(requireTeamContext(auth), workspaceId, userId),
-    onSuccess: refresh,
+    onSuccess: async () => {
+      setRemoveTarget(null);
+      await refresh();
+    },
   });
   const cancelInvite = useMutation({
     mutationFn: (invitationId: string) =>
       revokeInvitation(requireTeamContext(auth), invitationId),
-    onSuccess: refresh,
+    onSuccess: async () => {
+      setCancelInviteTarget(null);
+      await refresh();
+    },
   });
   const resendInvite = useMutation({
     mutationFn: (invitation: { email: string }) =>
@@ -468,7 +638,27 @@ function WorkspacePanel({
   const transfer = useMutation({
     mutationFn: (userId: string) =>
       transferOwnership(requireTeamContext(auth), workspaceId, userId),
-    onSuccess: refresh,
+    onSuccess: () => {
+      setTransferTarget(null);
+      refresh();
+    },
+  });
+  const respondTransfer = useMutation({
+    mutationFn: (action: "accept" | "decline" | "cancel") => {
+      if (!ownershipRequest)
+        throw new Error("Ownership request is no longer available");
+      return respondOwnershipRequest(
+        requireTeamContext(auth),
+        workspaceId,
+        ownershipRequest.id,
+        action,
+      );
+    },
+    onSuccess: () => {
+      setIsAcceptTransferOpen(false);
+      refresh();
+      onWorkspaceRenamed();
+    },
   });
   const rename = useMutation({
     mutationFn: (value: string) =>
@@ -506,6 +696,8 @@ function WorkspacePanel({
     remove.error?.message ??
     cancelInvite.error?.message ??
     resendInvite.error?.message ??
+    respondTransfer.error?.message ??
+    ownershipRequests.error?.message ??
     transfer.error?.message ??
     rename.error?.message ??
     setLogo.error?.message ??
@@ -643,84 +835,192 @@ function WorkspacePanel({
           <WorkspaceEmailAutoJoin workspaceId={workspaceId} />
         ) : null}
 
+        {ownershipRequest ? (
+          <div
+            role="status"
+            className="flex flex-wrap items-center gap-3 rounded-lg border p-3 text-sm"
+          >
+            <p>
+              <Trans>
+                Ownership transfer Pending. Current ownership and permissions
+                remain unchanged until the proposed owner accepts.
+              </Trans>
+            </p>
+            {ownershipRequest.targetUserId === viewerId ? (
+              <>
+                <Button
+                  size="sm"
+                  disabled={respondTransfer.isPending}
+                  onClick={() => {
+                    respondTransfer.reset();
+                    setIsAcceptTransferOpen(true);
+                  }}
+                >
+                  <Trans>Review transfer</Trans>
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={respondTransfer.isPending}
+                  onClick={() => respondTransfer.mutate("decline")}
+                >
+                  <Trans>Decline</Trans>
+                </Button>
+              </>
+            ) : ownershipRequest.ownerUserId === viewerId ? (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={respondTransfer.isPending}
+                onClick={() => respondTransfer.mutate("cancel")}
+              >
+                <Trans>Cancel transfer</Trans>
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
         {members.isPending ? (
           <TeamSkeleton />
         ) : members.isError ? (
-          <p className="text-muted-foreground text-sm">
-            <Trans>
-              Only workspace admins can see who has access. You are a member of
-              this workspace.
-            </Trans>
-          </p>
+          <div className="flex flex-wrap items-center gap-3">
+            <p className="text-muted-foreground text-sm">
+              <Trans>Could not load workspace members.</Trans>
+            </p>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={members.isFetching}
+              onClick={() => void members.refetch()}
+            >
+              {members.isFetching ? (
+                <CircleNotch className="size-4 animate-spin" />
+              ) : null}
+              <Trans>Try again</Trans>
+            </Button>
+          </div>
         ) : (
-          <table className="w-full text-sm">
-            <tbody>
-              {members.data?.map((member) => (
-                <MemberRow
-                  key={member.userId}
-                  member={member}
-                  isViewer={member.userId === viewerId}
-                  viewerRole={isManager ? viewerRole : undefined}
-                  canManageMembers={canManageMembers}
-                  onRoleChange={(role) =>
-                    changeRole.mutate({ userId: member.userId, role })
-                  }
-                  onRemove={() => remove.mutate(member.userId)}
-                  onTransfer={() => transfer.mutate(member.userId)}
-                />
-              ))}
-              {invitations.data?.map((invitation) => (
-                <tr key={invitation.invitationId}>
-                  <td className="py-2.5 pr-3">
-                    <p className="text-muted-foreground truncate">
-                      {invitation.email}
-                    </p>
-                    <p className="text-muted-foreground text-xs">
-                      <Trans>Invitation pending</Trans>
-                    </p>
-                  </td>
-                  <td className="py-2.5 text-right">
-                    {isManager ? (
-                      <div className="flex items-center justify-end gap-1">
-                        {canManageMembers ? (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            title={t`Resend invitation`}
-                            onClick={() =>
-                              resendInvite.mutate({
-                                email: invitation.email,
-                              })
-                            }
-                            disabled={resendInvite.isPending}
-                          >
-                            {resendInvite.isPending &&
-                            resendInvite.variables?.email ===
-                              invitation.email ? (
-                              <CircleNotch className="size-4 animate-spin" />
-                            ) : (
-                              <PaperPlaneTilt className="size-4" />
-                            )}
-                          </Button>
-                        ) : null}
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          title={t`Cancel invitation`}
-                          onClick={() =>
-                            cancelInvite.mutate(invitation.invitationId)
-                          }
-                          disabled={cancelInvite.isPending}
-                        >
-                          <Trash className="size-4" />
-                        </Button>
-                      </div>
-                    ) : null}
-                  </td>
+          <div className="border-border overflow-x-auto rounded-lg border">
+            <table
+              className="border-border [&_td]:border-border [&_th]:border-border w-full border-collapse text-left text-sm [&_td:not(:last-child)]:border-r [&_th:not(:last-child)]:border-r"
+              aria-label={t`Members`}
+            >
+              <thead className="bg-muted/40 text-muted-foreground border-border border-b text-xs">
+                <tr>
+                  <th scope="col" className="px-4 py-3 font-medium">
+                    <Trans>Name</Trans>
+                  </th>
+                  <th scope="col" className="px-4 py-3 font-medium">
+                    <Trans>Email</Trans>
+                  </th>
+                  <th scope="col" className="px-4 py-3 font-medium">
+                    <Trans>Permissions</Trans>
+                  </th>
+                  <th scope="col" className="w-12 px-4 py-3">
+                    <span className="sr-only">
+                      <Trans>Actions</Trans>
+                    </span>
+                  </th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-border divide-y">
+                {members.data?.map((member) => (
+                  <MemberRow
+                    key={member.userId}
+                    member={member}
+                    isViewer={member.userId === viewerId}
+                    viewerRole={isManager ? viewerRole : undefined}
+                    canManageMembers={canManageMembers}
+                    onRoleChange={(role) =>
+                      changeRole.mutate({ userId: member.userId, role })
+                    }
+                    onRemove={() => {
+                      remove.reset();
+                      setRemoveTarget(member);
+                    }}
+                    ownershipPending={
+                      ownershipRequest?.targetUserId === member.userId
+                    }
+                    transferDisabled={
+                      ownershipRequests.isPending ||
+                      ownershipRequests.isError ||
+                      Boolean(ownershipRequest) ||
+                      transfer.isPending
+                    }
+                    onTransfer={() => {
+                      transfer.reset();
+                      setTransferTarget(member);
+                    }}
+                  />
+                ))}
+                {isManager
+                  ? invitations.data?.map((invitation) => (
+                      <tr key={invitation.invitationId}>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-3">
+                            <Avatar
+                              seed={invitation.email}
+                              label={invitation.email}
+                              size={32}
+                              className="rounded-full"
+                            />
+                            <span className="text-muted-foreground whitespace-nowrap">
+                              <Trans>Invitation pending</Trans>
+                            </span>
+                          </div>
+                        </td>
+                        <td className="text-muted-foreground px-4 py-3">
+                          {invitation.email}
+                        </td>
+                        <td className="text-muted-foreground px-4 py-3">—</td>
+                        <td className="px-4 py-3">
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="size-8"
+                                aria-label={t`Actions for ${invitation.email}`}
+                                disabled={
+                                  resendInvite.isPending ||
+                                  cancelInvite.isPending
+                                }
+                              >
+                                <DotsThree className="size-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              {canManageMembers ? (
+                                <DropdownMenuItem
+                                  onSelect={() =>
+                                    resendInvite.mutate({
+                                      email: invitation.email,
+                                    })
+                                  }
+                                >
+                                  <PaperPlaneTilt className="size-4" />
+                                  <Trans>Resend invitation</Trans>
+                                </DropdownMenuItem>
+                              ) : null}
+                              <DropdownMenuItem
+                                className="text-destructive"
+                                onSelect={() => {
+                                  cancelInvite.reset();
+                                  setCancelInviteTarget(invitation);
+                                }}
+                              >
+                                <Trash className="size-4" />
+                                <Trans>Cancel invitation</Trans>
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </td>
+                      </tr>
+                    ))
+                  : null}
+              </tbody>
+            </table>
+          </div>
         )}
       </section>
 
@@ -822,6 +1122,99 @@ function WorkspacePanel({
         )}
       </div>
       <DestructiveConfirmationDialog
+        open={removeTarget !== null}
+        onOpenChange={(open) => {
+          if (!open && !remove.isPending) setRemoveTarget(null);
+        }}
+        title={t`Remove member?`}
+        description={
+          <>
+            <Trans>
+              Remove {removeTarget?.email} from {workspaceName}? They will lose
+              access to this workspace.
+            </Trans>
+            {remove.error ? (
+              <span role="alert">{remove.error.message}</span>
+            ) : null}
+          </>
+        }
+        confirmLabel={<Trans>Remove member</Trans>}
+        isPending={remove.isPending}
+        onConfirm={() => {
+          if (removeTarget && !remove.isPending)
+            remove.mutate(removeTarget.userId);
+        }}
+      />
+      <DestructiveConfirmationDialog
+        open={cancelInviteTarget !== null}
+        onOpenChange={(open) => {
+          if (!open && !cancelInvite.isPending) setCancelInviteTarget(null);
+        }}
+        title={t`Cancel invitation?`}
+        description={
+          <>
+            <Trans>
+              Cancel the invitation for {cancelInviteTarget?.email}? They will
+              no longer be able to join using this invitation.
+            </Trans>
+            {cancelInvite.error ? (
+              <span role="alert">{cancelInvite.error.message}</span>
+            ) : null}
+          </>
+        }
+        confirmLabel={<Trans>Cancel invitation</Trans>}
+        isPending={cancelInvite.isPending}
+        onConfirm={() => {
+          if (cancelInviteTarget && !cancelInvite.isPending)
+            cancelInvite.mutate(cancelInviteTarget.invitationId);
+        }}
+      />
+      <DestructiveConfirmationDialog
+        open={transferTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setTransferTarget(null);
+        }}
+        title={t`Request ownership transfer?`}
+        description={
+          <>
+            <Trans>
+              {transferTarget?.email} must accept before becoming owner. Until
+              then, ownership and permissions stay the same. After acceptance,
+              you become an admin and they control the workspace, including
+              deletion.
+            </Trans>
+            {transfer.error ? (
+              <span role="alert">{transfer.error.message}</span>
+            ) : null}
+          </>
+        }
+        confirmLabel={<Trans>Request transfer</Trans>}
+        isPending={transfer.isPending}
+        onConfirm={() => {
+          if (transferTarget) transfer.mutate(transferTarget.userId);
+        }}
+      />
+      <DestructiveConfirmationDialog
+        open={isAcceptTransferOpen && Boolean(ownershipRequest)}
+        onOpenChange={setIsAcceptTransferOpen}
+        title={t`Accept workspace ownership?`}
+        description={
+          <>
+            <Trans>
+              You will become the owner of {workspaceName}, with control over
+              its members, billing, and deletion. The current owner will become
+              an admin.
+            </Trans>
+            {respondTransfer.error ? (
+              <span role="alert">{respondTransfer.error.message}</span>
+            ) : null}
+          </>
+        }
+        confirmLabel={<Trans>Accept ownership</Trans>}
+        isPending={respondTransfer.isPending}
+        onConfirm={() => respondTransfer.mutate("accept")}
+      />
+      <DestructiveConfirmationDialog
         open={isDeleteWorkspaceDialogOpen}
         onOpenChange={setIsDeleteWorkspaceDialogOpen}
         title={t`Delete ${workspaceName} for everyone?`}
@@ -854,7 +1247,9 @@ function WorkspacePanel({
             <DialogDescription className="sr-only">
               <Trans>
                 Invite teammates, share notes across the workspace, and manage
-                who has access. Your personal notes stay private.
+                who has access. Your personal notes stay private. Pending
+                invitations are free. New members are billed from when they
+                join.
               </Trans>
             </DialogDescription>
           </DialogHeader>
@@ -1384,6 +1779,8 @@ function MemberRow({
   onRoleChange,
   onRemove,
   onTransfer,
+  ownershipPending,
+  transferDisabled,
 }: {
   member: WorkspaceMember;
   isViewer: boolean;
@@ -1392,6 +1789,8 @@ function MemberRow({
   onRoleChange: (role: "admin" | "member") => void;
   onRemove: () => void;
   onTransfer: () => void;
+  ownershipPending: boolean;
+  transferDisabled: boolean;
 }) {
   const { t } = useLingui();
   const isOwner = member.role === "owner";
@@ -1411,56 +1810,100 @@ function MemberRow({
 
   return (
     <tr>
-      <td className="py-2.5 pr-3">
-        <p className="truncate">{member.email}</p>
-        {isViewer ? (
-          <p className="text-muted-foreground text-xs">
-            <Trans>You</Trans>
-          </p>
+      <td className="px-4 py-3">
+        <div className="flex items-center gap-3">
+          <Avatar
+            seed={member.userId}
+            label={member.name || member.email}
+            imageUrl={member.avatarUrl}
+            size={32}
+            className="rounded-full"
+          />
+          <div className="min-w-0">
+            <p className="font-medium whitespace-nowrap">
+              {member.name || "—"}
+            </p>
+            {isViewer ? (
+              <p className="text-muted-foreground text-xs">
+                <Trans>You</Trans>
+              </p>
+            ) : null}
+          </div>
+        </div>
+      </td>
+      <td className="text-muted-foreground px-4 py-3">{member.email}</td>
+      <td className="px-4 py-3">
+        {!canEditRole ? (
+          <span className="text-muted-foreground text-xs">
+            {member.role === "owner" ? (
+              <Trans>Owner</Trans>
+            ) : member.role === "admin" ? (
+              <Trans>Admin</Trans>
+            ) : (
+              <Trans>Member</Trans>
+            )}
+          </span>
+        ) : (
+          <Select
+            value={member.role}
+            onValueChange={(value) => {
+              if (value === "owner") onTransfer();
+              else onRoleChange(value === "admin" ? "admin" : "member");
+            }}
+          >
+            <SelectTrigger
+              className="bg-card h-8 w-28 shadow-none"
+              aria-label={t`Permissions for ${member.email}`}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {canTransfer ? (
+                <SelectItem value="owner" disabled={transferDisabled}>
+                  <Trans>Owner</Trans>
+                </SelectItem>
+              ) : null}
+              <SelectItem value="admin">
+                <Trans>Admin</Trans>
+              </SelectItem>
+              <SelectItem value="member">
+                <Trans>Member</Trans>
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        )}
+        {ownershipPending ? (
+          <span className="text-muted-foreground mt-1 block text-xs">
+            <Trans>Pending</Trans>
+          </span>
         ) : null}
       </td>
-      <td className="py-2.5 text-right">
-        <div className="flex items-center justify-end gap-2">
-          {!canEditRole ? (
-            <span className="text-muted-foreground text-xs capitalize">
-              {member.role}
-            </span>
-          ) : (
-            <Select
-              value={member.role}
-              onValueChange={(value) =>
-                onRoleChange(value === "admin" ? "admin" : "member")
-              }
-            >
-              <SelectTrigger className="bg-card h-8 w-28 shadow-none">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="admin">
-                  <Trans>Admin</Trans>
-                </SelectItem>
-                <SelectItem value="member">
-                  <Trans>Member</Trans>
-                </SelectItem>
-              </SelectContent>
-            </Select>
-          )}
-          {canTransfer ? (
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={onTransfer}
-              title={t`Make owner`}
-            >
-              <Crown className="size-4" />
-            </Button>
-          ) : null}
-          {canRemove ? (
-            <Button size="sm" variant="ghost" onClick={onRemove}>
-              <Trash className="size-4" />
-            </Button>
-          ) : null}
-        </div>
+      <td className="px-4 py-3">
+        {canRemove ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                size="icon"
+                variant="ghost"
+                className="size-8"
+                aria-label={t`Actions for ${member.email}`}
+              >
+                <DotsThree className="size-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {canRemove ? (
+                <DropdownMenuItem
+                  className="text-destructive"
+                  onSelect={onRemove}
+                >
+                  <Trash className="size-4" />
+                  <Trans>Remove member</Trans>
+                </DropdownMenuItem>
+              ) : null}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null}
       </td>
     </tr>
   );
