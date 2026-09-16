@@ -526,6 +526,13 @@ export async function stopSync(): Promise<void> {
   }
 }
 
+export async function connectLocalLibrary(
+  accountUserId: string,
+  expectedLibraryWorkspaceId: string,
+): Promise<void> {
+  getBridge().connectLocalLibrary(accountUserId, expectedLibraryWorkspaceId);
+}
+
 export async function syncNow(): Promise<void> {
   try {
     getBridge().cloudsyncSyncNow();

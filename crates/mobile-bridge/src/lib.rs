@@ -616,6 +616,35 @@ impl MobileDbBridge {
         result
     }
 
+    pub fn connect_local_library(
+        &self,
+        account_user_id: String,
+        expected_library_workspace_id: String,
+    ) -> Result<(), BridgeError> {
+        self.stop_cloudsync()?;
+        let (runtime, db, hook) = self.with_state(|state| {
+            Ok((
+                Arc::clone(&state.runtime),
+                Arc::clone(&state.db),
+                Arc::clone(&state.e2ee_sync_hook),
+            ))
+        })?;
+        if hook.activity_paused() {
+            return Err(cloudsync_error(
+                "Finish the current recording before connecting this library",
+            ));
+        }
+        block_on(
+            &runtime,
+            anlg_db_app::connect_local_library(
+                db.pool(),
+                &account_user_id,
+                &expected_library_workspace_id,
+            ),
+        )
+        .map_err(cloudsync_error)
+    }
+
     pub fn start_cloudsync(&self) -> Result<(), BridgeError> {
         let (runtime, live_query_runtime, e2ee_sync_hook) = self.with_state(|state| {
             Ok((

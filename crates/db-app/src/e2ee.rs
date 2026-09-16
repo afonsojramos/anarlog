@@ -202,6 +202,7 @@ struct WitnessVersion {
 mod chunks;
 mod conflicts;
 mod cooperative;
+mod library;
 mod merge;
 mod replica_apply;
 mod replica_encrypt;
