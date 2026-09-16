@@ -44,6 +44,17 @@ pub fn e2ee_recovery_key_name(account_user_id: &str) -> Result<String, String> {
     ))
 }
 
+pub fn canonical_e2ee_request_id(request_id: &str) -> Result<String, String> {
+    uuid::Uuid::parse_str(request_id.trim())
+        .map(|request_id| request_id.to_string())
+        .map_err(|_| "E2EE enrollment request ID is invalid".to_string())
+}
+
+pub fn e2ee_device_key_name(account_user_id: &str) -> Result<String, String> {
+    let account_user_id = canonical_e2ee_account_user_id(account_user_id)?;
+    Ok(format!("account:{account_user_id}:device-enrollment-v1"))
+}
+
 pub async fn read_e2ee_secret_with_timeout(
     timeout: Duration,
     read: impl Future<Output = Result<Option<String>, String>>,
@@ -99,6 +110,74 @@ pub async fn import_e2ee_recovery_key(
             recovery_key.expose_code().as_str(),
         )
         .await
+}
+
+static E2EE_DEVICE_IDENTITY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+pub async fn get_or_create_e2ee_device_identity(
+    secrets: &impl E2eeSecretWriter,
+    account_user_id: &str,
+) -> Result<crate::E2eeDeviceIdentity, String> {
+    let key_name = e2ee_device_key_name(account_user_id)?;
+    let _identity_guard = E2EE_DEVICE_IDENTITY_LOCK.lock().await;
+    let existing = read_e2ee_secret_with_timeout(
+        E2EE_SECRET_READ_TIMEOUT,
+        secrets.read(E2EE_SECRET_SCOPE, &key_name),
+    )
+    .await?;
+    let key = match existing {
+        Some(value) => {
+            anlg_e2ee::DeviceEnrollmentKey::parse(&value).map_err(|error| error.to_string())?
+        }
+        None => {
+            let key =
+                anlg_e2ee::DeviceEnrollmentKey::generate().map_err(|error| error.to_string())?;
+            secrets
+                .write(E2EE_SECRET_SCOPE, &key_name, key.expose_code().as_str())
+                .await?;
+            key
+        }
+    };
+    Ok(crate::E2eeDeviceIdentity {
+        public_key: key.public_key(),
+    })
+}
+
+pub async fn import_e2ee_device_enrollment(
+    secrets: &impl E2eeSecretWriter,
+    account_user_id: &str,
+    request_id: &str,
+    package: crate::E2eeDeviceEnrollmentPackage,
+) -> Result<crate::E2eeRecoveryKeyIdentity, String> {
+    let account_user_id = canonical_e2ee_account_user_id(account_user_id)?;
+    let request_id = canonical_e2ee_request_id(request_id)?;
+    if load_e2ee_recovery_key(secrets, &account_user_id)
+        .await?
+        .is_some()
+    {
+        return Err("E2EE recovery key is already configured".to_string());
+    }
+    let key_name = e2ee_device_key_name(&account_user_id)?;
+    let device_key = read_e2ee_secret_with_timeout(
+        E2EE_SECRET_READ_TIMEOUT,
+        secrets.read(E2EE_SECRET_SCOPE, &key_name),
+    )
+    .await?
+    .ok_or_else(|| "E2EE device identity is not configured".to_string())?;
+    let device_key =
+        anlg_e2ee::DeviceEnrollmentKey::parse(&device_key).map_err(|error| error.to_string())?;
+    let recovery_key = device_key
+        .open_recovery_key(&account_user_id, &request_id, &package.into())
+        .map_err(|error| error.to_string())?;
+    let key_id = recovery_key.key_id();
+    secrets
+        .write(
+            E2EE_SECRET_SCOPE,
+            &e2ee_recovery_key_name(&account_user_id)?,
+            recovery_key.expose_code().as_str(),
+        )
+        .await?;
+    Ok(crate::E2eeRecoveryKeyIdentity { key_id })
 }
 
 pub fn shared_workspace_ids(
@@ -413,5 +492,29 @@ mod tests {
                 .await
                 .unwrap_err();
         assert_eq!(error, "E2EE recovery key is already configured");
+    }
+
+    #[test]
+    fn canonicalizes_enrollment_request_ids_and_device_key_names() {
+        assert_eq!(
+            canonical_e2ee_request_id("  11111111-1111-4111-8111-111111111111 "),
+            Ok("11111111-1111-4111-8111-111111111111".to_string())
+        );
+        assert_eq!(
+            e2ee_device_key_name("  11111111-1111-4111-8111-111111111111 "),
+            Ok("account:11111111-1111-4111-8111-111111111111:device-enrollment-v1".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn device_identity_generates_and_persists_a_key() {
+        let secrets = TestSecrets(Mutex::new(None));
+        let identity =
+            get_or_create_e2ee_device_identity(&secrets, "11111111-1111-4111-8111-111111111111")
+                .await
+                .unwrap();
+        let stored = secrets.0.lock().unwrap().clone().unwrap();
+        let key = anlg_e2ee::DeviceEnrollmentKey::parse(&stored).unwrap();
+        assert_eq!(identity.public_key, key.public_key());
     }
 }

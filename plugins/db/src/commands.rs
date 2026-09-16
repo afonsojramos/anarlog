@@ -1,29 +1,18 @@
 use tauri::ipc::Channel;
 
 use crate::{ExecuteProxyResult, ManagedState, QueryEvent, TransactionStatement};
-use anlg_desktop_db_runtime::cloudsync_config::{
-    E2EE_SECRET_READ_TIMEOUT, E2EE_SECRET_SCOPE, E2eeSecretReader, E2eeSecretWriter,
-    canonical_e2ee_account_user_id, e2ee_recovery_key_name,
-    load_e2ee_recovery_key as load_e2ee_recovery_key_with_secrets, read_e2ee_secret_with_timeout,
-};
 #[cfg(test)]
 use anlg_desktop_db_runtime::cloudsync_config::{
     E2EE_SECRET_READ_TIMEOUT_ERROR, open_shared_workspace_keyrings, open_workspace_e2ee_source_key,
-    seal_workspace_e2ee_key,
+    read_e2ee_secret_with_timeout, seal_workspace_e2ee_key,
 };
-
-static E2EE_DEVICE_IDENTITY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-fn canonical_e2ee_request_id(request_id: &str) -> Result<String, String> {
-    uuid::Uuid::parse_str(request_id.trim())
-        .map(|request_id| request_id.to_string())
-        .map_err(|_| "E2EE enrollment request ID is invalid".to_string())
-}
-
-fn e2ee_device_key_name(account_user_id: &str) -> Result<String, String> {
-    let account_user_id = canonical_e2ee_account_user_id(account_user_id)?;
-    Ok(format!("account:{account_user_id}:device-enrollment-v1"))
-}
+use anlg_desktop_db_runtime::cloudsync_config::{
+    E2eeSecretReader, E2eeSecretWriter, canonical_e2ee_account_user_id, canonical_e2ee_request_id,
+    e2ee_recovery_key_name,
+    get_or_create_e2ee_device_identity as get_or_create_e2ee_device_identity_with_secrets,
+    import_e2ee_device_enrollment as import_e2ee_device_enrollment_with_secrets,
+    load_e2ee_recovery_key as load_e2ee_recovery_key_with_secrets,
+};
 
 struct TauriE2eeSecrets<R: tauri::Runtime>(tauri::AppHandle<R>);
 
@@ -300,37 +289,7 @@ pub(crate) async fn get_or_create_e2ee_device_identity<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     account_user_id: String,
 ) -> Result<crate::E2eeDeviceIdentity, String> {
-    let key_name = e2ee_device_key_name(&account_user_id)?;
-    let _identity_guard = E2EE_DEVICE_IDENTITY_LOCK.lock().await;
-    let existing = read_e2ee_secret_with_timeout(
-        E2EE_SECRET_READ_TIMEOUT,
-        tauri_plugin_store2::read_secret(
-            app.clone(),
-            E2EE_SECRET_SCOPE.to_string(),
-            key_name.clone(),
-        ),
-    )
-    .await?;
-    let key = match existing {
-        Some(value) => {
-            anlg_e2ee::DeviceEnrollmentKey::parse(&value).map_err(|error| error.to_string())?
-        }
-        None => {
-            let key =
-                anlg_e2ee::DeviceEnrollmentKey::generate().map_err(|error| error.to_string())?;
-            tauri_plugin_store2::write_secret(
-                app,
-                E2EE_SECRET_SCOPE.to_string(),
-                key_name,
-                key.expose_code().to_string(),
-            )
-            .await?;
-            key
-        }
-    };
-    Ok(crate::E2eeDeviceIdentity {
-        public_key: key.public_key(),
-    })
+    get_or_create_e2ee_device_identity_with_secrets(&TauriE2eeSecrets(app), &account_user_id).await
 }
 
 #[tauri::command]
@@ -387,35 +346,13 @@ pub(crate) async fn import_e2ee_device_enrollment<R: tauri::Runtime>(
     request_id: String,
     package: crate::E2eeDeviceEnrollmentPackage,
 ) -> Result<crate::E2eeRecoveryKeyIdentity, String> {
-    let account_user_id = canonical_e2ee_account_user_id(&account_user_id)?;
-    let request_id = canonical_e2ee_request_id(&request_id)?;
-    if load_e2ee_recovery_key(app.clone(), &account_user_id)
-        .await?
-        .is_some()
-    {
-        return Err("E2EE recovery key is already configured".to_string());
-    }
-    let key_name = e2ee_device_key_name(&account_user_id)?;
-    let device_key = read_e2ee_secret_with_timeout(
-        E2EE_SECRET_READ_TIMEOUT,
-        tauri_plugin_store2::read_secret(app.clone(), E2EE_SECRET_SCOPE.to_string(), key_name),
+    import_e2ee_device_enrollment_with_secrets(
+        &TauriE2eeSecrets(app),
+        &account_user_id,
+        &request_id,
+        package,
     )
-    .await?
-    .ok_or_else(|| "E2EE device identity is not configured".to_string())?;
-    let device_key =
-        anlg_e2ee::DeviceEnrollmentKey::parse(&device_key).map_err(|error| error.to_string())?;
-    let recovery_key = device_key
-        .open_recovery_key(&account_user_id, &request_id, &package.clone().into())
-        .map_err(|error| error.to_string())?;
-    let key_id = recovery_key.key_id();
-    tauri_plugin_store2::write_secret(
-        app,
-        E2EE_SECRET_SCOPE.to_string(),
-        e2ee_recovery_key_name(&account_user_id)?,
-        recovery_key.expose_code().to_string(),
-    )
-    .await?;
-    Ok(crate::E2eeRecoveryKeyIdentity { key_id })
+    .await
 }
 
 #[tauri::command]

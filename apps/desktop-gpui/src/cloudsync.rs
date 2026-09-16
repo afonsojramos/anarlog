@@ -8,11 +8,13 @@ use tokio::sync::watch;
 
 use anlg_desktop_db_runtime::{
     CloudsyncE2eeWitness, CloudsyncWorkspaceKeyGrant, CloudsyncWorkspaceProjection,
-    CloudsyncWorkspaceProjectionEntry, DesktopDbRuntime, QueryEventSink,
+    CloudsyncWorkspaceProjectionEntry, DesktopDbRuntime, E2eeDeviceEnrollmentPackage,
+    QueryEventSink,
     cloudsync_config::{
-        E2eeSecretReader, E2eeSecretWriter, create_e2ee_recovery_code, import_e2ee_recovery_key,
-        inspect_e2ee_recovery_key, load_e2ee_recovery_key, open_shared_workspace_keyrings,
-        shared_workspace_ids,
+        E2eeSecretReader, E2eeSecretWriter, create_e2ee_recovery_code,
+        get_or_create_e2ee_device_identity, import_e2ee_device_enrollment,
+        import_e2ee_recovery_key, inspect_e2ee_recovery_key, load_e2ee_recovery_key,
+        open_shared_workspace_keyrings, shared_workspace_ids,
     },
     runtime::{CloudsyncTokenConfiguration, E2eeWorkspaceKeyConfiguration},
 };
@@ -25,11 +27,13 @@ use crate::db::Store;
 const API_URL: Option<&str> = option_env!("VITE_API_URL");
 const REFRESH_LEAD_MS: u64 = 2 * 60 * 1000;
 const RETRY_DELAY_MS: u64 = 60 * 1000;
+const ENROLLMENT_RETRY_DELAY_MS: u64 = 5 * 1000;
 const MIN_REFRESH_DELAY_MS: u64 = 1000;
 const DEVICE_NAME_HEADER: &str = "x-anarlog-device-name";
 const E2EE_KEY_ID_HEADER: &str = "X-Anarlog-E2EE-Key-Id";
 const MEMBER_KEY_HEADER: &str = "x-anarlog-e2ee-member-public-key";
 const TRANSPORTS_HEADER: &str = "x-anarlog-cloudsync-transports";
+const ENROLLMENT_REQUIRES_EXISTING_KEY_ERROR_CODE: &str = "e2ee_enrollment_requires_existing_key";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -137,6 +141,25 @@ pub enum CredentialResponse {
     Replica(ReplicaCredentials),
     E2ee(E2eeCredentials),
     Legacy(LegacyCredentials),
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum DeviceEnrollmentStatus {
+    Pending,
+    Sealed,
+    Consumed,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DeviceEnrollmentResponse {
+    request_id: String,
+    expires_at: String,
+    status: DeviceEnrollmentStatus,
+    #[serde(default)]
+    package: Option<E2eeDeviceEnrollmentPackage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -330,11 +353,27 @@ pub fn sanitize_device_name(name: Option<&str>) -> Option<String> {
     (!ascii.is_empty()).then_some(ascii)
 }
 
+fn device_name() -> Option<String> {
+    sysinfo::System::host_name().and_then(|name| sanitize_device_name(Some(&name)))
+}
+
 fn forbidden_credential_block(code: Option<&str>) -> CredentialBlock {
     if code == Some("sync_device_limit_reached") {
         CredentialBlock::DeviceLimit
     } else {
         CredentialBlock::NotEntitled
+    }
+}
+
+fn enrollment_failure_block(status: u16, code: Option<&str>) -> Option<CredentialBlock> {
+    if code == Some(ENROLLMENT_REQUIRES_EXISTING_KEY_ERROR_CODE) {
+        Some(CredentialBlock::SetupRequired)
+    } else {
+        match status {
+            401 => Some(CredentialBlock::ReauthRequired),
+            403 => Some(forbidden_credential_block(code)),
+            _ => None,
+        }
     }
 }
 
@@ -774,8 +813,7 @@ impl<S: QueryEventSink> Cloudsync<S> {
         member_public_key: &str,
     ) -> anyhow::Result<CredentialResponse> {
         let api_url = Self::api_url()?;
-        let device_name =
-            sysinfo::System::host_name().and_then(|name| sanitize_device_name(Some(&name)));
+        let device_name = device_name();
         let response = self
             .credential_request(
                 format!("{api_url}/sync/token"),
@@ -893,9 +931,237 @@ impl<S: QueryEventSink> Cloudsync<S> {
         let secrets = GpuiE2eeSecrets {
             app_id: self.app_id.clone(),
         };
-        let recovery = load_e2ee_recovery_key(&secrets, &user.id)
+        let mut recovery = load_e2ee_recovery_key(&secrets, &user.id)
             .await
             .map_err(anyhow::Error::msg)?;
+        if generation != self.generation.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        if recovery.is_none() {
+            let identity = match get_or_create_e2ee_device_identity(&secrets, &user.id).await {
+                Ok(identity) => identity,
+                Err(error) => {
+                    if generation != self.generation.load(Ordering::SeqCst) {
+                        return Ok(());
+                    }
+                    self.schedule_if_current(
+                        generation,
+                        Duration::from_millis(RETRY_DELAY_MS),
+                        enabled,
+                    )
+                    .await;
+                    tracing::warn!(%error, "failed to load or create CloudSync device identity");
+                    return Ok(());
+                }
+            };
+            if generation != self.generation.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            let device_name = device_name();
+            let fingerprint = anlg_host::fingerprint();
+            let request = self
+                .http
+                .post(format!("{api_url}/sync/e2ee/device-enrollments"))
+                .bearer_auth(&session.access_token)
+                .header("Content-Type", "application/json")
+                .header("x-device-fingerprint", &fingerprint);
+            let request = match device_name.as_deref() {
+                Some(device_name) => request.header(DEVICE_NAME_HEADER, device_name),
+                None => request,
+            };
+            let response = match request
+                .json(&serde_json::json!({
+                    "publicKey": &identity.public_key,
+                    "replaceFingerprint": null,
+                }))
+                .send()
+                .await
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    if generation != self.generation.load(Ordering::SeqCst) {
+                        return Ok(());
+                    }
+                    self.schedule_if_current(
+                        generation,
+                        Duration::from_millis(RETRY_DELAY_MS),
+                        enabled,
+                    )
+                    .await;
+                    tracing::warn!(%error, "CloudSync device enrollment request failed");
+                    return Ok(());
+                }
+            };
+            if generation != self.generation.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            if !response.status().is_success() {
+                let status = response.status().as_u16();
+                let code = response
+                    .json::<Value>()
+                    .await
+                    .ok()
+                    .and_then(|value| value["error"]["code"].as_str().map(str::to_string));
+                if generation != self.generation.load(Ordering::SeqCst) {
+                    return Ok(());
+                }
+                if let Some(block) = enrollment_failure_block(status, code.as_deref()) {
+                    self.suspend_and_set_state(
+                        generation,
+                        false,
+                        State {
+                            status: CloudsyncStatus::Blocked,
+                            block: Some(block),
+                        },
+                    )
+                    .await?;
+                    return Ok(());
+                }
+                self.schedule_if_current(
+                    generation,
+                    Duration::from_millis(RETRY_DELAY_MS),
+                    enabled,
+                )
+                .await;
+                tracing::warn!(
+                    status,
+                    ?code,
+                    "CloudSync device enrollment returned an unexpected status"
+                );
+                return Ok(());
+            }
+            let enrollment = match response.json::<DeviceEnrollmentResponse>().await {
+                Ok(enrollment) => enrollment,
+                Err(error) => {
+                    if generation != self.generation.load(Ordering::SeqCst) {
+                        return Ok(());
+                    }
+                    self.schedule_if_current(
+                        generation,
+                        Duration::from_millis(RETRY_DELAY_MS),
+                        enabled,
+                    )
+                    .await;
+                    tracing::warn!(%error, "CloudSync device enrollment response was invalid");
+                    return Ok(());
+                }
+            };
+            if generation != self.generation.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            let Some(package) = enrollment.package else {
+                self.suspend_and_set_state(
+                    generation,
+                    false,
+                    State {
+                        status: CloudsyncStatus::Blocked,
+                        block: Some(CredentialBlock::ApprovalPending),
+                    },
+                )
+                .await?;
+                self.schedule_if_current(
+                    generation,
+                    Duration::from_millis(ENROLLMENT_RETRY_DELAY_MS),
+                    enabled,
+                )
+                .await;
+                return Ok(());
+            };
+            if enrollment.status != DeviceEnrollmentStatus::Sealed {
+                self.suspend_and_set_state(
+                    generation,
+                    false,
+                    State {
+                        status: CloudsyncStatus::Blocked,
+                        block: Some(CredentialBlock::ApprovalPending),
+                    },
+                )
+                .await?;
+                self.schedule_if_current(
+                    generation,
+                    Duration::from_millis(ENROLLMENT_RETRY_DELAY_MS),
+                    enabled,
+                )
+                .await;
+                return Ok(());
+            }
+            if let Err(error) =
+                import_e2ee_device_enrollment(&secrets, &user.id, &enrollment.request_id, package)
+                    .await
+            {
+                if generation != self.generation.load(Ordering::SeqCst) {
+                    return Ok(());
+                }
+                self.schedule_if_current(
+                    generation,
+                    Duration::from_millis(RETRY_DELAY_MS),
+                    enabled,
+                )
+                .await;
+                tracing::warn!(%error, "failed to import CloudSync device enrollment");
+                return Ok(());
+            }
+            if generation != self.generation.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            match self
+                .http
+                .post(format!(
+                    "{api_url}/sync/e2ee/device-enrollments/{}/consume",
+                    enrollment.request_id
+                ))
+                .bearer_auth(&session.access_token)
+                .header("Content-Type", "application/json")
+                .header("x-device-fingerprint", &fingerprint)
+                .json(&serde_json::json!({ "publicKey": identity.public_key }))
+                .send()
+                .await
+            {
+                Ok(response) if response.status().is_success() => {}
+                Ok(response) => tracing::warn!(
+                    status = %response.status(),
+                    "CloudSync device enrollment acknowledgement failed; credential exchange will finalize it"
+                ),
+                Err(error) => tracing::warn!(
+                    %error,
+                    "CloudSync device enrollment acknowledgement failed; credential exchange will finalize it"
+                ),
+            }
+            if generation != self.generation.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            recovery = match load_e2ee_recovery_key(&secrets, &user.id).await {
+                Ok(recovery) => recovery,
+                Err(error) => {
+                    if generation != self.generation.load(Ordering::SeqCst) {
+                        return Ok(());
+                    }
+                    self.schedule_if_current(
+                        generation,
+                        Duration::from_millis(RETRY_DELAY_MS),
+                        enabled,
+                    )
+                    .await;
+                    tracing::warn!(%error, "failed to reload CloudSync recovery key");
+                    return Ok(());
+                }
+            };
+            if generation != self.generation.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            if recovery.is_none() {
+                self.suspend_and_set_state(
+                    generation,
+                    false,
+                    State {
+                        status: CloudsyncStatus::Blocked,
+                        block: Some(CredentialBlock::SetupRequired),
+                    },
+                )
+                .await?;
+                return Ok(());
+            }
+        }
         let Some(recovery) = recovery else {
             self.suspend_and_set_state(
                 generation,
@@ -1376,6 +1642,44 @@ mod tests {
             forbidden_credential_block(Some("unknown")),
             CredentialBlock::NotEntitled
         );
+    }
+
+    #[test]
+    fn maps_device_enrollment_failures() {
+        assert_eq!(
+            enrollment_failure_block(400, Some(ENROLLMENT_REQUIRES_EXISTING_KEY_ERROR_CODE)),
+            Some(CredentialBlock::SetupRequired)
+        );
+        assert_eq!(
+            enrollment_failure_block(403, Some("sync_device_limit_reached")),
+            Some(CredentialBlock::DeviceLimit)
+        );
+        assert_eq!(
+            enrollment_failure_block(403, Some("unknown")),
+            Some(CredentialBlock::NotEntitled)
+        );
+        assert_eq!(
+            enrollment_failure_block(401, None),
+            Some(CredentialBlock::ReauthRequired)
+        );
+        assert_eq!(enrollment_failure_block(500, None), None);
+    }
+
+    #[test]
+    fn deserializes_device_enrollment_responses() {
+        let pending = serde_json::from_str::<DeviceEnrollmentResponse>(
+            r#"{"requestId":"request","expiresAt":"2025-01-01T00:00:00Z","status":"pending"}"#,
+        )
+        .unwrap();
+        assert_eq!(pending.status, DeviceEnrollmentStatus::Pending);
+        assert!(pending.package.is_none());
+
+        let sealed = serde_json::from_str::<DeviceEnrollmentResponse>(
+            r#"{"requestId":"request","expiresAt":"2025-01-01T00:00:00Z","status":"sealed","package":{"ephemeralPublicKey":"key","nonce":"nonce","ciphertext":"ciphertext"}}"#,
+        )
+        .unwrap();
+        assert_eq!(sealed.status, DeviceEnrollmentStatus::Sealed);
+        assert!(sealed.package.is_some());
     }
 
     #[test]
