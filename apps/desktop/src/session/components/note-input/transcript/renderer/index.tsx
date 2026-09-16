@@ -512,7 +512,9 @@ export function TranscriptViewer({
             onContextClose={handleContextClose}
             onAction={handleSelectionAction}
             onEdit={onEditModeChange ? handleEditSelection : undefined}
-            onChangeSpeaker={handleChangeSpeakerSelection}
+            onChangeSpeaker={
+              onEditModeChange ? handleChangeSpeakerSelection : undefined
+            }
           />
         </div>
 

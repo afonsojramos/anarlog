@@ -77,25 +77,26 @@ vi.mock("./selection-menu", () => ({
     onChangeSpeaker,
   }: {
     onChangeSpeaker?: (selection: TranscriptWordSelection) => void;
-  }) => (
-    <button
-      onClick={() =>
-        onChangeSpeaker?.({
-          text: "Transcript word",
-          startMs: 0,
-          groups: [
-            {
-              transcriptId: "1",
-              segmentKey: { channel: "RemoteParty", speaker_index: 1 },
-              wordIds: ["word-1"],
-            },
-          ],
-        })
-      }
-    >
-      Change speaker from here
-    </button>
-  ),
+  }) =>
+    onChangeSpeaker && (
+      <button
+        onClick={() =>
+          onChangeSpeaker?.({
+            text: "Transcript word",
+            startMs: 0,
+            groups: [
+              {
+                transcriptId: "1",
+                segmentKey: { channel: "RemoteParty", speaker_index: 1 },
+                wordIds: ["word-1"],
+              },
+            ],
+          })
+        }
+      >
+        Change speaker from here
+      </button>
+    ),
   MultiSelectionBar: ({
     entryCount,
     selection,
@@ -460,6 +461,21 @@ describe("TranscriptViewer", () => {
     );
     expect(onEditModeChange).toHaveBeenCalledWith(true);
     expect(onEnter).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not offer the speaker picker without an edit-mode callback", () => {
+    render(
+      <TranscriptViewer
+        transcriptIds={["1"]}
+        liveSegments={[]}
+        currentActive={false}
+        editMode
+        scrollRef={createRef()}
+      />,
+    );
+    expect(
+      screen.queryByRole("button", { name: "Change speaker from here" }),
+    ).toBeNull();
   });
 
   it("saves removal of selected blocks across transcripts", async () => {
