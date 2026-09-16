@@ -892,9 +892,12 @@ pub(super) async fn apply_e2ee_replica_changes_inner(
                 republish_merged_row = true;
                 stats.merged_fields += 1;
             }
-            // A whole-column record from an older build was honoured; this
-            // build re-seals the column as chunks so current builds converge.
-            if chunk_size_for(&table, field_name).is_some() {
+            // Preserve the row's existing wire format. Introducing chunks here
+            // would make an otherwise compatible row unreadable by 1.4.23.
+            if states.values().any(|state| {
+                parse_chunk_field(&table, &state.field_name)
+                    .is_some_and(|(column, _)| column == field_name)
+            }) {
                 republish_merged_row = true;
             }
             let value_tag =
@@ -935,6 +938,7 @@ pub(super) async fn apply_e2ee_replica_changes_inner(
             match outcome {
                 ChunkedColumnOutcome::Deferred(record_ids) => {
                     stats.skipped_local_changes += record_ids.len() as u64;
+                    stats.incomplete_chunk_columns += 1;
                     deferred_pending_ids.extend(record_ids);
                 }
                 ChunkedColumnOutcome::Applied {
