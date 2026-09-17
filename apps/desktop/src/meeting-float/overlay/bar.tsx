@@ -8,11 +8,15 @@ import {
   ArrowsInSimple,
   ArrowsOutSimple,
   CaretDown,
+  CircleNotch,
   Square,
+  WarningCircle,
+  X,
 } from "@anlg/ui/components/icons";
 import { DancingSticks } from "@anlg/ui/components/ui/dancing-sticks";
 import { cn } from "@anlg/utils";
 
+import { DictationTranscript } from "./dictation";
 import {
   FLOATING_BAR_COMPACT_GAP,
   FLOATING_BAR_COMPACT_HEIGHT,
@@ -36,10 +40,12 @@ import {
 export function FloatingBarOverlay({
   state,
   onStop,
+  onCancel,
   onToggleExpanded,
 }: {
   state: FloatingBarState;
   onStop: () => void;
+  onCancel?: () => void;
   onToggleExpanded: (expanded: boolean) => void;
 }) {
   const [hovered, setHovered] = useState(false);
@@ -57,6 +63,7 @@ export function FloatingBarOverlay({
         <ExpandedPanel
           state={state}
           hovered={hovered}
+          onCancel={onCancel}
           onStop={onStop}
           onToggleExpanded={onToggleExpanded}
         />
@@ -64,6 +71,7 @@ export function FloatingBarOverlay({
         <CompactPill
           state={state}
           hovered={hovered}
+          onCancel={onCancel}
           onStop={onStop}
           onToggleExpanded={onToggleExpanded}
         />
@@ -76,14 +84,16 @@ function CompactPill({
   state,
   hovered,
   onStop,
+  onCancel,
   onToggleExpanded,
 }: {
   state: FloatingBarState;
   hovered: boolean;
   onStop: () => void;
+  onCancel?: () => void;
   onToggleExpanded: (expanded: boolean) => void;
 }) {
-  const width = compactWidth(state.liveCaptionToggleVisible);
+  const width = compactWidth(state.liveCaptionToggleVisible, !!state.dictation);
   const height =
     FLOATING_BAR_COMPACT_HEIGHT +
     (hovered ? FLOATING_BAR_HOVER_HANDLE_RESERVED_HEIGHT : 0);
@@ -112,6 +122,7 @@ function CompactPill({
           state={state}
           isExpanded={false}
           colors={colors}
+          onCancel={onCancel}
           onStop={onStop}
           onToggleExpanded={onToggleExpanded}
         />
@@ -124,11 +135,13 @@ function ExpandedPanel({
   state,
   hovered,
   onStop,
+  onCancel,
   onToggleExpanded,
 }: {
   state: FloatingBarState;
   hovered: boolean;
   onStop: () => void;
+  onCancel?: () => void;
   onToggleExpanded: (expanded: boolean) => void;
 }) {
   const colors = barColors(state);
@@ -169,24 +182,36 @@ function ExpandedPanel({
             height: FLOATING_BAR_COMPACT_HEIGHT,
             paddingLeft: 16,
             paddingRight:
-              compactControlsWidth(state.liveCaptionToggleVisible) + 12,
+              compactControlsWidth(
+                state.liveCaptionToggleVisible,
+                !!state.dictation,
+              ) + 12,
           }}
         >
           <p
             className="min-w-0 truncate text-[13px] font-semibold"
             style={{ color: colors.content }}
           >
-            {state.title}
+            {state.dictation?.phase === "transcribing"
+              ? "Finishing…"
+              : state.dictation?.phase === "starting"
+                ? "Starting…"
+                : state.title}
           </p>
         </div>
         <TranscriptList
+          key={state.dictation?.sessionId ?? "meeting"}
+          dictation={state.dictation}
           bubbles={state.transcriptBubbles ?? []}
           colorScheme={state.colorScheme}
         />
         <div
           className="absolute top-0 right-0 flex items-center justify-center"
           style={{
-            width: compactControlsWidth(state.liveCaptionToggleVisible),
+            width: compactControlsWidth(
+              state.liveCaptionToggleVisible,
+              !!state.dictation,
+            ),
             height: FLOATING_BAR_COMPACT_HEIGHT,
             marginRight: FLOATING_BAR_COMPACT_HORIZONTAL_PADDING,
           }}
@@ -195,6 +220,7 @@ function ExpandedPanel({
             state={state}
             isExpanded
             colors={colors}
+            onCancel={onCancel}
             onStop={onStop}
             onToggleExpanded={onToggleExpanded}
           />
@@ -209,12 +235,14 @@ function FloatingControls({
   isExpanded,
   colors,
   onStop,
+  onCancel,
   onToggleExpanded,
 }: {
   state: FloatingBarState;
   isExpanded: boolean;
   colors: BarColors;
   onStop: () => void;
+  onCancel?: () => void;
   onToggleExpanded: (expanded: boolean) => void;
 }) {
   return (
@@ -222,6 +250,24 @@ function FloatingControls({
       className="flex items-center"
       style={{ gap: FLOATING_BAR_COMPACT_GAP }}
     >
+      {state.dictation && (
+        <button
+          type="button"
+          data-tauri-drag-region="false"
+          aria-label="Cancel dictation"
+          title="Cancel dictation"
+          onClick={onCancel}
+          className="flex items-center justify-center"
+          style={{
+            width: FLOATING_BAR_COMPACT_ICON_SIZE,
+            height: FLOATING_BAR_COMPACT_ICON_SIZE,
+            borderRadius: FLOATING_BAR_CONTROL_RADIUS,
+            color: colors.content,
+          }}
+        >
+          <X size={14} />
+        </button>
+      )}
       <StopControl state={state} colors={colors} onStop={onStop} />
       {state.liveCaptionToggleVisible ? (
         <button
@@ -268,7 +314,16 @@ function StopControl({
     <button
       type="button"
       data-tauri-drag-region="false"
-      aria-label="Stop listening"
+      aria-label={
+        state.dictation
+          ? "Finish dictation"
+          : state.status === "reconnecting"
+            ? "Reconnecting live transcription; stop listening"
+            : state.status === "error"
+              ? "Transcription unavailable; stop listening"
+              : "Stop listening"
+      }
+      disabled={state.dictation?.phase === "transcribing"}
       onClick={onStop}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -281,11 +336,19 @@ function StopControl({
         color: colors.accent,
       }}
     >
-      {hovered ? (
+      {state.dictation?.phase === "transcribing" ? (
+        <span role="status" className="text-xs">
+          Finishing…
+        </span>
+      ) : hovered ? (
         <span className="flex items-center gap-1.5 text-xs font-semibold">
           <Square size={9} />
-          Stop
+          {state.dictation ? "Done" : "Stop"}
         </span>
+      ) : state.status === "reconnecting" ? (
+        <CircleNotch size={20} className="animate-spin" aria-hidden="true" />
+      ) : state.status === "error" ? (
+        <WarningCircle size={20} aria-hidden="true" />
       ) : (
         <DancingSticks
           color={colors.accent}
@@ -303,7 +366,9 @@ function StopControl({
 function TranscriptList({
   bubbles,
   colorScheme,
+  dictation,
 }: {
+  dictation: FloatingBarState["dictation"];
   bubbles: FloatingTranscriptBubble[];
   colorScheme: FloatingBarState["colorScheme"];
 }) {
@@ -314,7 +379,7 @@ function TranscriptList({
     if (pinned) {
       bottomRef.current?.scrollIntoView?.({ block: "end" });
     }
-  }, [bubbles, pinned]);
+  }, [bubbles, pinned, dictation?.text, dictation?.partial]);
 
   return (
     <div className="relative h-[calc(100%-38px)] px-3 pb-3">
@@ -327,23 +392,38 @@ function TranscriptList({
           setPinned(distance < 20);
         }}
       >
-        <div className="flex min-h-full flex-col justify-end gap-2">
-          {bubbles.map((bubble, index) => (
-            <TranscriptBubble
-              key={bubble.id}
-              bubble={bubble}
+        <div
+          className={cn([
+            "flex min-h-full flex-col gap-2",
+            dictation ? "justify-start" : "justify-end",
+          ])}
+        >
+          {dictation ? (
+            <DictationTranscript
+              dictation={dictation}
               colorScheme={colorScheme}
-              showsSpeakerLabel={
-                index === 0 ||
-                bubbles[index - 1]?.speakerLabel !== bubble.speakerLabel ||
-                bubbles[index - 1]?.isSelf !== bubble.isSelf
-              }
             />
-          ))}
+          ) : (
+            bubbles.map((bubble, index) => (
+              <TranscriptBubble
+                key={bubble.id}
+                bubble={bubble}
+                colorScheme={colorScheme}
+                showsSpeakerLabel={
+                  index === 0 ||
+                  bubbles[index - 1]?.speakerLabel !== bubble.speakerLabel ||
+                  bubbles[index - 1]?.isSelf !== bubble.isSelf
+                }
+              />
+            ))
+          )}
           <div ref={bottomRef} />
         </div>
       </div>
-      {!pinned && bubbles.length > 0 ? (
+      {!pinned &&
+      (dictation
+        ? !!(dictation.text || dictation.partial)
+        : bubbles.length > 0) ? (
         <button
           type="button"
           data-tauri-drag-region="false"

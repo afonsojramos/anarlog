@@ -31,29 +31,27 @@ enum FloatingBarLayout {
   static let hoverHandleHorizontalPadding: CGFloat = 8
   static let dragClickThreshold: CGFloat = 4
 
-  static func compactControlsWidth(showsExpand: Bool) -> CGFloat {
-    if showsExpand {
-      return compactStopWidth + compactGap + compactIconSize
-    }
-
-    return compactSoloStopWidth
+  static func compactControlsWidth(showsExpand: Bool, isDictation: Bool = false) -> CGFloat {
+    let recordingControls =
+      showsExpand ? compactStopWidth + compactGap + compactIconSize : compactSoloStopWidth
+    return recordingControls + (isDictation ? compactIconSize + compactGap : 0)
   }
 
-  static func compactWidth(showsExpand: Bool) -> CGFloat {
-    compactControlsWidth(showsExpand: showsExpand) + compactHorizontalPadding * 2
+  static func compactWidth(showsExpand: Bool, isDictation: Bool = false) -> CGFloat {
+    compactControlsWidth(showsExpand: showsExpand, isDictation: isDictation)
+      + compactHorizontalPadding * 2
   }
 
-  static func containerSize(isExpanded: Bool, showsExpand: Bool) -> NSSize {
-    if isExpanded {
-      return NSSize(
-        width: expandedWidth + inset * 2,
-        height: expandedHeight + hoverHandleReservedHeight + inset * 2)
-    }
-
-    return NSSize(
-      width: compactWidth(showsExpand: showsExpand) + inset * 2,
-      height: compactHeight + hoverHandleReservedHeight + inset * 2)
+  static func containerSize(isExpanded: Bool, showsExpand: Bool, isDictation: Bool = false)
+    -> NSSize
+  {
+    NSSize(
+      width: (isExpanded
+        ? expandedWidth : compactWidth(showsExpand: showsExpand, isDictation: isDictation)) + inset
+        * 2,
+      height: (isExpanded ? expandedHeight : compactHeight) + hoverHandleReservedHeight + inset * 2)
   }
+
 }
 
 struct FloatingBarView: View {
@@ -68,223 +66,158 @@ struct FloatingBarView: View {
   @State private var dragStart: FloatingBarDragStart?
   private let transcriptBottomAnchorId = "floating-transcript-bottom-anchor"
 
-  var body: some View {
-    Group {
-      if model.isExpanded {
-        expandedPanel
-      } else {
-        compactPill
-      }
-    }
-    .padding(FloatingBarLayout.inset)
-    .frame(
-      width: containerSize.width,
-      height: containerSize.height,
-      alignment: .bottomTrailing
-    )
-    .contentShape(Rectangle())
-    .simultaneousGesture(dragClickSuppressor)
-    .onHover { isBarHovered = $0 }
+  private var bodyHeight: CGFloat {
+    containerSize.height - FloatingBarLayout.inset * 2 - FloatingBarLayout.hoverHandleReservedHeight
   }
 
-  private var compactPill: some View {
-    let height =
-      FloatingBarLayout.compactHeight
-      + (isBarHovered ? FloatingBarLayout.hoverHandleReservedHeight : 0)
-    let width = FloatingBarLayout.compactWidth(showsExpand: model.liveCaptionToggleVisible)
-    let pillShape = RoundedRectangle(
-      cornerRadius: FloatingBarLayout.compactCornerRadius,
-      style: .continuous
-    )
-    let innerStrokeShape = RoundedRectangle(
-      cornerRadius: FloatingBarLayout.compactCornerRadius - FloatingBarLayout.innerStrokeInset,
-      style: .continuous
-    )
+  private var expandsUpward: Bool { model.placement?.expandsUpward ?? true }
 
-    return ZStack(alignment: .bottom) {
+  var body: some View {
+    let width = containerSize.width - FloatingBarLayout.inset * 2
+    let radius =
+      model.isExpanded
+      ? FloatingBarLayout.expandedCornerRadius : FloatingBarLayout.compactCornerRadius
+    let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+    ZStack(alignment: .bottom) {
       if isBarHovered {
-        FloatingBarHoverHandle(
-          color: dragHandleDotColor,
-          width: width
-        )
-        .frame(height: FloatingBarLayout.hoverHandleHeight)
-        .padding(.top, FloatingBarLayout.hoverHandleTopPadding)
-        .frame(
-          width: width,
-          height: FloatingBarLayout.hoverHandleReservedHeight,
-          alignment: .top
-        )
-        .frame(maxHeight: .infinity, alignment: .top)
-        .accessibilityHidden(true)
-        .transition(.opacity)
+        FloatingBarHoverHandle(color: dragHandleDotColor, width: width)
+          .frame(height: FloatingBarLayout.hoverHandleHeight)
+          .padding(.top, FloatingBarLayout.hoverHandleTopPadding)
+          .frame(maxHeight: .infinity, alignment: .top)
+          .accessibilityHidden(true)
       }
-
-      floatingControls(isExpanded: false)
-        .frame(
-          width: FloatingBarLayout.compactControlsWidth(
-            showsExpand: model.liveCaptionToggleVisible),
-          height: FloatingBarLayout.compactHeight
-        )
-        .frame(
-          width: width,
-          height: FloatingBarLayout.compactHeight
-        )
+      ZStack(alignment: .topLeading) {
+        if model.isExpanded {
+          expandedPanel
+            .frame(width: width, height: max(0, bodyHeight - FloatingBarLayout.compactHeight))
+            .offset(y: expandsUpward ? 0 : FloatingBarLayout.compactHeight)
+        }
+        floatingControls(isExpanded: model.isExpanded)
+          .frame(
+            width: FloatingBarLayout.compactControlsWidth(
+              showsExpand: model.liveCaptionToggleVisible, isDictation: model.dictation != nil),
+            height: FloatingBarLayout.compactHeight
+          )
+          .position(
+            x: (model.placement?.controlsCenterX ?? containerSize.width / 2)
+              - FloatingBarLayout.inset,
+            y: expandsUpward
+              ? bodyHeight - FloatingBarLayout.compactHeight / 2
+              : FloatingBarLayout.compactHeight / 2)
+      }
+      .frame(width: width, height: bodyHeight, alignment: .topLeading)
     }
     .frame(
       width: width,
-      height: height,
+      height: bodyHeight + (isBarHovered ? FloatingBarLayout.hoverHandleReservedHeight : 0),
       alignment: .bottom
     )
-    .background(
-      pillShape
-        .fill(isBarHovered ? envelopeSurfaceColor : surfaceColor)
-    )
+    .background(shape.fill(isBarHovered && !model.isExpanded ? envelopeSurfaceColor : surfaceColor))
+    .overlay(shape.strokeBorder(outerStrokeColor, lineWidth: 0.5))
     .overlay(
-      pillShape
-        .strokeBorder(outerStrokeColor, lineWidth: 0.5)
+      RoundedRectangle(
+        cornerRadius: radius - FloatingBarLayout.innerStrokeInset, style: .continuous
+      )
+      .strokeBorder(innerStrokeColor, lineWidth: 0.5)
+      .padding(FloatingBarLayout.innerStrokeInset)
     )
-    .overlay(
-      innerStrokeShape
-        .strokeBorder(innerStrokeColor, lineWidth: 0.5)
-        .padding(FloatingBarLayout.innerStrokeInset)
-    )
-    .clipShape(pillShape)
+    .clipShape(shape)
+    .padding(FloatingBarLayout.inset)
+    .frame(width: containerSize.width, height: containerSize.height, alignment: .bottom)
+    .contentShape(Rectangle())
+    .simultaneousGesture(dragClickSuppressor)
+    .onHover { isBarHovered = $0 }
     .animation(.easeOut(duration: 0.12), value: isBarHovered)
   }
 
   private var expandedPanel: some View {
-    let surfaceShape = RoundedRectangle(
-      cornerRadius: FloatingBarLayout.expandedCornerRadius,
-      style: .continuous
-    )
-    let innerStrokeShape = RoundedRectangle(
-      cornerRadius: FloatingBarLayout.expandedCornerRadius - FloatingBarLayout.innerStrokeInset,
-      style: .continuous
-    )
+    VStack(spacing: 12) {
+      HStack {
+        Text(
+          model.dictation?.phase == "transcribing"
+            ? "Finishing…" : model.dictation?.phase == "starting" ? "Starting…" : model.title
+        )
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(primaryContentColor)
+        .lineLimit(1)
+        .truncationMode(.tail)
 
-    return VStack(spacing: FloatingBarLayout.hoverHandleGap) {
-      FloatingBarHoverHandle(
-        color: dragHandleDotColor,
-        width: FloatingBarLayout.expandedWidth
-      )
-      .opacity(isBarHovered ? 1 : 0)
-      .scaleEffect(isBarHovered ? 1 : 0.92)
-      .accessibilityHidden(true)
+        Spacer(minLength: 12)
+      }
+      .padding(.leading, FloatingBarLayout.expandedPadding + 4)
+      .padding(.trailing, FloatingBarLayout.expandedPadding + 4)
+      .frame(height: FloatingBarLayout.compactHeight)
 
-      ZStack(alignment: .topTrailing) {
-        VStack(spacing: 12) {
-          HStack {
-            Text(model.title)
-              .font(.system(size: 13, weight: .semibold))
-              .foregroundStyle(primaryContentColor)
-              .lineLimit(1)
-              .truncationMode(.tail)
-
-            Spacer(minLength: 12)
+      ScrollViewReader { proxy in
+        ZStack(alignment: .bottom) {
+          ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 8) {
+              if let dictation = model.dictation {
+                DictationTranscript(dictation: dictation, color: primaryContentColor)
+              } else {
+                ForEach(Array(model.transcriptBubbles.enumerated()), id: \.element.id) {
+                  index, bubble in
+                  TranscriptBubbleView(
+                    bubble: bubble,
+                    showsSpeakerLabel: showsSpeakerLabel(at: index),
+                    colorScheme: model.colorScheme
+                  )
+                  .id(bubble.id)
+                }
+              }
+              Color.clear
+                .frame(height: FloatingBarLayout.expandedPadding)
+                .id(transcriptBottomAnchorId)
+            }
+            .frame(maxWidth: .infinity, alignment: .bottom)
+            .background(
+              TranscriptScrollObserver(isPinnedToBottom: $shouldAutoScrollTranscript)
+            )
           }
-          .padding(.leading, FloatingBarLayout.expandedPadding + 4)
-          .padding(
-            .trailing,
-            FloatingBarLayout.compactControlsWidth(showsExpand: model.liveCaptionToggleVisible)
-              + 12
-          )
-          .frame(height: FloatingBarLayout.compactHeight)
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .onChange(of: model.transcriptBubbles.last?.id) { _, bubbleId in
+            if bubbleId != nil, shouldAutoScrollTranscript {
+              scrollTranscriptToBottom(proxy)
+            }
+          }
+          .onChange(of: model.dictation) { _, _ in
+            if shouldAutoScrollTranscript { scrollTranscriptToBottom(proxy) }
+          }
+          .onAppear {
+            shouldAutoScrollTranscript = true
+            scrollTranscriptToBottom(proxy)
+          }
 
-          ScrollViewReader { proxy in
-            ZStack(alignment: .bottom) {
-              ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: 8) {
-                  ForEach(Array(model.transcriptBubbles.enumerated()), id: \.element.id) {
-                    index, bubble in
-                    TranscriptBubbleView(
-                      bubble: bubble,
-                      showsSpeakerLabel: showsSpeakerLabel(at: index),
-                      colorScheme: model.colorScheme
-                    )
-                    .id(bubble.id)
-                  }
-                  Color.clear
-                    .frame(height: FloatingBarLayout.expandedPadding)
-                    .id(transcriptBottomAnchorId)
-                }
-                .frame(maxWidth: .infinity, alignment: .bottom)
-                .background(
-                  TranscriptScrollObserver(isPinnedToBottom: $shouldAutoScrollTranscript)
-                )
-              }
-              .frame(maxWidth: .infinity, maxHeight: .infinity)
-              .onChange(of: model.transcriptBubbles.last?.id) { _, bubbleId in
-                if bubbleId != nil, shouldAutoScrollTranscript {
-                  scrollTranscriptToBottom(proxy)
-                }
-              }
-              .onAppear {
+          if !shouldAutoScrollTranscript,
+            model.dictation != nil || model.transcriptBubbles.last?.id != nil
+          {
+            transcriptBottomChip {
+              performClick {
+                scrollTranscriptToBottom(proxy, animated: true)
                 shouldAutoScrollTranscript = true
-                scrollTranscriptToBottom(proxy)
-              }
-
-              if !shouldAutoScrollTranscript, model.transcriptBubbles.last?.id != nil {
-                transcriptBottomChip {
-                  performClick {
-                    scrollTranscriptToBottom(proxy, animated: true)
-                    shouldAutoScrollTranscript = true
-                  }
-                }
-                .padding(.bottom, 0)
-                .transition(.move(edge: .bottom))
               }
             }
-            .animation(.easeOut(duration: 0.12), value: shouldAutoScrollTranscript)
+            .padding(.bottom, 0)
+            .transition(.move(edge: .bottom))
           }
-          .padding(.horizontal, FloatingBarLayout.expandedPadding)
-          .padding(.bottom, FloatingBarLayout.expandedPadding)
         }
-        .frame(
-          width: FloatingBarLayout.expandedWidth,
-          height: FloatingBarLayout.expandedHeight,
-          alignment: .top
-        )
-
-        floatingControls(isExpanded: true)
-          .frame(
-            width: FloatingBarLayout.compactControlsWidth(
-              showsExpand: model.liveCaptionToggleVisible),
-            height: FloatingBarLayout.compactHeight
-          )
-          .padding(.trailing, FloatingBarLayout.compactHorizontalPadding)
+        .animation(.easeOut(duration: 0.12), value: shouldAutoScrollTranscript)
       }
-      .frame(
-        width: FloatingBarLayout.expandedWidth,
-        height: FloatingBarLayout.expandedHeight,
-        alignment: .top
-      )
+      .id(model.dictation?.sessionId)
+      .padding(.horizontal, FloatingBarLayout.expandedPadding)
+      .padding(.bottom, FloatingBarLayout.expandedPadding)
     }
-    .padding(.top, FloatingBarLayout.hoverHandleTopPadding)
-    .frame(
-      width: FloatingBarLayout.expandedWidth,
-      height: FloatingBarLayout.expandedHeight
-        + (isBarHovered ? FloatingBarLayout.hoverHandleReservedHeight : 0),
-      alignment: .bottom
-    )
-    .background(
-      surfaceShape
-        .fill(surfaceColor)
-    )
-    .overlay(
-      surfaceShape
-        .strokeBorder(outerStrokeColor, lineWidth: 0.5)
-    )
-    .overlay(
-      innerStrokeShape
-        .strokeBorder(innerStrokeColor, lineWidth: 0.5)
-        .padding(FloatingBarLayout.innerStrokeInset)
-    )
-    .clipShape(surfaceShape)
-    .animation(.easeOut(duration: 0.12), value: isBarHovered)
   }
 
   private func floatingControls(isExpanded: Bool) -> some View {
     HStack(spacing: FloatingBarLayout.compactGap) {
+      if model.dictation != nil {
+        FloatingIconButton(
+          systemName: "xmark", accessibilityLabel: "Cancel dictation",
+          color: primaryContentColor, hoverFill: controlHoverFill,
+          size: FloatingBarLayout.compactIconSize,
+          action: { performClick { dictationAction("cancel") } })
+      }
       audioControl(
         width: model.liveCaptionToggleVisible
           ? FloatingBarLayout.compactStopWidth : FloatingBarLayout.compactSoloStopWidth,
@@ -311,16 +244,25 @@ struct FloatingBarView: View {
       style: .continuous
     )
 
-    return Button(action: { performClick(RustBridge.stopListening) }) {
+    return Button(action: {
+      performClick {
+        if model.dictation != nil { dictationAction("finish") } else { RustBridge.stopListening() }
+      }
+    }) {
       Group {
-        if isStopHovered {
+        if model.dictation?.phase == "transcribing" {
+          ProgressView().controlSize(.small)
+        } else if isStopHovered {
           HStack(spacing: 6) {
             Image(systemName: "stop.fill")
               .font(.system(size: FloatingBarLayout.stopSquareSize, weight: .bold))
-            Text("Stop")
+            Text(model.dictation == nil ? "Stop" : "Done")
               .font(.system(size: 12, weight: .semibold))
           }
           .foregroundStyle(stopColor)
+        } else if model.status == .reconnecting {
+          ProgressView().controlSize(.small)
+            .accessibilityHidden(true)
         } else if model.status == .error {
           ErrorMark(color: errorAccentColor)
             .frame(
@@ -343,15 +285,24 @@ struct FloatingBarView: View {
       .contentShape(shape)
     }
     .buttonStyle(.plain)
-    .accessibilityLabel("Stop listening")
+    .disabled(model.dictation?.phase == "transcribing")
+    .accessibilityLabel(
+      model.dictation != nil
+        ? "Finish dictation"
+        : model.status == .reconnecting
+          ? "Reconnecting live transcription; stop listening"
+          : model.status == .error ? "Transcription unavailable; stop listening" : "Stop listening"
+    )
     .onHover { isStopHovered = $0 }
   }
 
   private var containerSize: NSSize {
-    FloatingBarLayout.containerSize(
-      isExpanded: model.isExpanded,
-      showsExpand: model.liveCaptionToggleVisible
-    )
+    model.placement?.frame.size
+      ?? FloatingBarLayout.containerSize(
+        isExpanded: model.isExpanded,
+        showsExpand: model.liveCaptionToggleVisible,
+        isDictation: model.dictation != nil
+      )
   }
 
   private var accentColor: Color {
@@ -473,8 +424,22 @@ struct FloatingBarView: View {
   }
 
   private func setExpanded(_ expanded: Bool) {
-    model.isExpanded = expanded
-    settings.setLiveCaptionMinimized(!expanded)
+    if model.dictation != nil {
+      dictationAction("togglePreview")
+    } else {
+      model.isExpanded = expanded
+      settings.setLiveCaptionMinimized(!expanded)
+    }
+  }
+
+  private func dictationAction(_ action: String) {
+    guard let dictation = model.dictation else { return }
+    let payload = ["sessionId": dictation.sessionId, "action": action]
+    if let data = try? JSONSerialization.data(withJSONObject: payload),
+      let json = String(data: data, encoding: .utf8)
+    {
+      json.withCString { rust_on_floating_bar_dictation_action($0) }
+    }
   }
 
   private func showsSpeakerLabel(at index: Int) -> Bool {
@@ -798,7 +763,7 @@ private struct ErrorMark: View {
   }
 }
 
-private struct DancingBars: View {
+struct DancingBars: View {
   let color: Color
   let amplitude: Double
 

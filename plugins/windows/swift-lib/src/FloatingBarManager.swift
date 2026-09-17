@@ -6,8 +6,6 @@ final class FloatingBarManager {
   static let shared = FloatingBarManager()
 
   private var panel: NSPanel?
-  private var expandsUpward = true
-  private var expansion: (compact: NSRect, expanded: NSRect)?
   private let model = FloatingBarViewModel()
   private let settingsModel = FloatingOverlaySettingsModel.shared
   private let placement = FloatingPanelPositionController()
@@ -26,16 +24,14 @@ final class FloatingBarManager {
         guard let self, let panel = self.panel else { return }
         guard !self.isApplyingExternalState else { return }
         let layout = self.layout(isExpanded: isExpanded)
-        let didResize = self.resize(panel, to: layout)
-        if !didResize {
-          self.position(panel, force: true, layout: layout)
-        }
+        self.resize(panel, to: layout)
       }
       .store(in: &cancellables)
   }
 
   func show() {
     commandCoalescer.enqueueShow()
+    commandCoalescer.flush()
   }
 
   func hide() {
@@ -67,14 +63,13 @@ final class FloatingBarManager {
 
   private func applyShow() {
     if let panel {
-      position(panel, force: true)
+      position(panel, force: true, followsPointer: model.dictation != nil)
       startObservingDisplayChanges()
       panel.orderFrontRegardless()
       return
     }
 
-    expandsUpward = true
-    expansion = nil
+    model.placement = nil
     FloatingBarFonts.register()
 
     let panel = createPanel()
@@ -85,7 +80,6 @@ final class FloatingBarManager {
         panelOrigin: { [weak self] in self?.panel?.frame.origin },
         movePanel: { [weak self] origin in
           guard let self, let panel = self.panel else { return }
-          self.expansion = nil
           self.placement.moveByUserDrag(
             panel,
             to: origin,
@@ -99,7 +93,7 @@ final class FloatingBarManager {
     hostingView.autoresizingMask = [.width, .height]
 
     panel.contentView = hostingView
-    position(panel, force: true)
+    position(panel, force: true, followsPointer: model.dictation != nil)
     panel.orderFrontRegardless()
     self.panel = panel
     startObservingDisplayChanges()
@@ -116,6 +110,12 @@ final class FloatingBarManager {
 
   private func applyUpdate(_ state: FloatingBarStatePayload) {
     isApplyingExternalState = true
+    let startsDictation =
+      state.dictation?.sessionId != model.dictation?.sessionId && state.dictation != nil
+    if startsDictation { placement.clearPinnedOrigin() }
+    if state.dictation != nil, panel?.isKeyWindow == true { panel?.resignKey() }
+    model.dictation = state.dictation
+    (panel as? FloatingBarPanel)?.dictationMode = state.dictation != nil
     if model.status != state.status {
       model.status = state.status
     }
@@ -135,16 +135,18 @@ final class FloatingBarManager {
       model.transcriptBubbles = transcriptBubbles
     }
     settingsModel.apply(floatingBarState: state)
-    let isExpanded =
-      state.liveCaptionToggleVisible && !settingsModel.liveCaptionMinimized
+    let minimized =
+      state.dictation == nil ? settingsModel.liveCaptionMinimized : state.liveCaptionMinimized
+    let isExpanded = state.liveCaptionToggleVisible && !minimized
     if model.isExpanded != isExpanded {
       model.isExpanded = isExpanded
     }
     isApplyingExternalState = false
     if let panel {
-      let didResize = resize(panel)
-      if !didResize {
-        position(panel, force: true)
+      if startsDictation {
+        position(panel, force: true, followsPointer: true)
+      } else {
+        resize(panel)
       }
     }
   }
@@ -156,7 +158,7 @@ final class FloatingBarManager {
   }
 
   private func createPanel() -> NSPanel {
-    let panel = NSPanel(
+    let panel = FloatingBarPanel(
       contentRect: NSRect(
         x: 0,
         y: 0,
@@ -167,6 +169,7 @@ final class FloatingBarManager {
       defer: false
     )
 
+    panel.dictationMode = model.dictation != nil
     panel.level = .floating
     panel.isFloatingPanel = true
     panel.hidesOnDeactivate = false
@@ -184,59 +187,52 @@ final class FloatingBarManager {
   private func position(
     _ panel: NSPanel,
     force: Bool = false,
+    followsPointer: Bool = false,
     layout targetLayout: FloatingBarWindowLayout? = nil
   ) {
     let layout = targetLayout ?? currentLayout
-    let size = size(for: layout)
+    let size = model.placement?.frame.size ?? size(for: layout)
     placement.position(
       panel,
       force: force,
       size: size,
       anchorOffset: controlAnchorOffset(for: layout),
-      followsPointer: false
+      followsPointer: followsPointer
     ) { screen, size in
       let frame = screen.visibleFrame
       let x = frame.midX - size.width / 2
       let y = frame.minY + FloatingBarLayout.screenMargin
       return NSPoint(x: x, y: y)
     }
+    resize(panel, to: layout)
   }
 
-  private func resize(
-    _ panel: NSPanel,
-    to targetLayout: FloatingBarWindowLayout? = nil
-  ) -> Bool {
+  private func resize(_ panel: NSPanel, to targetLayout: FloatingBarWindowLayout? = nil) {
     let nextLayout = targetLayout ?? currentLayout
-    let size = size(for: nextLayout)
-    let previousSize = panel.frame.size
-    panel.minSize = size
-    guard previousSize != size else { return false }
-
+    let requestedSize = size(for: nextLayout)
+    let offset = controlAnchorOffset(for: nextLayout)
+    let anchor = NSPoint(x: panel.frame.minX + offset.x, y: panel.frame.minY + offset.y)
     let workArea = (panel.screen ?? NSScreen.main)?.visibleFrame ?? panel.frame
-    if size.height > previousSize.height {
-      expandsUpward = FloatingBarPlacement.expandsUpward(frame: panel.frame, workArea: workArea)
-    }
-    let nextAnchorOffset = controlAnchorOffset(for: nextLayout)
-    let frame = FloatingBarPlacement.resizedFrame(
-      panel.frame, size: size, workArea: workArea, expandsUpward: expandsUpward,
-      expansion: expansion)
-    if size.height > previousSize.height {
-      expansion = (panel.frame, frame)
-    } else {
-      expansion = nil
-    }
+    let grows =
+      nextLayout.isExpanded
+      && panel.frame.height
+        <= FloatingBarLayout.containerSize(isExpanded: false, showsExpand: true).height
+    let expandsUpward =
+      grows
+      ? workArea.maxY - anchor.y > anchor.y - workArea.minY
+      : model.placement?.expandsUpward ?? true
+    let next = FloatingControlPlacement.layout(
+      anchor: anchor, size: requestedSize,
+      workArea: workArea, expandsUpward: expandsUpward)
+    model.placement = next
+    panel.minSize = next.frame.size
     placement.setFrame(
-      panel,
-      to: frame,
-      display: true,
-      animate: false,
-      anchorOffset: nextAnchorOffset)
-    panel.contentView?.frame = NSRect(origin: .zero, size: size)
-    return true
+      panel, to: next.frame, display: true, animate: false, anchorOffset: next.controlOffset)
+    panel.contentView?.frame = NSRect(origin: .zero, size: next.frame.size)
   }
 
   private var currentSize: NSSize {
-    size(for: currentLayout)
+    model.placement?.frame.size ?? size(for: currentLayout)
   }
 
   private var currentLayout: FloatingBarWindowLayout {
@@ -246,20 +242,24 @@ final class FloatingBarManager {
   private func layout(isExpanded: Bool) -> FloatingBarWindowLayout {
     FloatingBarWindowLayout(
       isExpanded: isExpanded,
-      showsExpand: model.liveCaptionToggleVisible
+      showsExpand: model.liveCaptionToggleVisible,
+      isDictation: model.dictation != nil
     )
   }
 
   private func size(for layout: FloatingBarWindowLayout) -> NSSize {
     FloatingBarLayout.containerSize(
       isExpanded: layout.isExpanded,
-      showsExpand: layout.showsExpand
+      showsExpand: layout.showsExpand,
+      isDictation: layout.isDictation
     )
   }
 
   private func controlAnchorOffset(for layout: FloatingBarWindowLayout) -> NSPoint {
-    let size = size(for: layout)
-    return NSPoint(x: size.width / 2, y: expandsUpward ? 0 : size.height)
+    model.placement?.controlOffset
+      ?? NSPoint(
+        x: (panel?.frame.width ?? size(for: layout).width) / 2,
+        y: FloatingBarLayout.inset + FloatingBarLayout.compactHeight / 2)
   }
 
   private func startObservingDisplayChanges() {
@@ -271,7 +271,7 @@ final class FloatingBarManager {
       queue: .main
     ) { [weak self] _ in
       guard let self, let panel = self.panel else { return }
-      self.position(panel, force: true)
+      self.position(panel, force: true, followsPointer: self.model.dictation != nil)
     }
   }
 
@@ -287,4 +287,11 @@ final class FloatingBarManager {
 private struct FloatingBarWindowLayout {
   let isExpanded: Bool
   let showsExpand: Bool
+  let isDictation: Bool
+}
+
+final class FloatingBarPanel: NSPanel {
+  var dictationMode = false
+  override var canBecomeKey: Bool { !dictationMode && super.canBecomeKey }
+  override var canBecomeMain: Bool { false }
 }

@@ -1,8 +1,10 @@
 use ashpd::desktop::global_shortcuts::{GlobalShortcuts, NewShortcut};
 use futures_util::StreamExt;
 use tauri::Manager;
-use tauri_plugin_global_shortcut::{Modifiers, Shortcut};
+use tauri_plugin_global_shortcut::Shortcut;
 use tauri_specta::Event;
+
+use super::trigger::portal_trigger;
 
 use crate::ShortcutEvent;
 
@@ -35,7 +37,7 @@ pub async fn register(app: tauri::AppHandle, key: Shortcut) -> Result<Registrati
             .receive_deactivated()
             .await
             .map_err(|e| e.to_string())?;
-        let trigger = portal_trigger(key);
+        let trigger = portal_trigger(key)?;
         portal
             .bind_shortcuts(
                 &session,
@@ -104,29 +106,4 @@ pub async fn register(app: tauri::AppHandle, key: Shortcut) -> Result<Registrati
         let _ = ShortcutEvent::Cancelled.emit(&app);
     });
     Ok(Registration { stop, task })
-}
-
-fn portal_trigger(key: Shortcut) -> String {
-    let mut parts = Vec::new();
-    for (flag, label) in [
-        (Modifiers::CONTROL, "CTRL"),
-        (Modifiers::ALT, "ALT"),
-        (Modifiers::SHIFT, "SHIFT"),
-        (Modifiers::SUPER, "LOGO"),
-    ] {
-        if key.mods.contains(flag) {
-            parts.push(label.to_string());
-        }
-    }
-    let code = key.key.to_string();
-    parts.push(match code.as_str() {
-        "Space" => "space".into(),
-        "Backspace" => "BackSpace".into(),
-        _ => code
-            .strip_prefix("Key")
-            .or_else(|| code.strip_prefix("Digit"))
-            .unwrap_or(&code)
-            .into(),
-    });
-    parts.join("+")
 }
