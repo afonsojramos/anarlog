@@ -4973,6 +4973,10 @@ msgstr ""
 msgid "Show in folder"
 msgstr ""
 
+#: src/settings/appearance/time-format.tsx
+msgid "Show meeting times as 14:00 instead of 2:00 PM."
+msgstr "Mostrar las horas de las reuniones como 14:00 en lugar de 2:00 PM."
+
 #: src/main/windows-title-bar.tsx
 msgid "Show sidebar"
 msgstr ""
@@ -5979,6 +5983,10 @@ msgstr ""
 #: src/settings/team/index.tsx
 msgid "Usage"
 msgstr ""
+
+#: src/settings/appearance/time-format.tsx
+msgid "Use 24-hour time"
+msgstr "Usar el formato de 24 horas"
 
 #: src/settings/team/index.tsx
 msgid "Use 3–63 lowercase letters, numbers, or hyphens."
