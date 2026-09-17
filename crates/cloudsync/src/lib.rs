@@ -423,6 +423,19 @@ mod tests {
             .await
             .unwrap();
         let mut connection = sender.acquire().await.unwrap();
+        let (watermark, final_chunk): (i64, bool) = sqlx::query_as(
+            "SELECT watermark_db_version, is_final FROM cloudsync_payload_chunks WHERE until_db_version = 0 LIMIT 1",
+        )
+        .fetch_one(&mut *connection)
+        .await
+        .unwrap();
+        assert!(!final_chunk);
+        assert!(watermark > first_version);
+        let truncated_scan = pending_payload_batch(&mut connection, 8, 1, 32 * 1024 * 1024)
+            .await
+            .unwrap();
+        assert!(truncated_scan.fits && truncated_scan.complete && truncated_scan.remaining);
+        assert_eq!(truncated_scan.watermark_db_version, Some(first_version));
         let batch = pending_payload_batch(&mut connection, 8, 4096, 32 * 1024 * 1024)
             .await
             .unwrap();

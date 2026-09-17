@@ -275,6 +275,7 @@ pub async fn pending_payload_batch(
     )
     .await?;
     if first.fits && first.complete && first.chunks > 0 {
+        // Every chunk carries the watermark for the entire scan, even if we stop early.
         first.remaining = first.watermark_db_version < batch.watermark_db_version;
         return Ok(first);
     }
