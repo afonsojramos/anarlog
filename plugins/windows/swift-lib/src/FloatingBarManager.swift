@@ -6,6 +6,8 @@ final class FloatingBarManager {
   static let shared = FloatingBarManager()
 
   private var panel: NSPanel?
+  private var expandsUpward = true
+  private var expansion: (compact: NSRect, expanded: NSRect)?
   private let model = FloatingBarViewModel()
   private let settingsModel = FloatingOverlaySettingsModel.shared
   private let placement = FloatingPanelPositionController()
@@ -71,6 +73,8 @@ final class FloatingBarManager {
       return
     }
 
+    expandsUpward = true
+    expansion = nil
     FloatingBarFonts.register()
 
     let panel = createPanel()
@@ -81,6 +85,7 @@ final class FloatingBarManager {
         panelOrigin: { [weak self] in self?.panel?.frame.origin },
         movePanel: { [weak self] origin in
           guard let self, let panel = self.panel else { return }
+          self.expansion = nil
           self.placement.moveByUserDrag(
             panel,
             to: origin,
@@ -191,8 +196,8 @@ final class FloatingBarManager {
       followsPointer: false
     ) { screen, size in
       let frame = screen.visibleFrame
-      let x = frame.maxX - size.width - FloatingBarLayout.screenMargin
-      let y = frame.maxY - size.height - FloatingBarLayout.screenMargin
+      let x = frame.midX - size.width / 2
+      let y = frame.minY + FloatingBarLayout.screenMargin
       return NSPoint(x: x, y: y)
     }
   }
@@ -207,19 +212,19 @@ final class FloatingBarManager {
     panel.minSize = size
     guard previousSize != size else { return false }
 
-    let previousLayout =
-      layout(matching: previousSize)
-      ?? FloatingBarWindowLayout(
-        isExpanded: !nextLayout.isExpanded,
-        showsExpand: model.liveCaptionToggleVisible)
-    let previousAnchorOffset = controlAnchorOffset(for: previousLayout)
+    let workArea = (panel.screen ?? NSScreen.main)?.visibleFrame ?? panel.frame
+    if size.height > previousSize.height {
+      expandsUpward = FloatingBarPlacement.expandsUpward(frame: panel.frame, workArea: workArea)
+    }
     let nextAnchorOffset = controlAnchorOffset(for: nextLayout)
-    let anchor = placement.anchorPoint(for: panel, offset: previousAnchorOffset)
-    let frame = NSRect(
-      x: anchor.x - nextAnchorOffset.x,
-      y: anchor.y - nextAnchorOffset.y,
-      width: size.width,
-      height: size.height)
+    let frame = FloatingBarPlacement.resizedFrame(
+      panel.frame, size: size, workArea: workArea, expandsUpward: expandsUpward,
+      expansion: expansion)
+    if size.height > previousSize.height {
+      expansion = (panel.frame, frame)
+    } else {
+      expansion = nil
+    }
     placement.setFrame(
       panel,
       to: frame,
@@ -252,35 +257,9 @@ final class FloatingBarManager {
     )
   }
 
-  private func layout(matching size: NSSize) -> FloatingBarWindowLayout? {
-    let candidates = [
-      FloatingBarWindowLayout(isExpanded: true, showsExpand: true),
-      FloatingBarWindowLayout(isExpanded: true, showsExpand: false),
-      FloatingBarWindowLayout(isExpanded: false, showsExpand: true),
-      FloatingBarWindowLayout(isExpanded: false, showsExpand: false),
-    ]
-
-    return candidates.first { candidate in
-      let candidateSize = self.size(for: candidate)
-      return abs(candidateSize.width - size.width) < 0.5
-        && abs(candidateSize.height - size.height) < 0.5
-    }
-  }
-
   private func controlAnchorOffset(for layout: FloatingBarWindowLayout) -> NSPoint {
-    if layout.isExpanded {
-      return NSPoint(
-        x: FloatingBarLayout.inset + FloatingBarLayout.expandedWidth
-          - FloatingBarLayout.compactHorizontalPadding,
-        y: FloatingBarLayout.inset + FloatingBarLayout.expandedHeight
-      )
-    }
-
-    return NSPoint(
-      x: FloatingBarLayout.inset + FloatingBarLayout.compactHorizontalPadding
-        + FloatingBarLayout.compactControlsWidth(showsExpand: layout.showsExpand),
-      y: FloatingBarLayout.inset + FloatingBarLayout.compactHeight
-    )
+    let size = size(for: layout)
+    return NSPoint(x: size.width / 2, y: expandsUpward ? 0 : size.height)
   }
 
   private func startObservingDisplayChanges() {
