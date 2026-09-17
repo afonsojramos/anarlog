@@ -17,9 +17,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.render.mockImplementation(async (input) => ({
     status: "ok",
-    data: input.enhanceSystem
-      ? input.enhanceSystem.formatOverride || "Use h1 headings and bullets."
-      : "Meeting transcript",
+    data: input.enhanceSystem ? "Rendered system prompt" : "Meeting transcript",
   }));
   mocks.streamText.mockImplementation(() => ({
     fullStream: (async function* () {
@@ -33,7 +31,7 @@ beforeEach(() => {
 });
 
 it.each(["crisp", "balanced", "detailed"] as const)(
-  "keeps custom Auto prose instructions intact through the %s workflow",
+  "passes custom formatting to the renderer without adding layout rules in %s mode",
   async (summaryLength) => {
     const formatOverride =
       "Write an executive overview in prose, followed by discussion prose and bullets.";
@@ -67,7 +65,10 @@ it.each(["crisp", "balanced", "detailed"] as const)(
     expect(chunks).toHaveLength(1);
     expect(mocks.streamText).toHaveBeenCalledTimes(1);
     const request = mocks.streamText.mock.calls[0][0];
-    expect(request.system).toContain(formatOverride);
+    expect(mocks.render).toHaveBeenCalledWith({
+      enhanceSystem: { language: "en", formatOverride },
+    });
+    expect(request.system).toContain("Rendered system prompt");
     expect(request.system).not.toMatch(
       /never put prose|bullets per section|# Next Steps/,
     );
