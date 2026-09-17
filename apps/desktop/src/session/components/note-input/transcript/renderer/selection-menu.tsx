@@ -194,7 +194,8 @@ export function MultiSelectionBar({
           side="top"
           align="center"
           sideOffset={8}
-          className="w-80"
+          collisionPadding={16}
+          className="flex max-h-(--radix-popover-content-available-height) w-80 max-w-[calc(100vw-32px)] flex-col overflow-hidden"
         >
           <SpeakerParticipantPicker
             sessionId={selection.sessionId}
