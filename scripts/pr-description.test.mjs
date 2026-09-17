@@ -69,6 +69,26 @@ test("uses the exact Intent label in its error", () => {
   assert.match(result.stderr, /after \*\*Intent:\*\* what/);
 });
 
+test("rejects an overly verbose Intent", () => {
+  const result = validate("", {
+    PR_BODY: `## Summary\n\n**Intent:** ${"a".repeat(401)}\n\n## Demo\nN/A docs`,
+  });
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stderr,
+    /Keep \*\*Intent:\*\* to one or two short sentences/,
+  );
+});
+
+test("requires the Demo heading", () => {
+  const result = validate("", {
+    PR_BODY:
+      "## Summary\n\n**Intent:** Prevent duplicate notes when the connection recovers.",
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Add a ## Demo section/);
+});
+
 for (const overrides of [
   { PR_AUTHOR_ASSOCIATION: "OWNER" },
   { PR_AUTHOR_ASSOCIATION: "MEMBER" },
