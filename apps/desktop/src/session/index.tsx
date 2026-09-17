@@ -274,15 +274,17 @@ function TabContentNoteInner({
               tab={tab}
               standaloneWindow={standaloneWindow}
               viewSwitcher={
-                <SessionViewSwitcher
-                  sessionId={sessionId}
-                  editorTabs={editorTabs}
-                  currentTab={currentView}
-                  handleTabChange={handleTabChange}
-                  isTranscribing={isTranscribing}
-                  transcriptEditMode={transcriptEditMode}
-                  onTranscriptEditModeChange={handleTranscriptEditModeChange}
-                />
+                editorTabs.length > 1 ? (
+                  <SessionViewSwitcher
+                    sessionId={sessionId}
+                    editorTabs={editorTabs}
+                    currentTab={currentView}
+                    handleTabChange={handleTabChange}
+                    isTranscribing={isTranscribing}
+                    transcriptEditMode={transcriptEditMode}
+                    onTranscriptEditModeChange={handleTranscriptEditModeChange}
+                  />
+                ) : null
               }
             />
           )
