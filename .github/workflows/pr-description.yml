@@ -157,7 +157,7 @@ jobs:
 
           if (intent.length < 20) {
             errors.push(
-              "Write at least 20 characters after **Intent:**: what problem did you see, and what should this change do instead?",
+              "Write at least 20 characters after **Intent:** what problem did you see, and what should this change do instead?",
             );
           }
 
@@ -178,11 +178,12 @@ jobs:
             ? ""
             : visibleLines
                 .slice(demoIndex + 1, demoEndIndex === -1 ? visibleLines.length : demoEndIndex)
+                .filter((line) => !line.isCode)
                 .map((line) => line.text)
                 .join("\n")
                 .trim();
-          const videoLinkPattern = /(https?:\/\/\S*(user-attachments\/assets|loom\.com|youtu\.be|youtube\.com|streamable\.com)\S*)|\.(mp4|mov|webm|gif)(\?\S*)?\b/i;
-          const naSkipPattern = /^n\/a\b.{15,}/is;
+          const videoLinkPattern = /\bhttps?:\/\/[^\s<>"\x60]+/i;
+          const naSkipPattern = /^n\/a\b[ \t]*(?:[-,:—–][ \t]*)?[^\s,:—–-][^\r\n]*$/i;
 
           if (demoIndex === -1 || demoText.length === 0) {
             errors.push(
