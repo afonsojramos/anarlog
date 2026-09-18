@@ -262,6 +262,7 @@ fn classify_installation(_install_path: &Path, _managed_path: &Path) -> Result<C
     Ok(CliState::Missing)
 }
 
+#[cfg(unix)]
 fn is_replaceable_symlink_target(target: &Path, managed_path: &Path) -> bool {
     managed_path
         .parent()

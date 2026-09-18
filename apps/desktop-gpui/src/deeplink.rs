@@ -8,6 +8,7 @@
 //! flows that cannot use the custom scheme (the onboarding demo) call back
 //! into a short-lived loopback HTTP server, like `startCallbackServer`.
 
+#[cfg(unix)]
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -122,6 +123,7 @@ pub enum Claim {
     /// the receiver, one per line.
     Primary(Receiver<String>),
     /// Another instance is running and received our URLs; exit.
+    #[cfg(unix)]
     Forwarded,
 }
 

@@ -3,6 +3,7 @@
 //! settings keys each starter writes (`starters.tsx`, `workflows.ts`,
 //! `types.ts`).
 
+use anlg_local_api_core::MarkdownExportOptions;
 use chrono::{DateTime, Utc};
 
 pub const WORKFLOWS_KEY: &str = "automation_workflows";
@@ -383,6 +384,7 @@ pub struct Step {
     pub target: Option<TargetRef>,
     /// `directory` for `markdown_export`.
     pub directory: String,
+    pub options: Option<MarkdownExportOptions>,
 }
 
 impl Step {
@@ -393,24 +395,39 @@ impl Step {
             kind,
             target: None,
             directory: String::new(),
+            options: (kind == StepType::MarkdownExport).then(MarkdownExportOptions::default),
         }
     }
 
     /// `isWorkflowStepReady`
     pub fn is_ready(&self) -> bool {
         match self.kind {
-            StepType::MarkdownExport => !self.directory.trim().is_empty(),
+            StepType::MarkdownExport => {
+                !self.directory.trim().is_empty()
+                    && self.options.as_ref().is_none_or(|options| {
+                        options.include_memo
+                            || options.include_summary
+                            || options.include_transcript
+                            || options.include_action_items
+                    })
+            }
             _ => self.target.is_some(),
         }
     }
 
     fn to_json(&self) -> serde_json::Value {
         match self.kind {
-            StepType::MarkdownExport => serde_json::json!({
-                "id": self.id,
-                "type": self.kind.as_str(),
-                "directory": self.directory,
-            }),
+            StepType::MarkdownExport => {
+                let mut value = serde_json::json!({
+                    "id": self.id,
+                    "type": self.kind.as_str(),
+                    "directory": self.directory,
+                });
+                if let Some(options) = &self.options {
+                    value["options"] = serde_json::json!(options);
+                }
+                value
+            }
             _ => serde_json::json!({
                 "id": self.id,
                 "type": self.kind.as_str(),
@@ -432,14 +449,37 @@ impl Step {
                     .and_then(|d| d.as_str())
                     .unwrap_or_default()
                     .to_string(),
+                options: value.get("options").map(parse_markdown_export_options),
             },
             _ => Step {
                 id,
                 kind,
                 target: value.get("target").and_then(target_from_value),
                 directory: String::new(),
+                options: None,
             },
         })
+    }
+}
+
+fn parse_markdown_export_options(value: &serde_json::Value) -> MarkdownExportOptions {
+    let boolean = |key| {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true)
+    };
+    MarkdownExportOptions {
+        include_memo: boolean("include_memo"),
+        include_summary: boolean("include_summary"),
+        include_transcript: boolean("include_transcript"),
+        include_action_items: boolean("include_action_items"),
+        filename: value
+            .get("filename")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        include_id_suffix: boolean("include_id_suffix"),
     }
 }
 
@@ -718,6 +758,38 @@ mod tests {
         assert!(parse_workflows("").is_empty());
         assert!(parse_workflows("{}").is_empty());
         assert!(parse_workflows("not json").is_empty());
+    }
+
+    #[test]
+    fn markdown_options_survive_workflow_updates() {
+        let raw = r#"[{"id":"w1","steps":[{"id":"s1","type":"markdown_export","directory":"exports","options":{"include_memo":false,"include_summary":false,"include_transcript":true,"include_action_items":false,"filename":"{date} transcript","include_id_suffix":false}}]}]"#;
+        let mut workflows = parse_workflows(raw);
+        let expected: serde_json::Value = serde_json::from_str(raw).unwrap();
+        workflows[0].title = "Renamed".into();
+        workflows[0].processed_session_ids.push("meeting-1".into());
+        let saved: serde_json::Value =
+            serde_json::from_str(&serialize_workflows(&workflows)).unwrap();
+        assert_eq!(
+            saved[0]["steps"][0]["options"],
+            expected[0]["steps"][0]["options"]
+        );
+        assert!(workflows[0].is_ready());
+        workflows[0].steps[0]
+            .options
+            .as_mut()
+            .unwrap()
+            .include_transcript = false;
+        assert!(!workflows[0].is_ready());
+
+        let options = parse_markdown_export_options(&serde_json::json!({
+            "include_memo": false, "include_summary": "invalid", "filename": null,
+        }));
+        assert!(!options.include_memo);
+        assert!(options.include_summary);
+        assert!(options.include_transcript);
+        assert!(options.include_action_items);
+        assert!(options.include_id_suffix);
+        assert!(options.filename.is_empty());
     }
 
     #[test]

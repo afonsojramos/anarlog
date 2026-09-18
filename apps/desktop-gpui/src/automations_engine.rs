@@ -179,7 +179,13 @@ async fn execute_step(
         if directory.is_empty() {
             return Err("choose an export folder first".to_string());
         }
-        return export::export_meeting_markdown(pool, session_id.to_string(), directory).await;
+        return export::export_meeting_markdown(
+            pool,
+            session_id.to_string(),
+            directory,
+            step.options.as_ref(),
+        )
+        .await;
     }
     let Some(target) = &step.target else {
         return Err(format!("choose a {} first", step_label(step.kind)));

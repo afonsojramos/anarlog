@@ -17,6 +17,13 @@ pub const SHOW_EVENTS_KEY: &str = "show_events_in_menu_bar";
 
 /// A tray menu click.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    not(any(target_os = "linux", test)),
+    allow(
+        dead_code,
+        reason = "Tray clicks are currently implemented only on Linux"
+    )
+)]
 pub enum TrayAction {
     Open,
     Start,
@@ -69,17 +76,27 @@ pub fn app_name(identifier: &str) -> &'static str {
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
 const ID_OPEN: &str = "anlg_tray_open";
+#[cfg(any(target_os = "linux", test))]
 const ID_START: &str = "anlg_tray_start";
+#[cfg(any(target_os = "linux", test))]
 const ID_SETTINGS: &str = "anlg_tray_settings";
+#[cfg(any(target_os = "linux", test))]
 const ID_SHOW_EVENTS: &str = "anlg_tray_show_events";
+#[cfg(target_os = "linux")]
 const ID_VERSION: &str = "anlg_tray_version";
+#[cfg(any(target_os = "linux", test))]
 const ID_HIDE: &str = "anlg_tray_hide";
+#[cfg(any(target_os = "linux", test))]
 const ID_QUIT_COMPLETELY: &str = "anlg_tray_quit_completely";
+#[cfg(any(target_os = "linux", test))]
 const AGENDA_PREFIX: &str = "anlg_tray_agenda_";
+#[cfg(any(target_os = "linux", test))]
 const AGENDA_SECTION_PREFIX: &str = "anlg_tray_agenda_section_";
 
 /// `AnlgMenuItem::try_from` + `handle_agenda_menu_event` over a menu id.
+#[cfg(any(target_os = "linux", test))]
 pub fn action_for(id: &str) -> Option<TrayAction> {
     match id {
         ID_OPEN => Some(TrayAction::Open),

@@ -20,6 +20,7 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 specta = { workspace = true, features = ["derive"] }
 sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "sync", "rt", "time"] }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }

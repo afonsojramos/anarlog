@@ -10,6 +10,10 @@ use std::path::PathBuf;
 /// `filters: [{ name, extensions }]` of the dialog plugin, or an `accept`
 /// list of MIME patterns for a file input (`image/*`).
 #[derive(Debug, Clone)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    allow(dead_code, reason = "GPUI path prompts do not support filters")
+)]
 pub enum Filter {
     Extensions {
         name: &'static str,
@@ -30,7 +34,18 @@ pub struct Options {
     pub title: String,
     pub pick: Pick,
     /// `defaultPath`: the folder the dialog opens in.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        allow(
+            dead_code,
+            reason = "GPUI path prompts do not support a starting directory"
+        )
+    )]
     pub start_dir: Option<PathBuf>,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        allow(dead_code, reason = "GPUI path prompts do not support filters")
+    )]
     pub filters: Vec<Filter>,
 }
 

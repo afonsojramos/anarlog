@@ -5,7 +5,7 @@ import {
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
 } from "@anlg/ui/components/ui/dropdown-menu";
-import { sonnerToast } from "@anlg/ui/components/ui/toast";
+import { toast } from "@anlg/ui/components/ui/toast";
 
 import { MenuGroup, MenuHint } from "./menu";
 
@@ -91,7 +91,7 @@ export function QuickSettingsMenu() {
     mutationFn: async () => {
       const result = await commands.switchToNativeShell();
       if (result.status === "error") {
-        sonnerToast.error(result.error);
+        toast.error(result.error);
       }
     },
   });

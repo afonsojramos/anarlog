@@ -9,7 +9,9 @@ use anlg_desktop_auth::{AccountInfo, Persistence, SessionManager, paths, storage
 use anlg_desktop_auth::{LinuxSecurePersistence, SecretStore};
 use tokio::sync::watch;
 
+#[cfg(target_os = "linux")]
 const AUTH_SCOPE: &str = "auth";
+#[cfg(target_os = "linux")]
 const AUTH_KEY: &str = "supabase-storage";
 const SUPABASE_URL: Option<&str> = option_env!("VITE_SUPABASE_URL");
 const SUPABASE_ANON_KEY: Option<&str> = option_env!("VITE_SUPABASE_ANON_KEY");
@@ -401,10 +403,10 @@ fn persistence(identifier: &str) -> Box<dyn Persistence> {
     let path = paths::resolve_auth_path_from_paths(&legacy_path, &store_path, &new_path);
     #[cfg(target_os = "windows")]
     {
-        return Box::new(WindowsPersistence {
+        Box::new(WindowsPersistence {
             secure_path: anlg_storage::windows_auth::secure_path(&path),
             fallback: FilePersistence { path },
-        });
+        })
     }
     #[cfg(not(target_os = "windows"))]
     {
