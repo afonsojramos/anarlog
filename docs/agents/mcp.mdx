@@ -3,13 +3,13 @@ title: "MCP for agents"
 description: "Connect an MCP client to Anarlog meeting context over hosted OAuth or local stdio."
 ---
 
-The Anarlog plugin connects to hosted Cloud MCP at `https://api.anarlog.so/mcp` with OAuth. That is the default for Claude, Cursor, ChatGPT, Codex, and Copilot.
+The Anarlog plugin prefers local data when your agent can access it. Use local MCP or the `anarlog` CLI on your computer. Remote agents connect to hosted Cloud MCP at `https://api.anarlog.so/mcp` with OAuth.
 
-Cloud only has opted-in snapshots. If a meeting is missing there, use the local `anarlog` CLI. For a fully local agent that should not use Cloud, start the stdio server in the `anarlog` executable.
+Local access needs no Cloud login, Pro subscription, or completed sync. Cloud only has opted-in readable snapshots, uploaded separately from encrypted Cloud Sync.
 
 ## Configure the plugin
 
-Enable **Cloud API & Connectors**, then install the **Anarlog** plugin. The host discovers OAuth from the MCP endpoint. See [Cloud API and connectors](/reference/api-cloud#remote-mcp).
+Install the **Anarlog** plugin and [local CLI](/installation) for local access. For Cloud access, enable **Cloud API & Connectors** and use the host's connection control to approve OAuth. Some MCP hosts prompt on first cloud tool use. See [Cloud API and connectors](/reference/api-cloud#remote-mcp).
 
 Clients that do not install plugins can add:
 
@@ -56,12 +56,14 @@ For a custom database path:
 ```
 
 <Note>
-  Do not run local stdio and Cloud MCP as two `list_meetings` servers in the same client. Use Cloud first and the local CLI or local MCP only to fill gaps.
+  If you configure both local and Cloud MCP, give them distinct server names so the agent can identify the source. Prefer local data and keep each meeting's subsequent reads on the selected source.
 </Note>
 
 ## Use tools deliberately
 
-Start with `list_meetings`, then pass a returned `id` to `get_meeting`. Call `get_meeting_transcript` only when the notes and summaries do not answer the question. Report only meetings the tools return. If Cloud `list_meetings` is empty, search the local CLI before concluding there are no meetings. Do not invent titles.
+Start with `list_meetings`, then pass a returned `id` to `get_meeting`. Call `get_meeting_transcript` only when the notes and summaries do not answer the question. Report only meetings the tools return and identify the source. An empty search only establishes that no meetings matched in that source. Check an available alternate source for missing meetings unless the user restricted access; do not invent titles or silently merge different versions.
+
+Report sync status or snapshot freshness only when a tool provides it. A meeting's `updated_at` is not a last-sync timestamp. Local database errors need to be reported rather than hidden by a Cloud fallback.
 
 Transcript pages default to 200 words and cap at 500. Follow `pagination.next_offset` only when you need more context.
 

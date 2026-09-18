@@ -6,7 +6,7 @@ List or search meetings again and use the returned ID. Do not retry a guessed ID
 
 ## No meetings returned
 
-If Cloud `list_meetings` returns an empty list, search again with `anarlog --json meetings list` when the local CLI is available. An empty Cloud list usually means snapshots are off or that meeting has not uploaded. Tell the user none were found only after the sources you can reach are empty. Do not invent meetings.
+An empty list means no meetings matched in that source. It does not mean the local database is unavailable. If the user did not restrict the source, check an already-connected alternate source for a missing meeting. Label any result with its source. An empty Cloud list can mean the snapshot has not uploaded; a remote agent cannot check local-only meetings. Do not invent meetings or claim that every source is empty.
 
 ## Database not found
 
@@ -14,7 +14,7 @@ Run `anarlog --json doctor`. Ask the user to open Anarlog once if the database d
 
 ## Database operation failed
 
-Confirm the desktop app and CLI come from compatible revisions. Do not run migrations or write SQL from the agent.
+Confirm the desktop app and CLI come from compatible revisions. Report the error instead of silently switching to Cloud. Do not run migrations or write SQL from the agent.
 
 ## Cloud command failed
 

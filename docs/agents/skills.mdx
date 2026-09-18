@@ -5,8 +5,8 @@ description: "Teach a compatible agent when and how to use Anarlog's MCP and CLI
 
 The public Anarlog skill teaches agents a single workflow across Cloud MCP and the local CLI:
 
-1. Call connected Cloud MCP tools first.
-2. Fill gaps with `anarlog --json` when Cloud has no snapshot.
+1. Prefer local MCP or `anarlog --json meetings --source local` when the agent can access your database.
+2. Use OAuth-connected Cloud MCP when running remotely or when local access is unavailable.
 3. Resolve meeting IDs from search results.
 4. Fetch meeting detail before transcript text.
 5. Keep transcript reads bounded and never access SQLite directly.
@@ -21,7 +21,7 @@ The published file is self-contained. The repository package adds references for
 
 ## Install the plugin
 
-The `Anarlog` plugin connects to hosted Cloud MCP and bundles the skill. Enable **Settings → Developers → Cloud API & Connectors** first. [Install the Anarlog CLI](/installation) when the skill needs to fill a meeting that is not in Cloud.
+The `Anarlog` plugin bundles the skill and an optional hosted Cloud MCP connection. [Install the Anarlog CLI](/installation) for local access; no Cloud login or Pro subscription is needed. For remote access, enable **Settings → Developers → Cloud API & Connectors** on a Pro account and connect through OAuth.
 
 <Note>
   If you previously installed **Anarlog Cloud**, replace it with **Anarlog**.
@@ -49,7 +49,9 @@ codex plugin marketplace add fastrepl/anarlog \
   --sparse agent-plugins/anarlog
 ```
 
-The first cloud tool use opens Anarlog's OAuth sign-in and consent flow; no cloud API key is required for Cloud reads.
+Use the host's cloud connection control to sign in and approve OAuth. Some MCP hosts prompt on first cloud tool use. No cloud API key is required for OAuth connections. A skill-only installation does not create an account connection.
+
+The Fastrepl plugin includes an optional **Anarlog Cloud** App connection for Codex. Leave it disconnected for local CLI access. Public directory listings have a separate review and release process from the repository marketplace.
 
 Cursor Teams and Enterprise administrators can import `https://github.com/fastrepl/anarlog` as a team marketplace, then install **Anarlog**.
 

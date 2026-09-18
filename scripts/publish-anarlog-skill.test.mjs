@@ -42,7 +42,7 @@ test("plugin manifests use one stable identity and version", async () => {
   for (const manifestPath of PLUGIN_MANIFESTS) {
     const manifest = await readJson(manifestPath);
     assert.equal(manifest.name, "anarlog");
-    assert.equal(manifest.version, "1.2.1");
+    assert.equal(manifest.version, "1.3.0");
     assert.equal(manifest.license, "MIT");
   }
 
@@ -54,6 +54,7 @@ test("plugin manifests use one stable identity and version", async () => {
 });
 
 test("repository marketplaces list a single Anarlog plugin", async () => {
+  const { version } = await readJson(`${PLUGIN_ROOT}/plugin.json`);
   const marketplacePaths = [
     ".claude-plugin/marketplace.json",
     ".cursor-plugin/marketplace.json",
@@ -67,6 +68,8 @@ test("repository marketplaces list a single Anarlog plugin", async () => {
       ["anarlog"],
     );
     assert.equal(marketplace.plugins[0].source, `./${PLUGIN_ROOT}`);
+    assert.equal(marketplace.plugins[0].version, version);
+    assert.equal(marketplace.metadata.version, version);
   }
 
   const codexMarketplace = await readJson(".agents/plugins/marketplace.json");
@@ -87,7 +90,10 @@ test("the Anarlog plugin connects Cloud MCP over HTTP", async () => {
     url: "https://api.anarlog.so/mcp",
   };
 
-  assert.deepEqual(portable.mcpServers.anarlog, expectedServer);
+  assert.deepEqual(portable.mcpServers.anarlog, {
+    ...expectedServer,
+    type: "streamable-http",
+  });
   assert.deepEqual(native.mcpServers.anarlog, expectedServer);
 
   const cursor = await readJson(`${PLUGIN_ROOT}/.cursor-plugin/plugin.json`);
@@ -110,6 +116,16 @@ test("marketplace icon is a 512px square PNG", async () => {
   assert.equal(icon.readUInt32BE(16), 512);
   assert.equal(icon.readUInt32BE(20), 512);
   assert.ok(icon.length < 5 * 1024 * 1024);
+});
+
+test("Codex exposes a registered cloud connection without requiring it for local use", async () => {
+  const codex = await readJson(`${PLUGIN_ROOT}/.codex-plugin/plugin.json`);
+  assert.equal(codex.apps, "./.app.json");
+
+  const { apps } = await readJson(`${PLUGIN_ROOT}/.app.json`);
+  assert.deepEqual(Object.keys(apps), ["anarlog"]);
+  assert.match(apps.anarlog.id, /^asdk_app_[a-f0-9]{32}$/);
+  assert.equal(apps.anarlog.required, false);
 });
 
 test("the transformation changes nothing but the defined reference links", async () => {
