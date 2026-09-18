@@ -186,6 +186,8 @@ fn open_main_window(
 ) -> anyhow::Result<WindowHandle<Workspace>> {
     let identifier = store.identifier().to_string();
     let (bounds, restored) = main_window_bounds(&identifier, cx);
+    #[cfg(not(target_os = "linux"))]
+    let _ = restored;
     // Tauri ships `decorations: false` with its own title bar on Windows
     // and Linux, and a transparent title bar with inset traffic lights on
     // macOS (`tauri.macos.conf.json`).
@@ -417,10 +419,14 @@ fn main() -> anyhow::Result<()> {
     };
     // One window per database: a second launch hands its URLs to the
     // running instance (`tauri-plugin-single-instance`).
-    let forwarded = match deeplink::claim(&deeplink::socket_path(&db_path), &args.urls) {
+    let claim = deeplink::claim(&deeplink::socket_path(&db_path), &args.urls);
+    #[cfg(unix)]
+    let forwarded = match claim {
         deeplink::Claim::Forwarded => return Ok(()),
         deeplink::Claim::Primary(receiver) => receiver,
     };
+    #[cfg(not(unix))]
+    let deeplink::Claim::Primary(forwarded) = claim;
     // Held until the app exits so Nightly and stable never share the open
     // database at the same time.
     let db_dir = db_path

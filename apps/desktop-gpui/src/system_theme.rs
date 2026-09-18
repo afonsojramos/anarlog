@@ -55,6 +55,7 @@ impl SystemTheme {
         self.changed.swap(false, Ordering::SeqCst)
     }
 
+    #[cfg(target_os = "linux")]
     fn set(&self, dark: bool) {
         if self.dark.swap(dark, Ordering::SeqCst) != dark {
             self.changed.store(true, Ordering::SeqCst);
