@@ -4,11 +4,11 @@ Query Anarlog meetings with a local-first skill and an optional Cloud MCP connec
 
 ## Local access
 
-Install the [Anarlog CLI](https://docs.anarlog.so/installation) and open the desktop app once to create its database. Run `anarlog --json doctor`, then `anarlog --json meetings --source local list`. Local reads need no Cloud login, Pro subscription, or completed sync. The app can be closed after its database exists.
+Install the [Anarlog CLI](https://docs.anarlog.so/installation) and open the desktop app once to create its database. Use `anarlog-cli` instead of `anarlog` for every command on Flatpak. Run `anarlog --json doctor`, then `anarlog --json meetings --source local list`. Local reads need no Cloud login, Pro subscription, or completed sync. The app can be closed after its database exists.
 
 ## Optional Cloud access
 
-1. Sign in to an Anarlog Pro account in the desktop app.
+1. Sign in with Pro access through a personal plan or an eligible paid Team membership in the desktop app.
 2. Open **Settings → Developers → Cloud API & Connectors**, review the disclosure, and enable it.
 3. Wait for your meeting snapshots to upload.
 
@@ -16,7 +16,7 @@ Use the host's connection control to sign in and approve OAuth. Some MCP hosts p
 
 The CLI can also read hosted snapshots with `anarlog meetings --source cloud ...` after login. `--source auto` prefers the local database and uses Cloud only when it is absent; it does not check freshness or hide database errors.
 
-If you previously installed **Anarlog Cloud**, replace it with this plugin.
+The repository package is named **Anarlog**. Its optional hosted connection appears as **Anarlog Cloud**.
 
 ## Install from this repository
 

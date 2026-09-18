@@ -124,7 +124,7 @@ test("Codex exposes a registered cloud connection without requiring it for local
 
   const { apps } = await readJson(`${PLUGIN_ROOT}/.app.json`);
   assert.deepEqual(Object.keys(apps), ["anarlog"]);
-  assert.match(apps.anarlog.id, /^asdk_app_[a-f0-9]{32}$/);
+  assert.equal(apps.anarlog.id, "asdk_app_6a8db2d923748191adaf057f0b92d7c7");
   assert.equal(apps.anarlog.required, false);
 });
 

@@ -23,9 +23,9 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Anarlog",
-    "shortDescription": "Query your meetings from anywhere",
-    "longDescription": "Find meetings and read notes, summaries, participants, action items, bounded transcript excerpts, and recurring history. On your computer, prefer the local Anarlog CLI or local MCP, including unsynced changes. For remote access, optionally connect Anarlog Cloud through OAuth. Cloud access requires Pro and explicit Cloud API & Connectors opt-in, and reads separately uploaded snapshots. Local reads need no cloud connection. Export complete meeting records when requested.",
-    "developerName": "Fastrepl",
+    "shortDescription": "Query your meeting notes",
+    "longDescription": "Find meetings and read notes, summaries, participants, action items, bounded transcript excerpts, and recurring history. On your computer, prefer the local Anarlog CLI or local MCP, including unsynced changes. For remote access, optionally connect Anarlog Cloud through OAuth. Cloud access requires personal or paid-Team Pro access and explicit Cloud API & Connectors opt-in, and reads separately uploaded snapshots. Local reads need no cloud connection. Export complete meeting records when requested.",
+    "developerName": "Fastrepl, Inc",
     "category": "Productivity",
     "capabilities": [
       "Find meetings",

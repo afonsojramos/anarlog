@@ -5,7 +5,7 @@ description: "Teach a compatible agent when and how to use Anarlog's MCP and CLI
 
 The public Anarlog skill teaches agents a single workflow across Cloud MCP and the local CLI:
 
-1. Prefer local MCP or `anarlog --json meetings --source local` when the agent can access your database.
+1. Prefer local MCP or `anarlog --json meetings --source local list` when the agent can access your database.
 2. Use OAuth-connected Cloud MCP when running remotely or when local access is unavailable.
 3. Resolve meeting IDs from search results.
 4. Fetch meeting detail before transcript text.
@@ -21,10 +21,10 @@ The published file is self-contained. The repository package adds references for
 
 ## Install the plugin
 
-The `Anarlog` plugin bundles the skill and an optional hosted Cloud MCP connection. [Install the Anarlog CLI](/installation) for local access; no Cloud login or Pro subscription is needed. For remote access, enable **Settings → Developers → Cloud API & Connectors** on a Pro account and connect through OAuth.
+The `Anarlog` plugin bundles the skill and an optional hosted Cloud MCP connection. [Install the Anarlog CLI](/installation) for local access; no Cloud login or Pro subscription is needed. For remote access, enable **Settings → Developers → Cloud API & Connectors** with Pro access through a personal plan or an eligible paid Team membership and connect through OAuth.
 
 <Note>
-  If you previously installed **Anarlog Cloud**, replace it with **Anarlog**.
+  The repository package is named **Anarlog**. Its optional hosted connection appears as **Anarlog Cloud**.
 </Note>
 
 For Claude Code:
