@@ -92,7 +92,10 @@ def audio_metrics(clean, processed):
 def noise_control(clean, shield, seed):
     # Shuffling preserves the perturbation's energy and amplitude distribution.
     delta = np.random.default_rng(seed).permutation(shield - clean)
-    return np.clip(clean + delta, -1, 1)
+    control = clean + delta
+    if np.any(np.abs(control) > 1):
+        raise ValueError("Audio needs more headroom for an unclipped noise control")
+    return control
 
 
 def opus_roundtrip(source, target):

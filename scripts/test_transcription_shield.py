@@ -1,3 +1,9 @@
+# /// script
+# requires-python = ">=3.12,<3.14"
+# dependencies = ["numpy==2.2.6", "openai-whisper==20250625", "torch==2.8.0"]
+# ///
+"""Run with: uv run --script scripts/test_transcription_shield.py"""
+
 import tempfile
 import unittest
 import wave
@@ -57,6 +63,12 @@ class TranscriptionShieldTests(unittest.TestCase):
             audio_metrics(clean, noise)["snr_db"],
             audio_metrics(clean, shield)["snr_db"],
         )
+
+    def test_noise_control_rejects_permutations_that_would_clip(self):
+        clean = np.array([1.0, 0.0], dtype=np.float32)
+        shield = np.array([1.0, 0.1], dtype=np.float32)
+        with self.assertRaisesRegex(ValueError, "headroom"):
+            noise_control(clean, shield, 3)
 
     def test_metrics_do_not_silently_align_or_trim_mismatched_audio(self):
         self.assertFalse(audio_metrics(np.ones(10), np.ones(11))["length_matches"])
