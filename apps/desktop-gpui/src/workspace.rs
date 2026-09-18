@@ -718,6 +718,9 @@ impl Workspace {
                         } else {
                             toast::Auth::SignedOut
                         };
+                        this.apply_default_stt_selection(cx);
+                        this.ensure_llm_models(true, cx);
+                        this.resolve_chat_connection(cx);
                         cx.notify();
                     })
                     .is_err()

@@ -75,6 +75,7 @@ pub struct Connection {
     pub provider_id: String,
     pub base_url: String,
     pub api_key: String,
+    pub cloud_auth: Option<crate::auth::CloudAuth>,
     pub model_id: String,
     /// `default` / `low` / `medium` / `high`.
     pub reasoning_effort: String,
@@ -488,7 +489,32 @@ pub fn build_generate_request(conn: &Connection, request: &Request) -> Result<Ht
     build(conn, request, false)
 }
 
+async fn authenticated_request(
+    conn: &Connection,
+    request: &Request,
+    stream: bool,
+    force_refresh: bool,
+) -> Result<HttpRequest, String> {
+    let mut current = conn.clone();
+    if current.provider_id == "anarlog" {
+        current.api_key = current
+            .cloud_auth
+            .as_ref()
+            .ok_or_else(|| "Sign in to use Anarlog Cloud.".to_string())?
+            .access_token(force_refresh)
+            .await?;
+    }
+    if stream {
+        build_request(&current, request)
+    } else {
+        build_generate_request(&current, request)
+    }
+}
+
 fn build(conn: &Connection, request: &Request, stream: bool) -> Result<HttpRequest, String> {
+    if conn.provider_id == "anarlog" && (conn.cloud_auth.is_none() || conn.api_key.is_empty()) {
+        return Err("Sign in to use Anarlog Cloud.".to_string());
+    }
     let base = conn.base_url.trim_end_matches('/');
     if base.is_empty() {
         return Err("The language model provider has no base URL.".to_string());
@@ -547,7 +573,7 @@ fn build(conn: &Connection, request: &Request, stream: bool) -> Result<HttpReque
         merge(&mut openai_body, Some(json!({ "stream": true })));
     }
     Ok(match conn.provider_id.as_str() {
-        "anarlog" | "claude" | "chatgpt" | "grok" | "github_copilot" | "apple_foundation" => {
+        "claude" | "chatgpt" | "grok" | "github_copilot" | "apple_foundation" => {
             return Err(format!(
                 "The {} provider needs the account flows, which the native shell does not ship yet.",
                 conn.provider_id
@@ -1330,13 +1356,6 @@ pub fn stream(
 ) -> mpsc::UnboundedReceiver<Chunk> {
     let (sender, receiver) = mpsc::unbounded_channel();
     runtime.spawn(async move {
-        let http = match build_request(&conn, &request) {
-            Ok(http) => http,
-            Err(error) => {
-                let _ = sender.send(Chunk::Error(error));
-                return;
-            }
-        };
         let client = match reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(30))
             .build()
@@ -1348,10 +1367,24 @@ pub fn stream(
             }
         };
         let mut attempt = 0;
+        let mut refreshed = false;
+        let mut force_refresh = false;
         loop {
+            let http = match authenticated_request(&conn, &request, true, force_refresh).await {
+                Ok(http) => http,
+                Err(error) => {
+                    let _ = sender.send(Chunk::Error(error));
+                    return;
+                }
+            };
+            force_refresh = false;
             match run_once(&client, &http, &sender).await {
                 Ok(()) => return,
-                Err(Retry::Give(message)) => {
+                Err(Retry::Unauthorized(_)) if conn.cloud_auth.is_some() && !refreshed => {
+                    refreshed = true;
+                    force_refresh = true;
+                }
+                Err(Retry::Give(message) | Retry::Unauthorized(message)) => {
                     let _ = sender.send(Chunk::Error(message));
                     return;
                 }
@@ -1373,6 +1406,7 @@ pub fn stream(
 enum Retry {
     Again(String),
     Give(String),
+    Unauthorized(String),
 }
 
 /// A whole reply: `generateText`'s text and tool calls.
@@ -1389,16 +1423,23 @@ pub async fn generate(
     request: &Request,
     max_retries: usize,
 ) -> Result<Generated, String> {
-    let http = build_generate_request(conn, request)?;
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
         .build()
         .map_err(|error| error.to_string())?;
     let mut attempt = 0;
+    let mut refreshed = false;
+    let mut force_refresh = false;
     loop {
+        let http = authenticated_request(conn, request, false, force_refresh).await?;
+        force_refresh = false;
         match generate_once(&client, &http).await {
             Ok(generated) => return Ok(generated),
-            Err(Retry::Give(message)) => return Err(message),
+            Err(Retry::Unauthorized(_)) if conn.cloud_auth.is_some() && !refreshed => {
+                refreshed = true;
+                force_refresh = true;
+            }
+            Err(Retry::Give(message) | Retry::Unauthorized(message)) => return Err(message),
             Err(Retry::Again(message)) => {
                 attempt += 1;
                 if attempt > max_retries {
@@ -1444,7 +1485,9 @@ async fn generate_once(client: &reqwest::Client, http: &HttpRequest) -> Result<G
         .map_err(|error| Retry::Again(error.to_string()))?;
     if status >= 400 {
         let message = crate::ai_health::llm_health_error_message(status, &body);
-        return Err(if retryable_status(status) {
+        return Err(if status == 401 {
+            Retry::Unauthorized(message)
+        } else if retryable_status(status) {
             Retry::Again(message)
         } else {
             Retry::Give(message)
@@ -1633,7 +1676,9 @@ async fn run_once(
     if status >= 400 {
         let body = response.text().await.unwrap_or_default();
         let message = crate::ai_health::llm_health_error_message(status, &body);
-        return Err(if retryable_status(status) {
+        return Err(if status == 401 {
+            Retry::Unauthorized(message)
+        } else if retryable_status(status) {
             Retry::Again(message)
         } else {
             Retry::Give(message)
@@ -1750,12 +1795,103 @@ async fn run_once(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::tests::{mock_server, test_auth, test_session};
+
+    #[tokio::test]
+    async fn cloud_generations_refresh_on_401_for_streaming_and_whole_replies() {
+        for streaming in [false, true] {
+            let original = test_session(json!({"entitlements": ["hyprnote_pro"], "revision": 1}));
+            let renewed = test_session(json!({"entitlements": ["hyprnote_pro"], "revision": 2}));
+            let body = if streaming {
+                "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\ndata: [DONE]\n\n"
+                    .to_string()
+            } else {
+                json!({"choices": [{"message": {"content": "hello"}}]}).to_string()
+            };
+            let (url, requests) = mock_server(vec![
+                (401, json!({"error": "Expired token"}).to_string()),
+                (200, serde_json::to_string(&renewed).unwrap()),
+                (200, body),
+            ])
+            .await;
+            let auth = test_auth(Some(&original), Some(&url));
+            let mut connection = conn("anarlog", "Auto", "default");
+            connection.base_url = format!("{url}/llm");
+            connection.api_key.clear();
+            connection.cloud_auth = auth.cloud_auth();
+            if streaming {
+                let mut chunks = stream(&tokio::runtime::Handle::current(), connection, request());
+                let mut text = String::new();
+                let mut done = false;
+                while let Some(chunk) = chunks.recv().await {
+                    match chunk {
+                        Chunk::TextDelta(delta) => text.push_str(&delta),
+                        Chunk::Done => done = true,
+                        Chunk::Error(error) => panic!("{error}"),
+                        _ => {}
+                    }
+                }
+                assert_eq!(text, "hello");
+                assert!(done);
+            } else {
+                assert_eq!(
+                    generate(&connection, &request(), 0).await.unwrap().text,
+                    "hello"
+                );
+            }
+            let requests = requests.await.unwrap();
+            assert!(requests[0].starts_with("POST /llm/chat/completions "));
+            assert!(requests[0].contains(&format!("Bearer {}", original.access_token)));
+            assert!(requests[1].starts_with("POST /auth/v1/token?grant_type=refresh_token "));
+            assert!(requests[2].contains(&format!("Bearer {}", renewed.access_token)));
+        }
+    }
+
+    #[tokio::test]
+    async fn cloud_401_is_retried_only_once_and_byok_is_not_refreshed() {
+        for hosted in [false, true] {
+            let session = test_session(json!({"entitlements": ["hyprnote_pro"]}));
+            let unauthorized = (401, json!({"error": "Unauthorized"}).to_string());
+            let responses = if hosted {
+                vec![
+                    unauthorized.clone(),
+                    (200, serde_json::to_string(&session).unwrap()),
+                    unauthorized,
+                ]
+            } else {
+                vec![unauthorized]
+            };
+            let (url, requests) = mock_server(responses).await;
+            let auth = test_auth(Some(&session), Some(&url));
+            let mut connection = conn(
+                if hosted { "anarlog" } else { "openrouter" },
+                "m",
+                "default",
+            );
+            connection.base_url = url;
+            connection.cloud_auth = hosted.then(|| auth.cloud_auth().unwrap());
+            assert!(generate(&connection, &request(), 4).await.is_err());
+            assert_eq!(requests.await.unwrap().len(), if hosted { 3 } else { 1 });
+        }
+    }
+
+    #[tokio::test]
+    async fn signed_out_cached_cloud_connection_cannot_send_a_request() {
+        let session = test_session(json!({"entitlements": ["hyprnote_pro"]}));
+        let auth = test_auth(Some(&session), None);
+        let mut connection = conn("anarlog", "Auto", "default");
+        connection.cloud_auth = auth.cloud_auth();
+        auth.sign_out().unwrap();
+        let error = generate(&connection, &request(), 0).await.unwrap_err();
+        assert_eq!(error, "Sign in again to use Anarlog Cloud.");
+    }
 
     fn conn(provider: &str, model: &str, effort: &str) -> Connection {
         Connection {
             provider_id: provider.into(),
             base_url: "https://api.example/v1/".into(),
             api_key: "k".into(),
+            cloud_auth: None,
             model_id: model.into(),
             reasoning_effort: effort.into(),
         }

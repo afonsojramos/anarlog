@@ -476,7 +476,7 @@ fn main() -> anyhow::Result<()> {
     let auth = auth::Auth::start(&args.identifier, runtime.handle());
     let store_file = store_file::StoreFile::in_vault(store.vault_base());
     let audio = audio::provider(&args.identifier);
-    let store = Arc::new(store);
+    let store = Arc::new(store.with_auth(auth.clone()));
     let cloudsync_service = Arc::new(cloudsync::Cloudsync::new(
         store.db_runtime().clone(),
         auth.clone(),

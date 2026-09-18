@@ -604,7 +604,10 @@ impl Store {
         &self,
         settings: &super::ProviderSettings,
     ) -> tokio::task::JoinHandle<Option<crate::llm_stream::Connection>> {
-        let provider = settings.llm_provider.clone().unwrap_or_default();
+        let provider = match settings.llm_provider.as_deref() {
+            Some("hyprnote") => "anarlog".to_string(),
+            _ => settings.llm_provider.clone().unwrap_or_default(),
+        };
         let model = settings.llm_model.clone().unwrap_or_default();
         let Some(entry) = crate::ai_providers::LLM_PROVIDERS
             .iter()
@@ -633,6 +636,30 @@ impl Store {
                 &["ai", "current_llm_reasoning_effort"],
             )
             .unwrap_or_else(|| "default".to_string());
+        if provider == "anarlog" {
+            let auth = self.auth.clone();
+            return self.runtime.spawn(async move {
+                let auth = auth?;
+                auth.refresh().await;
+                let cloud_auth = auth.cloud_auth()?;
+                let base_url = if base_url.is_empty() {
+                    crate::auth::cloud_endpoint("/llm")?
+                } else {
+                    base_url
+                };
+                Some(crate::llm_stream::Connection {
+                    provider_id: provider,
+                    base_url,
+                    api_key: String::new(),
+                    cloud_auth: Some(cloud_auth),
+                    model_id: model,
+                    reasoning_effort: crate::ai_models::normalize_reasoning_effort(
+                        &reasoning_effort,
+                    )
+                    .to_string(),
+                })
+            });
+        }
         let keys = self.ai_provider_api_keys("llm", vec![provider.clone()]);
         self.runtime.spawn(async move {
             let api_key = keys
@@ -649,6 +676,7 @@ impl Store {
                 provider_id: provider,
                 base_url,
                 api_key,
+                cloud_auth: None,
                 model_id: model,
                 reasoning_effort: crate::ai_models::normalize_reasoning_effort(&reasoning_effort)
                     .to_string(),

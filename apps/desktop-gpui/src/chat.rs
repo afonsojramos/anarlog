@@ -871,6 +871,7 @@ mod tests {
             provider_id: provider.into(),
             base_url: "https://api.example/v1".into(),
             api_key: "k".into(),
+            cloud_auth: None,
             model_id: "gpt-5.6".into(),
             reasoning_effort: "default".into(),
         };

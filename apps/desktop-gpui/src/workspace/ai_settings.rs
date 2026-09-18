@@ -201,8 +201,7 @@ impl Workspace {
         (base_url, api_key)
     }
 
-    /// `getProviderSelectionBlockers(...).length === 0` with the shell's
-    /// account state: not signed in, not Pro.
+    /// `getProviderSelectionBlockers(...).length === 0`.
     pub(super) fn ai_provider_config_complete(
         &self,
         kind: ProviderKind,
@@ -218,7 +217,9 @@ impl Workspace {
                     "base_url" => !base_url.is_empty(),
                     _ => true,
                 }),
-                Requirement::Entitlement(_) | Requirement::Auth => false,
+                Requirement::Entitlement("pro") => self.is_paid(),
+                Requirement::Entitlement(_) => false,
+                Requirement::Auth => self.auth_service.signed_in(),
             })
     }
 
@@ -519,7 +520,7 @@ impl Workspace {
                 detail: None,
                 glyph: crate::stt_models::model_icon("cloud"),
                 badges: Vec::new(),
-                lock: (!self.is_pro()).then_some(super::settings::SelectLock::UpgradeToUse),
+                lock: (!self.is_paid()).then_some(super::settings::SelectLock::UpgradeToUse),
                 // `category: "latest"` → `Recommended`.
                 heading: Some("Recommended"),
             }],
@@ -897,7 +898,8 @@ impl Workspace {
         let locked = provider
             .requirements
             .iter()
-            .any(|requirement| matches!(requirement, Requirement::Entitlement("pro")));
+            .any(|requirement| matches!(requirement, Requirement::Entitlement("pro")))
+            && !self.is_paid();
         let disabled = provider.disabled || locked;
 
         let mut card = div()

@@ -220,7 +220,7 @@ impl Workspace {
     pub(super) fn selectable_stt_models(&self, provider: &Provider) -> Vec<String> {
         match provider.id {
             "anarlog" => {
-                if self.is_pro() {
+                if self.is_paid() {
                     vec!["cloud".to_string()]
                 } else {
                     Vec::new()

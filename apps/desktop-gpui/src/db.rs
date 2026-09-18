@@ -1568,6 +1568,7 @@ impl QueryEventSink for GpuiQueryEventSink {
 /// first; every write uses the same statements issued by the Tauri frontend.
 pub struct Store {
     runtime: tokio::runtime::Handle,
+    auth: Option<Arc<crate::auth::Auth>>,
     db: Arc<Db>,
     db_runtime: Arc<DesktopDbRuntime<GpuiQueryEventSink>>,
     path: PathBuf,
@@ -1619,6 +1620,7 @@ impl Store {
         let vault_base = anlg_storage::vault::resolve_base(&global_base, &global_base);
         Ok(Self {
             runtime,
+            auth: None,
             db,
             db_runtime,
             path,
@@ -1628,6 +1630,11 @@ impl Store {
             vault_base,
             session_locks: Default::default(),
         })
+    }
+
+    pub fn with_auth(mut self, auth: Arc<crate::auth::Auth>) -> Self {
+        self.auth = Some(auth);
+        self
     }
 
     /// `settings().global_base()`.
@@ -1982,6 +1989,7 @@ impl Store {
     fn clone_handle(&self) -> Store {
         Store {
             runtime: self.runtime.clone(),
+            auth: self.auth.clone(),
             db: self.db.clone(),
             db_runtime: self.db_runtime.clone(),
             path: self.path.clone(),
@@ -2197,12 +2205,8 @@ impl Store {
         })
     }
 
-    /// `useSTTConnection` for the paths the shell can resolve: a
-    /// third-party provider with a base URL (its config or the registry
-    /// default) and a credential-store API key. On-device / local-file
-    /// models need the local model server and the Anarlog cloud model needs
-    /// a signed-in, paid account, so those resolve to `None` like a missing
-    /// `conn`.
+    /// `useSTTConnection`: cloud credentials come from the current session;
+    /// third-party credentials come from the secure provider store.
     pub fn stt_connection(
         &self,
         settings: &ProviderSettings,
@@ -2213,7 +2217,6 @@ impl Store {
             || model.is_empty()
             || is_on_device_stt_model(&provider, &model)
             || is_local_file_stt_model(&provider, &model)
-            || is_anarlog_cloud_stt_model(&provider, &model)
         {
             return self.runtime.spawn(async { None });
         }
@@ -2230,6 +2233,25 @@ impl Store {
             .map(|config| config.base_url.trim().to_string())
             .filter(|url| !url.is_empty())
             .unwrap_or(default_base_url);
+        if is_anarlog_cloud_stt_model(&provider, &model) {
+            let auth = self.auth.clone();
+            return self.runtime.spawn(async move {
+                let auth = auth?;
+                auth.refresh().await;
+                let api_key = auth.cloud_auth()?.access_token(false).await.ok()?;
+                let base_url = if base_url.is_empty() {
+                    crate::auth::cloud_endpoint("/stt")?
+                } else {
+                    base_url
+                };
+                Some(SttConnection {
+                    provider,
+                    model,
+                    base_url,
+                    api_key,
+                })
+            });
+        }
         let keys = self.ai_provider_api_keys("stt", vec![provider.clone()]);
         self.runtime.spawn(async move {
             let api_key = keys
@@ -5049,6 +5071,7 @@ async fn mark_session_audio_absent(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::tests::{mock_server, test_auth, test_session};
 
     #[test]
     fn resolve_db_dir_prefers_identifier_folder_only_when_default_is_empty() {
@@ -5632,6 +5655,66 @@ mod tests {
             ("current_stt_model", "\"nova-3\""),
         ]));
         assert_eq!(store.stt_connection(&deepgram).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn cloud_connections_use_refreshed_paid_sessions_without_persisting_tokens() {
+        let original = test_session(serde_json::json!({
+            "exp": chrono::Utc::now().timestamp() - 1,
+            "entitlements": ["hyprnote_pro"],
+        }));
+        let renewed = test_session(serde_json::json!({"entitlements": ["hyprnote_lite"]}));
+        let (url, requests) =
+            mock_server(vec![(200, serde_json::to_string(&renewed).unwrap())]).await;
+        let auth = test_auth(Some(&original), Some(&url));
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(
+            tokio::runtime::Handle::current(),
+            dir.path().join(DB_FILENAME),
+            format!("com.anarlog.test.{}", uuid::Uuid::new_v4()),
+        )
+        .await
+        .unwrap()
+        .with_auth(auth.clone());
+        let settings = ProviderSettings::from_rows(&[
+            ("current_stt_provider".into(), "\"anarlog\"".into()),
+            ("current_stt_model".into(), "\"cloud\"".into()),
+            ("current_llm_provider".into(), "\"anarlog\"".into()),
+            ("current_llm_model".into(), "\"Auto\"".into()),
+            (
+                "ai_provider:stt:anarlog".into(),
+                serde_json::json!({"base_url": format!("{url}/stt")}).to_string(),
+            ),
+            (
+                "ai_provider:llm:anarlog".into(),
+                serde_json::json!({"base_url": format!("{url}/llm")}).to_string(),
+            ),
+        ]);
+        let stt = store.stt_connection(&settings).await.unwrap().unwrap();
+        assert_eq!(stt.provider, "anarlog");
+        assert_eq!(stt.model, "cloud");
+        assert_eq!(stt.base_url, format!("{url}/stt"));
+        assert_eq!(stt.api_key, renewed.access_token);
+        let llm = store.llm_connection(&settings).await.unwrap().unwrap();
+        assert_eq!(llm.provider_id, "anarlog");
+        assert_eq!(llm.model_id, "Auto");
+        assert_eq!(llm.base_url, format!("{url}/llm"));
+        assert!(llm.api_key.is_empty());
+        assert_eq!(
+            llm.cloud_auth.unwrap().access_token(false).await.unwrap(),
+            renewed.access_token
+        );
+        assert_eq!(requests.await.unwrap().len(), 1);
+        let persisted: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM app_settings WHERE value_json LIKE ?")
+                .bind(format!("%{}%", renewed.access_token))
+                .fetch_one(store.pool())
+                .await
+                .unwrap();
+        assert_eq!(persisted, 0);
+        auth.sign_out().unwrap();
+        assert!(store.stt_connection(&settings).await.unwrap().is_none());
+        assert!(store.llm_connection(&settings).await.unwrap().is_none());
     }
 
     #[test]
