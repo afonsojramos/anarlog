@@ -22,8 +22,9 @@ Sessions are the core entity: all notes are backed by sessions. ProseMirror powe
 - Typecheck (TS): `pnpm -F <package-name> typecheck`; use `pnpm -r typecheck` for changes spanning packages. Use actual names from package manifests, such as `@anlg/desktop`.
 - Typecheck (Rust): `cargo check --locked -p <package>`; match the relevant workflow's features and target. A root `cargo check` does not cover the separate enterprise workspace or every platform.
 - Build shared UI before desktop/web checks: `pnpm -F @anlg/ui build`.
-- Desktop dev: `pnpm exec turbo dev:desktop`.
-- Web dev: `pnpm exec turbo dev:web`.
+- Desktop dev: `pnpm dev:desktop`.
+- Web dev: `pnpm dev:web`.
+- Combined desktop/web/API/local Supabase: `pnpm dev`; backend only: `pnpm dev:api`. Requires Docker, Task, and API configuration. Process Compose 1.122.0+ owns process lifecycle and logs; Turbo owns the shared UI build. See `CONTRIBUTING.md` for control ports and headless use.
 - Dev docs: https://docs.anarlog.so
 
 ## Pre-commit verification
@@ -125,9 +126,9 @@ Naming rules:
 
 The cloud image is Ubuntu 24.04 x86_64 with Node, pnpm, Rust, and the Linux libraries needed for Tauri (see `scripts/setup-linux-tauri.sh` and `scripts/setup-linux-others.sh`), plus `xvfb`/`dbus-x11`. Verify installed tool versions against the repository/CI pins above; an existing image may lag a toolchain update. The startup update script installs workspace dependencies and builds `@anlg/ui`; it does not re-install system packages.
 
-- Use `pnpm exec turbo dev:desktop` / `pnpm exec turbo dev:web`: Turbo builds `@anlg/ui` first via `dependsOn`; raw `pnpm dev:*` does not.
+- Use `pnpm dev:desktop` / `pnpm dev:web`: Process Compose builds `@anlg/ui` through Turbo before starting the app. The older `pnpm exec turbo dev:*` entrypoints also work.
 - No `start`/`terminals` are configured in the environment (only the `install`/update script). Dev servers are started on demand, not auto-launched on boot.
-- A real XFCE desktop runs on the VNC display `:1` (this is what computer-use sees). Run the desktop app there so it is visible: `DISPLAY=:1 LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 pnpm exec turbo dev:desktop`. The first native build is slow; the desktop Vite frontend serves on `:1422`.
+- A real XFCE desktop runs on the VNC display `:1` (this is what computer-use sees). Run the desktop app there so it is visible: `DISPLAY=:1 LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 pnpm dev:desktop`. The first native build is slow; the desktop Vite frontend serves on `:1422`.
 - `dotenvx` loads `.env.supabase`/`.env` with `--ignore MISSING_ENV_FILE`. Desktop local notes and public web pages can run without cloud credentials. Auth, CloudSync, hosted STT/LLM, and billing require the relevant services/configuration; local development uses `task supabase-start` (Docker) and `cargo run -p api`. Provider features also need provider credentials.
 - Web dev serves on `:3000`; auth/DB-backed routes require the Supabase stack.
 - Swift formatting requires an available `swift format` executable. If missing, check changed non-Swift files and report the exact unchecked Swift paths; verify them on a host with the formatter. Do not treat a formatter startup error as proof that Swift files are formatted, or waive other formatting failures.

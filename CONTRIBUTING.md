@@ -16,6 +16,7 @@ You need:
 - Node.js 22 or later
 - pnpm 11.1.1
 - Rust 1.94.0
+- [process-compose](https://f1bonacc1.github.io/process-compose/installation/) 1.122.0 or later (`brew install process-compose` on macOS)
 - The [Tauri v2 system dependencies](https://v2.tauri.app/start/prerequisites/)
 
 On Debian or Ubuntu, install the supported toolchains and system packages with:
@@ -36,22 +37,40 @@ The desktop app and website start without secrets for local-first workflows.
 
 ```bash
 # Tauri desktop app
-pnpm exec turbo dev:desktop
+pnpm dev:desktop
 
 # Website
-pnpm exec turbo dev:web
+pnpm dev:web
 ```
 
-Turbo builds shared UI packages before starting either app.
+Process Compose manages the processes and logs. It runs the shared UI build through Turbo before starting either app. The existing `pnpm exec turbo dev:desktop` and `pnpm exec turbo dev:web` commands also work.
 
-CloudSync, hosted AI, authentication, billing, and connected integrations require the optional local services:
+For the combined desktop, web, API, and local Supabase stack:
 
 ```bash
-task supabase-start
-cargo run -p api
+pnpm dev
+
+# Only local Supabase and the API
+pnpm dev:api
 ```
 
-The Supabase stack requires Docker. Provider credentials and service-specific configuration are not required for local notes, recording, or on-device features.
+These commands require Docker and [Task](https://taskfile.dev/installation/) (`brew install go-task` on macOS), plus the API configuration described in [apps/api/AGENTS.md](apps/api/AGENTS.md). The Linux setup installs Task and process-compose. The combined stack runs `task supabase-start` to prepare local Supabase and `.env.supabase`, waits for API readiness, then starts web and desktop. Package `.env` files are still loaded by the apps; Process Compose does not inject the root `.env` into every process.
+
+Provider credentials and service-specific configuration are not required for `pnpm dev:desktop` or `pnpm dev:web`. The underlying `task supabase-start` and `cargo run -p api` commands remain available. Supabase's Docker containers persist when Process Compose exits; stop them explicitly with `task supabase-stop`.
+
+Use the Process Compose TUI to view logs or restart individual processes. Logs are also written under `.process-compose/<target>/`, with rotation; set `PC_LOG_DIR` to override that directory. The launcher disables the TUI automatically without a terminal, or you can set `PC_DISABLE_TUI=1`.
+
+The control ports are 18080 for `pnpm dev`, 18081 for desktop, 18082 for web, and 18083 for API. Set `PC_PORT_NUM` to override a control port; app ports remain 1422 (desktop Vite), 3000 (web), and 3001 (API). Stop other apps using those app ports before starting the same services here.
+
+```bash
+# Validate configuration without starting apps
+pnpm dev --dry-run
+
+# Start web without the TUI and restart it from another terminal
+pnpm dev:web -t=false
+process-compose -p 18082 process restart web
+process-compose -p 18082 down
+```
 
 ## Find the right code
 
