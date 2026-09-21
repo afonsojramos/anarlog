@@ -141,24 +141,60 @@ impl TranscriptStore {
 
     pub fn assign(&self, assignment: SpeakerAssignment) -> Result<Reply<()>> {
         self.mutate(assignment.transcript_id.clone(), move |snapshot| {
-            if !snapshot.words.iter().any(|word| word.id == assignment.anchor) {
+            apply_assignment(snapshot, &assignment)
+        })
+    }
+
+    pub fn assign_participant(
+        &self,
+        session: SessionId,
+        assignment: SpeakerAssignment,
+        previous_human: Option<String>,
+        new_name: Option<String>,
+    ) -> Result<Reply<()>> {
+        self.0.submit(move |services| async move {
+            let rows = services.executor.execute(
+                "SELECT id FROM transcripts WHERE session_id = ? AND deleted_at IS NULL".into(),
+                vec![json!(session)],
+            ).await.map_err(failure)?;
+            if !rows.iter().any(|row| row["id"].as_str() == Some(&assignment.transcript_id)) {
                 return Err(ServiceError::Conflict);
             }
-            let value = match &assignment.scope {
-                SpeakerScope::All { channel, speaker_index } => json!({
-                    "human_id": assignment.human_id, "scope": "speaker", "channel": channel, "speaker_index": speaker_index,
-                }),
-                SpeakerScope::Segment { word_ids } => {
-                    if !word_ids.contains(&assignment.anchor) || word_ids.iter().any(|id| !snapshot.words.iter().any(|word| &word.id == id)) {
-                        return Err(ServiceError::Conflict);
-                    }
-                    json!({"human_id": assignment.human_id, "scope": "segment", "word_ids": word_ids, "extend_to_adjacent": false})
-                }
-            };
-            let suffix = if matches!(assignment.scope, SpeakerScope::Segment { .. }) { ":segment" } else { "" };
-            let id = format!("{}:user_speaker_assignment{suffix}", assignment.anchor);
-            snapshot.hints.retain(|hint| hint["id"] != id);
-            snapshot.hints.push(json!({"id": id, "word_id": assignment.anchor, "type": "user_speaker_assignment", "value": value.to_string()}));
+            let mut statements = Vec::new();
+            if let Some(name) = new_name {
+                if name.trim().is_empty() || name.len() > 512 { return Err(failure("Enter a name up to 512 bytes.")); }
+                statements.push(statement(
+                    "INSERT INTO humans (id, workspace_id, owner_user_id, name) SELECT ?, workspace_id, owner_user_id, ? FROM sessions WHERE id = ? AND deleted_at IS NULL AND locked = 0",
+                    vec![json!(assignment.human_id), json!(name.trim()), json!(session)], Some(1)));
+            }
+            statements.push(statement(
+                "INSERT INTO session_participants (id, workspace_id, owner_user_id, session_id, human_id, display_name) SELECT ?, s.workspace_id, s.owner_user_id, s.id, h.id, h.name FROM sessions s JOIN humans h ON h.id = ? AND h.deleted_at IS NULL WHERE s.id = ? AND s.deleted_at IS NULL AND s.locked = 0 AND NOT EXISTS (SELECT 1 FROM session_participants p WHERE p.session_id = s.id AND p.human_id = h.id AND p.deleted_at IS NULL)",
+                vec![json!(uuid::Uuid::new_v4().to_string()), json!(assignment.human_id), json!(session)], None));
+            for row in rows {
+                let id: Arc<str> = string(&row, "id")?.into();
+                let mut snapshot = load(&services, id.clone()).await?;
+                if id == assignment.transcript_id {
+                    apply_assignment(&mut snapshot, &assignment)?;
+                } else if let Some(previous) = &previous_human {
+                    let rendered = anlg_transcript::render_transcript_segments(RenderTranscriptRequest {
+                        transcripts: vec![snapshot.render_input()?], speaker_context: None, preview: None,
+                        participant_human_ids: Vec::new(), self_human_id: None, humans: Vec::new(),
+                    });
+                    let ids: Vec<String> = rendered.into_iter()
+                        .filter(|segment| segment.key.speaker_human_id.as_ref() == Some(previous))
+                        .flat_map(|segment| segment.words.into_iter().filter_map(|word| word.id)).collect();
+                    let Some(anchor) = ids.first().cloned() else { continue };
+                    apply_assignment(&mut snapshot, &SpeakerAssignment {
+                        transcript_id: id, anchor, human_id: assignment.human_id.clone(),
+                        scope: SpeakerScope::Segment { word_ids: ids },
+                    })?;
+                } else { continue; }
+                statements.extend(save_statements(&snapshot)?);
+            }
+            services.executor.execute_transaction(statements).await.map_err(|error| match error {
+                anlg_db_execute::Error::UnexpectedRowsAffected { .. } => ServiceError::Conflict,
+                error => failure(error),
+            })?;
             Ok(())
         })
     }
@@ -179,6 +215,43 @@ impl TranscriptStore {
             Err(ServiceError::Conflict)
         })
     }
+}
+
+fn apply_assignment(snapshot: &mut Transcript, assignment: &SpeakerAssignment) -> Result<()> {
+    if !snapshot
+        .words
+        .iter()
+        .any(|word| word.id == assignment.anchor)
+    {
+        return Err(ServiceError::Conflict);
+    }
+    let value = match &assignment.scope {
+        SpeakerScope::All {
+            channel,
+            speaker_index,
+        } => json!({
+            "human_id": assignment.human_id, "scope": "speaker", "channel": channel, "speaker_index": speaker_index,
+        }),
+        SpeakerScope::Segment { word_ids } => {
+            if !word_ids.contains(&assignment.anchor)
+                || word_ids
+                    .iter()
+                    .any(|id| !snapshot.words.iter().any(|word| &word.id == id))
+            {
+                return Err(ServiceError::Conflict);
+            }
+            json!({"human_id": assignment.human_id, "scope": "segment", "word_ids": word_ids, "extend_to_adjacent": false})
+        }
+    };
+    let suffix = if matches!(assignment.scope, SpeakerScope::Segment { .. }) {
+        ":segment"
+    } else {
+        ""
+    };
+    let id = format!("{}:user_speaker_assignment{suffix}", assignment.anchor);
+    snapshot.hints.retain(|hint| hint["id"] != id);
+    snapshot.hints.push(json!({"id": id, "word_id": assignment.anchor, "type": "user_speaker_assignment", "value": value.to_string()}));
+    Ok(())
 }
 
 pub(super) async fn journal(
@@ -258,6 +331,18 @@ pub(super) async fn load(services: &Services, id: Arc<str>) -> Result<Transcript
 }
 
 pub(super) async fn save(services: &Services, snapshot: Transcript) -> Result<()> {
+    services
+        .executor
+        .execute_transaction(save_statements(&snapshot)?)
+        .await
+        .map_err(|error| match error {
+            anlg_db_execute::Error::UnexpectedRowsAffected { .. } => ServiceError::Conflict,
+            error => failure(error),
+        })?;
+    Ok(())
+}
+
+fn save_statements(snapshot: &Transcript) -> Result<Vec<TransactionStatement>> {
     let words = serde_json::to_string(&snapshot.words).map_err(failure)?;
     let hints = serde_json::to_string(&snapshot.hints).map_err(failure)?;
     if words.len() + hints.len() > MAX_SNAPSHOT_BYTES {
@@ -265,15 +350,24 @@ pub(super) async fn save(services: &Services, snapshot: Transcript) -> Result<()
             "Transcript snapshot limit exceeded; journal preserved.",
         ));
     }
-    services.executor.execute_transaction(vec![
-        statement("UPDATE transcripts SET words_json = ?, speaker_hints_json = ?, content_revision = content_revision + 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ? AND content_revision = ? AND deleted_at IS NULL AND COALESCE((SELECT next_sequence FROM transcript_live_state WHERE transcript_id = transcripts.id), 0) = ? AND EXISTS (SELECT 1 FROM sessions WHERE id = transcripts.session_id AND deleted_at IS NULL AND locked = 0)",
-            vec![json!(words), json!(hints), json!(snapshot.id), json!(snapshot.revision), json!(snapshot.sequence)], Some(1)),
-        statement("DELETE FROM transcript_live_state WHERE transcript_id = ?", vec![json!(snapshot.id)], None),
-    ]).await.map_err(|error| match error {
-        anlg_db_execute::Error::UnexpectedRowsAffected { .. } => ServiceError::Conflict,
-        error => failure(error),
-    })?;
-    Ok(())
+    Ok(vec![
+        statement(
+            "UPDATE transcripts SET words_json = ?, speaker_hints_json = ?, content_revision = content_revision + 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ? AND content_revision = ? AND deleted_at IS NULL AND COALESCE((SELECT next_sequence FROM transcript_live_state WHERE transcript_id = transcripts.id), 0) = ? AND EXISTS (SELECT 1 FROM sessions WHERE id = transcripts.session_id AND deleted_at IS NULL AND locked = 0)",
+            vec![
+                json!(words),
+                json!(hints),
+                json!(snapshot.id),
+                json!(snapshot.revision),
+                json!(snapshot.sequence),
+            ],
+            Some(1),
+        ),
+        statement(
+            "DELETE FROM transcript_live_state WHERE transcript_id = ?",
+            vec![json!(snapshot.id)],
+            None,
+        ),
+    ])
 }
 
 pub fn statement(

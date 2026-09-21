@@ -15,6 +15,7 @@ pub struct PlayerView {
     path: Option<PathBuf>,
     bounds: Option<Bounds<Pixels>>,
     dragging: bool,
+    rates_open: bool,
     _poll: Task<()>,
 }
 
@@ -43,6 +44,7 @@ impl PlayerView {
             path: None,
             bounds: None,
             dragging: false,
+            rates_open: false,
             _poll: poll,
         }
     }
@@ -71,12 +73,13 @@ impl Render for PlayerView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme(window);
         let mut panel = div()
+            .relative()
             .flex()
             .items_center()
             .gap_2()
-            .p_2()
-            .border_b_1()
-            .border_color(colors.border);
+            .px_2()
+            .py_1()
+            .rounded_xl();
         if let Some(error) = &self.snapshot.error {
             return panel.child(error.to_string());
         }
@@ -151,11 +154,15 @@ impl Render for PlayerView {
                 div()
                     .id("play-pause")
                     .cursor_pointer()
-                    .child(if self.snapshot.playing {
-                        "Pause"
-                    } else {
-                        "Play"
-                    })
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(28.))
+                    .rounded_full()
+                    .border_1()
+                    .border_color(colors.border)
+                    .hover(|style| style.bg(colors.accent))
+                    .child(if self.snapshot.playing { "Ⅱ" } else { "▷" })
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.command(
                             if this.snapshot.playing {
@@ -166,6 +173,18 @@ impl Render for PlayerView {
                             cx,
                         )
                     })),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(colors.muted_foreground)
+                    .child(format!(
+                        "{:02}:{:02} / {:02}:{:02}",
+                        position as u64 / 60,
+                        position as u64 % 60,
+                        duration as u64 / 60,
+                        duration as u64 % 60
+                    )),
             )
             .child(
                 div()
@@ -190,26 +209,50 @@ impl Render for PlayerView {
                         cx.listener(|this, _, _, _| this.dragging = false),
                     ),
             )
-            .child(format!(
-                "{:02}:{:02} / {:02}:{:02}",
-                position as u64 / 60,
-                position as u64 % 60,
-                duration as u64 / 60,
-                duration as u64 % 60
-            ))
             .child(
                 div()
                     .id("playback-rate")
                     .cursor_pointer()
+                    .text_xs()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(colors.border)
                     .child(format!("{}×", self.snapshot.rate))
                     .on_click(cx.listener(|this, _, _, cx| {
-                        let index = RATES
-                            .iter()
-                            .position(|rate| *rate == this.snapshot.rate)
-                            .unwrap_or(2);
-                        this.command(Command::Rate(RATES[(index + 1) % RATES.len()]), cx);
+                        this.rates_open = !this.rates_open;
+                        cx.notify();
                     })),
-            );
+            )
+            .when(self.rates_open, |view| {
+                view.child(
+                    div()
+                        .absolute()
+                        .right_0()
+                        .bottom(px(36.))
+                        .bg(colors.background)
+                        .border_1()
+                        .border_color(colors.border)
+                        .rounded_lg()
+                        .py_1()
+                        .children(RATES.into_iter().enumerate().map(|(index, rate)| {
+                            div()
+                                .id(("rate", index))
+                                .px_3()
+                                .py_1()
+                                .text_xs()
+                                .cursor_pointer()
+                                .when(rate == self.snapshot.rate, |view| view.bg(colors.accent))
+                                .hover(|style| style.bg(colors.accent))
+                                .child(format!("{rate}×"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.rates_open = false;
+                                    this.command(Command::Rate(rate), cx);
+                                }))
+                        })),
+                )
+            });
         panel
     }
 }

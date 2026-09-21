@@ -131,7 +131,7 @@ pub type ToolExecutor =
     Arc<dyn Fn(MeetingTool, CancellationToken) -> BoxFuture<'static, Result<Value>> + Send + Sync>;
 pub type StreamObserver = Arc<dyn Fn(StreamUpdate) + Send + Sync>;
 type Job = BoxFuture<'static, ()>;
-type CaptureActivity = Arc<dyn Fn(&SessionId) -> bool + Send + Sync>;
+pub type CaptureActivity = Arc<dyn Fn(&SessionId) -> bool + Send + Sync>;
 
 pub struct StreamUpdate {
     pub task: u64,
@@ -543,7 +543,9 @@ pub fn window_history(mut history: Vec<Message>) -> Vec<Message> {
     while start > 0 && history[start].role != Role::User {
         start -= 1;
     }
-    history.drain(..start);
+    let tail = history.split_off(start);
+    history.retain(|message| message.role == Role::System);
+    history.extend(tail);
     history
 }
 

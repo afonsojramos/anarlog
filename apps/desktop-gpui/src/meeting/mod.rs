@@ -1,23 +1,32 @@
 pub mod ai;
 pub mod ai_view;
 pub mod capture;
+pub mod config;
+pub mod context;
 pub mod floating;
+pub mod foundation;
 pub mod model;
 pub mod persistence;
 pub mod playback;
 mod player_view;
+pub mod provider;
 pub mod recovery;
 pub mod retention;
 pub mod store;
+pub mod subscription;
 #[cfg(test)]
 mod tests;
+pub mod tools;
 mod views;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::contracts::{LaneContext, MeetingEvent, MeetingIntent};
-use crate::ui::{input::TextInput, theme::theme};
+use crate::ui::{
+    input::{InputEvent, TextInput},
+    theme::theme,
+};
 use capture::{CaptureService, Phase};
 use desktop_runtime::{CancellationToken, Generation, ServiceError, SessionId};
 use gpui::{
@@ -46,6 +55,9 @@ enum Editor {
         humans: Vec<(String, String)>,
         segment_ids: Vec<String>,
         all: Option<(i32, i32)>,
+        previous_human: Option<String>,
+        input: Entity<TextInput>,
+        _search: Subscription,
     },
 }
 
@@ -404,40 +416,62 @@ impl MeetingPane {
                             word_ids: ids.clone(),
                         }),
                 };
+                let input = cx.new(|cx| TextInput::new("Search or create a person…", cx));
+                let search = cx.subscribe(&input, |this, _, event, cx| {
+                    if matches!(event, InputEvent::Changed) {
+                        this.search_speakers(cx);
+                    }
+                });
                 self.editor = Some(Editor::Speaker {
                     assignment,
                     humans: Vec::new(),
                     segment_ids: ids,
                     all,
+                    previous_human: segment.key.speaker_human_id.clone(),
+                    input,
+                    _search: search,
                 });
-                let request = self.context.runtime.read(self.cancellation.clone(), |services| async move {
-                    let rows = services.executor.execute("SELECT id, name FROM humans WHERE deleted_at IS NULL ORDER BY name, id LIMIT 200".into(), vec![]).await.map_err(failure)?;
-                    rows.iter().map(|row| Ok((store::string(row, "id")?.to_owned(), store::string(row, "name")?.to_owned()))).collect::<desktop_runtime::Result<Vec<_>>>()
-                });
-                cx.spawn(async move |this, cx| {
-                    let result = match request {
-                        Ok(reply) => reply.receive().await,
-                        Err(error) => Err(error),
-                    };
-                    let _ = this.update(cx, |this, cx| {
-                        match result {
-                            Ok(humans) => {
-                                if let Some(Editor::Speaker {
-                                    humans: current, ..
-                                }) = &mut this.editor
-                                {
-                                    *current = humans;
-                                }
-                            }
-                            Err(error) => this.failed(error, cx),
-                        }
-                        cx.notify();
-                    });
-                })
-                .detach();
+                self.search_speakers(cx);
                 cx.notify();
             }
         }
+    }
+
+    fn search_speakers(&mut self, cx: &mut Context<Self>) {
+        let Some(Editor::Speaker { input, .. }) = &self.editor else {
+            return;
+        };
+        let query = input.read(cx).buffer.text.trim().to_owned();
+        let expected = query.clone();
+        let session = self.session.clone();
+        let request = self.context.runtime.read(self.cancellation.clone(), move |services| async move {
+                    let rows = services.executor.execute("SELECT h.id, h.name FROM humans h WHERE h.deleted_at IS NULL AND (instr(lower(h.name), lower(?)) > 0 OR instr(lower(h.email), lower(?)) > 0) ORDER BY EXISTS(SELECT 1 FROM session_participants p WHERE p.session_id = ? AND p.human_id = h.id AND p.deleted_at IS NULL) DESC, h.name, h.id LIMIT 200".into(), vec![serde_json::json!(query), serde_json::json!(query), serde_json::json!(session)]).await.map_err(failure)?;
+                    rows.iter().map(|row| Ok((store::string(row, "id")?.to_owned(), store::string(row, "name")?.to_owned()))).collect::<desktop_runtime::Result<Vec<_>>>()
+                });
+        cx.spawn(async move |this, cx| {
+            let result = match request {
+                Ok(reply) => reply.receive().await,
+                Err(error) => Err(error),
+            };
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(humans) => {
+                        if let Some(Editor::Speaker {
+                            humans: current,
+                            input,
+                            ..
+                        }) = &mut this.editor
+                            && input.read(cx).buffer.text.trim() == expected
+                        {
+                            *current = humans;
+                        }
+                    }
+                    Err(error) => this.failed(error, cx),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn save_editor(&mut self, delete: bool, cx: &mut Context<Self>) {
@@ -452,8 +486,30 @@ impl MeetingPane {
                 base.clone(),
                 (!delete).then(|| input.read(cx).buffer.text.clone()),
             ),
-            Some(Editor::Speaker { assignment, .. }) if !assignment.human_id.is_empty() => {
-                store.assign(assignment.clone())
+            Some(Editor::Speaker {
+                assignment,
+                previous_human,
+                input,
+                ..
+            }) => {
+                let Some(session) = self.session.clone() else {
+                    return;
+                };
+                let name = input.read(cx).buffer.text.trim().to_owned();
+                let mut assignment = assignment.clone();
+                let new_name = if assignment.human_id.is_empty() {
+                    if name.is_empty() {
+                        return;
+                    }
+                    assignment.human_id = uuid::Uuid::new_v4().to_string();
+                    Some(name)
+                } else {
+                    None
+                };
+                let previous = matches!(assignment.scope, SpeakerScope::All { .. })
+                    .then(|| previous_human.clone())
+                    .flatten();
+                store.assign_participant(session, assignment, previous, new_name)
             }
             _ => return,
         };
@@ -599,9 +655,16 @@ impl Render for MeetingPane {
                     assignment,
                     humans,
                     all,
+                    input,
                     ..
                 } => {
-                    let mut selector = div().flex().flex_wrap().gap_2();
+                    let mut selector = div()
+                        .id("speaker-results")
+                        .max_h(gpui::px(180.))
+                        .overflow_y_scroll()
+                        .flex()
+                        .flex_col()
+                        .gap_1();
                     for (id, name) in humans {
                         let human = id.clone();
                         selector = selector.child(
@@ -621,8 +684,26 @@ impl Render for MeetingPane {
                                 })),
                         );
                     }
-                    form.child("Assign speaker — choose a person, scope, then confirm")
+                    let name = input.read(cx).buffer.text.trim();
+                    form.child("Assign speaker")
+                        .child(input.clone())
                         .child(selector)
+                        .when(!name.is_empty(), |form| {
+                            form.child(
+                                div()
+                                    .id("create-speaker")
+                                    .cursor_pointer()
+                                    .child(format!("Create “{name}”"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if let Some(Editor::Speaker { assignment, .. }) =
+                                            &mut this.editor
+                                        {
+                                            assignment.human_id.clear();
+                                        }
+                                        this.save_editor(false, cx);
+                                    })),
+                            )
+                        })
                         .child(
                             div()
                                 .id("scope")
