@@ -26,6 +26,7 @@ pub struct TextInput {
     scroll: Pixels,
     multiline: bool,
     secret: bool,
+    inline: bool,
     lines: Vec<(Range<usize>, Bounds<Pixels>, ShapedLine)>,
 }
 
@@ -41,6 +42,7 @@ impl TextInput {
             scroll: px(0.),
             multiline: false,
             secret: false,
+            inline: false,
             lines: Vec::new(),
         }
     }
@@ -52,6 +54,11 @@ impl TextInput {
 
     pub fn secret(mut self) -> Self {
         self.secret = true;
+        self
+    }
+
+    pub fn inline(mut self) -> Self {
+        self.inline = true;
         self
     }
 
@@ -344,17 +351,19 @@ impl Render for TextInput {
         div()
             .id("text-input")
             .w_full()
-            .px_2()
-            .py_1()
             .overflow_hidden()
-            .border_1()
-            .border_color(if self.focus.is_focused(window) {
-                colors.ring
-            } else {
-                colors.input
+            .when(!self.inline, |view| {
+                view.px_2()
+                    .py_1()
+                    .border_1()
+                    .border_color(if self.focus.is_focused(window) {
+                        colors.ring
+                    } else {
+                        colors.input
+                    })
+                    .rounded(px(RADIUS))
+                    .bg(colors.card)
             })
-            .rounded(px(RADIUS))
-            .bg(colors.card)
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key))
             .on_mouse_down(

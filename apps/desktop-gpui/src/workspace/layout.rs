@@ -340,40 +340,51 @@ impl Render for WorkspaceView {
                             .overflow_x_scroll()
                             .flex()
                             .h_full()
-                            .children(self.navigation.tabs.iter().map(|tab| {
-                                let slot = tab.slot;
-                                let pinned = tab.pinned;
-                                let title = if let Route::Session(id) = &tab.route {
-                                    self.titles
-                                        .get(id)
-                                        .cloned()
-                                        .map(SharedString::from)
-                                        .unwrap_or("Note".into())
-                                } else if let Route::Folder(id) = &tab.route {
-                                    self.catalogs
-                                        .iter()
-                                        .find(|(kind, _)| *kind == super::ports::Catalog::Folders)
-                                        .and_then(|(_, view)| view.read(cx).title(id))
-                                        .map(SharedString::from)
-                                        .unwrap_or_else(|| {
-                                            format!(
-                                                "Folder · {}",
-                                                id.chars().take(8).collect::<String>()
-                                            )
-                                            .into()
-                                        })
-                                } else {
-                                    tab.route.label().into()
-                                };
-                                div()
-                                    .id(("tab", slot.0))
-                                    .on_drag(TabDrag(slot), |drag, _, _, cx| {
-                                        cx.new(|_| drag.clone())
+                            .children(
+                                self.navigation
+                                    .tabs
+                                    .iter()
+                                    .filter(|_| {
+                                        self.navigation.tabs.len() > 1
+                                            || self.navigation.tabs.iter().any(|tab| tab.pinned)
                                     })
-                                    .on_drop(cx.listener(move |this, drag: &TabDrag, _, cx| {
-                                        if this.navigation.reorder(drag.0, slot) {
-                                            if this.pin_persistence {
-                                                cx.emit(
+                                    .map(|tab| {
+                                        let slot = tab.slot;
+                                        let pinned = tab.pinned;
+                                        let title = if let Route::Session(id) = &tab.route {
+                                            self.titles
+                                                .get(id)
+                                                .cloned()
+                                                .map(SharedString::from)
+                                                .unwrap_or("Note".into())
+                                        } else if let Route::Folder(id) = &tab.route {
+                                            self.catalogs
+                                                .iter()
+                                                .find(|(kind, _)| {
+                                                    *kind == super::ports::Catalog::Folders
+                                                })
+                                                .and_then(|(_, view)| view.read(cx).title(id))
+                                                .map(SharedString::from)
+                                                .unwrap_or_else(|| {
+                                                    format!(
+                                                        "Folder · {}",
+                                                        id.chars().take(8).collect::<String>()
+                                                    )
+                                                    .into()
+                                                })
+                                        } else {
+                                            tab.route.label().into()
+                                        };
+                                        div()
+                                            .id(("tab", slot.0))
+                                            .on_drag(TabDrag(slot), |drag, _, _, cx| {
+                                                cx.new(|_| drag.clone())
+                                            })
+                                            .on_drop(cx.listener(
+                                                move |this, drag: &TabDrag, _, cx| {
+                                                    if this.navigation.reorder(drag.0, slot) {
+                                                        if this.pin_persistence {
+                                                            cx.emit(
                                                     super::shell::WorkspaceAction::PinnedChanged(
                                                         this.navigation
                                                             .tabs
@@ -386,59 +397,81 @@ impl Render for WorkspaceView {
                                                             .collect(),
                                                     ),
                                                 );
-                                            }
-                                            cx.notify();
-                                        }
-                                    }))
-                                    .min_w(px(90.))
-                                    .max_w(px(200.))
-                                    .px_2()
-                                    .h_full()
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .bg(if self.navigation.active == Some(slot) {
-                                        colors.accent
-                                    } else {
-                                        colors.card
-                                    })
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.navigate(Navigate::Select(slot), cx)
-                                    }))
-                                    .child(div().flex_1().truncate().text_sm().child(title))
-                                    .when(self.pin_persistence && tab.route.pinnable(), |view| {
-                                        view.child(
-                                            div()
-                                                .id(("pin", slot.0))
-                                                .size(px(20.))
-                                                .rounded_full()
-                                                .opacity(if tab.pinned { 1. } else { 0.5 })
-                                                .hover(|style| style.bg(colors.sidebar_accent))
-                                                .tooltip(move |_, cx| {
-                                                    cx.new(|_| {
-                                                        Hint(if pinned {
-                                                            "Unpin tab"
-                                                        } else {
-                                                            "Pin tab"
-                                                        })
-                                                    })
-                                                    .into()
-                                                })
-                                                .child(icon("Pin"))
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    cx.stop_propagation();
-                                                    this.pin(slot, cx);
-                                                })),
-                                        )
-                                    })
-                                    .child(div().id(("close", slot.0)).px_1().child("×").on_click(
-                                        cx.listener(move |this, _, _, cx| {
-                                            cx.stop_propagation();
-                                            this.navigate(Navigate::Close(slot), cx);
-                                        }),
-                                    ))
-                            })),
+                                                        }
+                                                        cx.notify();
+                                                    }
+                                                },
+                                            ))
+                                            .min_w(px(90.))
+                                            .max_w(px(200.))
+                                            .px_2()
+                                            .h_full()
+                                            .flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .bg(if self.navigation.active == Some(slot) {
+                                                colors.accent
+                                            } else {
+                                                colors.card
+                                            })
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.navigate(Navigate::Select(slot), cx)
+                                            }))
+                                            .child(div().flex_1().truncate().text_sm().child(title))
+                                            .when(
+                                                self.pin_persistence && tab.route.pinnable(),
+                                                |view| {
+                                                    view.child(
+                                                        div()
+                                                            .id(("pin", slot.0))
+                                                            .size(px(20.))
+                                                            .rounded_full()
+                                                            .opacity(if tab.pinned {
+                                                                1.
+                                                            } else {
+                                                                0.5
+                                                            })
+                                                            .hover(|style| {
+                                                                style.bg(colors.sidebar_accent)
+                                                            })
+                                                            .tooltip(move |_, cx| {
+                                                                cx.new(|_| {
+                                                                    Hint(if pinned {
+                                                                        "Unpin tab"
+                                                                    } else {
+                                                                        "Pin tab"
+                                                                    })
+                                                                })
+                                                                .into()
+                                                            })
+                                                            .child(icon("Pin"))
+                                                            .on_click(cx.listener(
+                                                                move |this, _, _, cx| {
+                                                                    cx.stop_propagation();
+                                                                    this.pin(slot, cx);
+                                                                },
+                                                            )),
+                                                    )
+                                                },
+                                            )
+                                            .child(
+                                                div()
+                                                    .id(("close", slot.0))
+                                                    .px_1()
+                                                    .child("×")
+                                                    .on_click(cx.listener(
+                                                        move |this, _, _, cx| {
+                                                            cx.stop_propagation();
+                                                            this.navigate(
+                                                                Navigate::Close(slot),
+                                                                cx,
+                                                            );
+                                                        },
+                                                    )),
+                                            )
+                                    }),
+                            ),
                     )
                     .child(
                         div()

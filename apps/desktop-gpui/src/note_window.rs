@@ -147,18 +147,33 @@ impl Render for NoteWindow {
             .text_color(colors.foreground)
             .child(
                 div()
-                    .id("toggle-meeting")
-                    .p_2()
-                    .cursor_pointer()
-                    .child(if self.show_meeting {
-                        "Hide transcript"
-                    } else {
-                        "Transcript and AI"
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.show_meeting = !this.show_meeting;
-                        cx.notify();
-                    })),
+                    .flex()
+                    .child(
+                        div()
+                            .id("toggle-meeting")
+                            .p_2()
+                            .cursor_pointer()
+                            .child(if self.show_meeting {
+                                "Hide transcript"
+                            } else {
+                                "Transcript and AI"
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.show_meeting = !this.show_meeting;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("attach-file")
+                            .p_2()
+                            .cursor_pointer()
+                            .child("Attach file")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.editor
+                                    .update(cx, |editor, cx| editor.choose_attachment(cx));
+                            })),
+                    ),
             )
             .child(
                 div()

@@ -160,7 +160,7 @@ impl WorkspaceView {
     ) -> Self {
         let search = cx.new(|cx| TextInput::new("Search titles; Enter", cx));
         let library = cx.new(LibraryView::new);
-        let note = cx.new(|cx| NoteView::new(context.runtime.clone(), cx));
+        let note = cx.new(|cx| NoteView::new(context.runtime.clone(), window, cx));
         let picker = cx.new(|cx| NotePicker::new(context.runtime.clone(), cx));
         let calendar = cx.new(|_| CalendarView::new(context.runtime.clone()));
         let focus = cx.focus_handle();
@@ -198,6 +198,9 @@ impl WorkspaceView {
         });
         let note_subscription = cx.subscribe(&note, |this, _, event: &NoteEvent, cx| match event {
             NoteEvent::Opened(session) => {
+                this.note.update(cx, |note, cx| {
+                    note.set_recording(this.recording.contains(&session.summary.id), cx);
+                });
                 this.cache_title(session.summary.id.clone(), session.summary.title.clone());
                 if let Some(intent) = this.pending.take() {
                     this.apply_navigation(intent, cx);
@@ -214,8 +217,13 @@ impl WorkspaceView {
             }
             NoteEvent::Renamed(session) => {
                 this.cache_title(session.summary.id.clone(), session.summary.title.clone());
+                if let Some(intent) = this.pending.take() {
+                    this.navigate(intent, cx);
+                }
                 cx.notify();
             }
+            NoteEvent::RenameFailed => this.pending = None,
+            NoteEvent::Move(id) => this.handle_note(&OpenNote::Move(vec![id.clone()].into()), cx),
             NoteEvent::Failed => {
                 this.pending = None;
                 this.set_status(
@@ -503,6 +511,10 @@ impl WorkspaceView {
         self.library.update(cx, |library, cx| {
             library.set_recording(id.clone(), active, cx)
         });
+        if self.current_route() == Route::Session(id.clone()) {
+            self.note
+                .update(cx, |note, cx| note.set_recording(active, cx));
+        }
         if active {
             self.recording.insert(id);
         } else {
@@ -665,6 +677,11 @@ impl WorkspaceView {
                 "Save or discard catalog edits before navigating.".into(),
                 cx,
             );
+            return;
+        }
+        if self.note.read(cx).has_unsaved_title(cx) {
+            self.pending = Some(intent);
+            self.note.update(cx, |note, cx| note.rename(cx));
             return;
         }
         if !self.can_navigate(cx) {

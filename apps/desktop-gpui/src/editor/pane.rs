@@ -546,8 +546,8 @@ impl EditorPane {
         .detach();
     }
 
-    fn choose_attachment(&mut self, cx: &mut Context<Self>) {
-        if self.attachment_importing {
+    pub(crate) fn choose_attachment(&mut self, cx: &mut Context<Self>) {
+        if self.attachment_importing || self.read_only {
             return;
         }
         let Some(service) = self.attachment_service.clone() else {
@@ -1537,7 +1537,7 @@ impl Render for EditorPane {
             .flex()
             .flex_col()
             .relative()
-            .bg(colors.background)
+            .bg(colors.card)
             .font_family(crate::ui::theme::system_font(cx))
             .text_color(colors.foreground)
             .track_focus(&self.focus)
@@ -1597,21 +1597,6 @@ impl Render for EditorPane {
             .when(!self.message.is_empty(), |container| {
                 container.child(div().p_2().text_sm().child(self.message.clone()))
             })
-            .when(
-                self.attachment_service.is_some() && !self.read_only,
-                |view| {
-                    view.child(
-                        div()
-                            .id("attach-file")
-                            .px_3()
-                            .py_1()
-                            .text_sm()
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| this.choose_attachment(cx)))
-                            .child("Attach file"),
-                    )
-                },
-            )
             .when(self.pending_attachment.is_some(), |view| {
                 view.child(
                     div()

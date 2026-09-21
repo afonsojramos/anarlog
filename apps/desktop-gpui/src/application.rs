@@ -938,6 +938,13 @@ impl ApplicationView {
         cx: &mut Context<Self>,
     ) {
         match event {
+            WorkspaceEvent::AttachFile(id) => {
+                if let Some(editor) = &self.editor
+                    && &editor.read(cx).init.session_id == id
+                {
+                    editor.update(cx, |editor, cx| editor.choose_attachment(cx));
+                }
+            }
             WorkspaceEvent::SessionsDeleted(ids) => {
                 if self
                     .editor
