@@ -42,8 +42,6 @@ pub(super) enum Navigate {
     Open(Route, bool),
     Select(SlotId),
     History(bool),
-    Close(SlotId),
-    Restore,
 }
 
 pub struct WorkspaceView {
@@ -330,11 +328,25 @@ impl WorkspaceView {
     fn handle_note(&mut self, event: &OpenNote, cx: &mut Context<Self>) {
         match event {
             OpenNote::Current(id) => self.open_session(id.clone(), cx),
-            OpenNote::NewTab(id) => self.open_route(Route::Session(id.clone()), true, cx),
             OpenNote::Window(id) => {
                 if self.can_navigate(cx) {
                     cx.emit(WorkspaceAction::OpenNoteWindow(id.clone()));
                 }
+            }
+            OpenNote::Reveal(id) => {
+                let reply = super::notes::directory(&self.runtime, id.clone());
+                let job = cx.background_executor().spawn(async move {
+                    let path = reply?.receive().await?;
+                    open::that(path).map_err(super::mutations::failure)
+                });
+                cx.spawn(async move |this, cx| {
+                    if let Err(error) = job.await {
+                        let _ = this.update(cx, |this, cx| {
+                            this.set_status(format!("Could not show note folder: {error}"), cx);
+                        });
+                    }
+                })
+                .detach();
             }
             OpenNote::Delete(ids) | OpenNote::Move(ids) => {
                 if self.note_operation.is_some() {
@@ -352,28 +364,6 @@ impl WorkspaceView {
                 self.move_target
                     .update(cx, |input, cx| input.set_text(String::new(), cx));
                 cx.emit(NoteOperationChanged);
-                cx.notify();
-            }
-            OpenNote::Pin(ids) => {
-                if !self.can_navigate(cx) || !self.pin_persistence {
-                    return;
-                }
-                let active = self.navigation.active;
-                for id in ids.iter() {
-                    let slot = self
-                        .navigation
-                        .open(Route::Session(id.clone()), true, false);
-                    self.navigation.pin(slot, true);
-                }
-                self.navigation.active = active;
-                cx.emit(WorkspaceAction::PinnedChanged(
-                    self.navigation
-                        .tabs
-                        .iter()
-                        .filter(|tab| tab.pinned && tab.route.persistent_pin())
-                        .map(|tab| tab.route.clone())
-                        .collect(),
-                ));
                 cx.notify();
             }
         }
@@ -647,27 +637,6 @@ impl WorkspaceView {
                 .find(|tab| tab.slot == *slot)
                 .map(|tab| tab.route.clone()),
             Navigate::History(forward) => self.navigation.history_target(*forward),
-            Navigate::Restore => self.navigation.restore_target(),
-            Navigate::Close(slot) => {
-                if self.navigation.active != Some(*slot) {
-                    return self.navigation.current().map(|tab| tab.route.clone());
-                }
-                let index = self
-                    .navigation
-                    .tabs
-                    .iter()
-                    .position(|tab| tab.slot == *slot)?;
-                self.navigation
-                    .tabs
-                    .get(index + 1)
-                    .or_else(|| {
-                        index
-                            .checked_sub(1)
-                            .and_then(|index| self.navigation.tabs.get(index))
-                    })
-                    .map(|tab| tab.route.clone())
-                    .or(Some(Route::Empty))
-            }
         }
     }
 
@@ -692,18 +661,6 @@ impl WorkspaceView {
             return;
         }
         if !self.can_navigate(cx) {
-            return;
-        }
-        if let Navigate::Close(slot) = intent
-            && self.navigation.tabs.iter().any(|tab| {
-                tab.slot == slot
-                    && matches!(&tab.route, Route::Session(id) if self.recording.contains(id))
-            })
-        {
-            self.set_status(
-                "Stop recording and finish saving before closing this tab.".into(),
-                cx,
-            );
             return;
         }
         let Some(route) = self.destination(&intent) else {
@@ -742,15 +699,6 @@ impl WorkspaceView {
             }
             Navigate::History(forward) => {
                 self.navigation.travel(forward);
-            }
-            Navigate::Restore => {
-                self.navigation.restore();
-            }
-            Navigate::Close(slot) => {
-                self.navigation.close(slot);
-                if self.navigation.tabs.is_empty() {
-                    self.navigation.open(Route::Empty, true, false);
-                }
             }
         }
         self.sync_route(cx);
@@ -1066,6 +1014,15 @@ impl WorkspaceView {
             cx.stop_propagation();
             return;
         }
+        if event.keystroke.key == "escape"
+            && !modifiers.secondary()
+            && !modifiers.alt
+            && !modifiers.shift
+        {
+            self.leave_overlay(cx);
+            cx.stop_propagation();
+            return;
+        }
         if modifiers.alt && matches!(event.keystroke.key.as_str(), "left" | "right") {
             self.navigate(Navigate::History(event.keystroke.key == "right"), cx);
             cx.stop_propagation();
@@ -1078,13 +1035,6 @@ impl WorkspaceView {
             "k" => self.show_picker(window, cx),
             "n" => self.create(modifiers.shift, cx),
             "," => self.navigate(Navigate::Open(Route::settings("app"), false), cx),
-            "t" if modifiers.shift => self.navigate(Navigate::Restore, cx),
-            "t" => self.navigate(Navigate::Open(Route::Empty, true), cx),
-            "w" => {
-                if let Some(slot) = self.navigation.active {
-                    self.navigate(Navigate::Close(slot), cx);
-                }
-            }
             "\\" => {
                 self.sidebar.toggle();
                 cx.notify();
@@ -1096,27 +1046,38 @@ impl WorkspaceView {
         cx.stop_propagation();
     }
 
-    pub(super) fn pin(&mut self, slot: SlotId, cx: &mut Context<Self>) {
-        if !self.pin_persistence {
+    fn leave_overlay(&mut self, cx: &mut Context<Self>) {
+        let Some(current) = self.navigation.current() else {
+            return;
+        };
+        if matches!(current.route, Route::Empty | Route::Onboarding) {
             return;
         }
-        if let Some(pinned) = self
+        if let Some((slot, route)) = &current.return_to {
+            if *slot != current.slot
+                && self
+                    .navigation
+                    .tabs
+                    .iter()
+                    .any(|tab| tab.slot == *slot && &tab.route == route)
+            {
+                self.navigate(Navigate::Select(*slot), cx);
+                return;
+            }
+            if *slot == current.slot && current.can_back() {
+                self.navigate(Navigate::History(false), cx);
+                return;
+            }
+        }
+        if let Some(home) = self
             .navigation
             .tabs
             .iter()
-            .find(|tab| tab.slot == slot)
-            .map(|tab| tab.pinned)
-            && self.navigation.pin(slot, !pinned)
+            .find(|tab| tab.route == Route::Empty)
         {
-            cx.emit(WorkspaceAction::PinnedChanged(
-                self.navigation
-                    .tabs
-                    .iter()
-                    .filter(|tab| tab.pinned && tab.route.persistent_pin())
-                    .map(|tab| tab.route.clone())
-                    .collect(),
-            ));
-            cx.notify();
+            self.navigate(Navigate::Select(home.slot), cx);
+        } else {
+            self.navigate(Navigate::Open(Route::Empty, false), cx);
         }
     }
 }

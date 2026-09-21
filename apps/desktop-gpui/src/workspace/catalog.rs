@@ -114,14 +114,6 @@ impl CatalogView {
         self.detail.clone()
     }
 
-    pub(super) fn title(&self, id: &str) -> Option<Arc<str>> {
-        self.page
-            .rows
-            .iter()
-            .find(|row| row.id.as_ref() == id)
-            .map(|row| row.title.clone())
-    }
-
     pub(super) fn refresh_folder_notes(&mut self, cx: &mut Context<Self>) {
         let editor = self.detail.read(cx).editor.clone();
         editor.update(cx, |editor, cx| editor.refresh_notes(cx));

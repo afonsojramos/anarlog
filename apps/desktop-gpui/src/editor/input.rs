@@ -290,7 +290,7 @@ impl EditorPane {
             }
             "escape" => {
                 self.init.return_focus.focus(window);
-                Ok(())
+                return;
             }
             _ => return,
         };

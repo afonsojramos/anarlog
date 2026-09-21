@@ -194,6 +194,62 @@ async fn start() -> (tempfile::TempDir, RuntimeHandle) {
 }
 
 #[test]
+fn note_folder_resolution_follows_moved_notes_and_rejects_locked_or_deleted_notes() {
+    block_on(async {
+        let (directory, runtime) = start().await;
+        let session = runtime
+            .create_note("Folder reveal".into())
+            .unwrap()
+            .receive()
+            .await
+            .unwrap()
+            .summary
+            .id;
+        let path = directory
+            .path()
+            .join("vault/sessions/Research")
+            .join(session.0.as_ref());
+        std::fs::create_dir_all(&path).unwrap();
+        assert_eq!(
+            notes::directory(&runtime, session.clone())
+                .unwrap()
+                .receive()
+                .await
+                .unwrap(),
+            path
+        );
+        execute(
+            &runtime,
+            "UPDATE sessions SET locked=1 WHERE id=?",
+            vec![json!(session)],
+        )
+        .await;
+        assert!(
+            notes::directory(&runtime, session.clone())
+                .unwrap()
+                .receive()
+                .await
+                .is_err()
+        );
+        execute(
+            &runtime,
+            "UPDATE sessions SET locked=0,deleted_at='deleted' WHERE id=?",
+            vec![json!(session)],
+        )
+        .await;
+        assert!(
+            notes::directory(&runtime, session)
+                .unwrap()
+                .receive()
+                .await
+                .is_err()
+        );
+        assert!(path.is_dir());
+        runtime.shutdown().await.unwrap();
+    });
+}
+
+#[test]
 fn folder_material_commands_copy_checksum_and_soft_delete_the_catalog_entry() {
     block_on(async {
         let (directory, runtime) = start().await;

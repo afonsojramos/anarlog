@@ -17,13 +17,39 @@ pub struct LibraryView {
     scroll: ListState,
     rows: Vec<TimelineRow>,
     focus: FocusHandle,
-    menu: Option<gpui::Point<gpui::Pixels>>,
+    menu: Option<NoteMenu>,
     menu_index: usize,
 }
 
 enum TimelineRow {
     Heading(String),
     Note(usize, String),
+}
+
+#[derive(Clone)]
+struct NoteMenu {
+    position: gpui::Point<gpui::Pixels>,
+    ids: Arc<[SessionId]>,
+    bulk: bool,
+}
+
+impl NoteMenu {
+    fn labels(&self) -> Vec<String> {
+        if self.bulk {
+            vec![format!("Delete Selected ({})", self.ids.len())]
+        } else {
+            vec![
+                "Open in New Window".into(),
+                if cfg!(target_os = "macos") {
+                    "Show in Finder"
+                } else {
+                    "Show in folder"
+                }
+                .into(),
+                "Delete Note".into(),
+            ]
+        }
+    }
 }
 
 fn bucket(date: NaiveDate, today: NaiveDate) -> String {
@@ -61,11 +87,10 @@ fn bucket(date: NaiveDate, today: NaiveDate) -> String {
 #[derive(Clone)]
 pub enum OpenNote {
     Current(SessionId),
-    NewTab(SessionId),
     Window(SessionId),
+    Reveal(SessionId),
     Delete(Arc<[SessionId]>),
     Move(Arc<[SessionId]>),
-    Pin(Arc<[SessionId]>),
 }
 impl EventEmitter<OpenNote> for LibraryView {}
 
@@ -99,7 +124,9 @@ impl Selection {
             }
         } else {
             self.ids.clear();
-            self.ids.insert(id.clone());
+            if range {
+                self.ids.insert(id.clone());
+            }
         }
         self.anchor = Some(id);
     }
@@ -198,25 +225,27 @@ impl LibraryView {
     }
 
     fn menu_action(&mut self, index: usize, cx: &mut Context<Self>) {
-        let ids: Arc<[SessionId]> = self
-            .page
+        let Some(menu) = self.menu.take() else {
+            return;
+        };
+        if !menu.ids.is_empty() {
+            match (menu.bulk, index) {
+                (false, 0) => cx.emit(OpenNote::Window(menu.ids[0].clone())),
+                (false, 1) => cx.emit(OpenNote::Reveal(menu.ids[0].clone())),
+                (false, 2) | (true, 0) => cx.emit(OpenNote::Delete(menu.ids)),
+                _ => {}
+            }
+        }
+        cx.notify();
+    }
+
+    fn selected_ids(&self) -> Arc<[SessionId]> {
+        self.page
             .items
             .iter()
             .filter(|item| self.selection.ids.contains(&item.id))
             .map(|item| item.id.clone())
-            .collect();
-        self.menu = None;
-        if ids.is_empty() {
-            return;
-        }
-        match index {
-            0 => cx.emit(OpenNote::NewTab(ids[0].clone())),
-            1 => cx.emit(OpenNote::Window(ids[0].clone())),
-            2 => cx.emit(OpenNote::Pin(ids)),
-            3 => cx.emit(OpenNote::Move(ids)),
-            _ => cx.emit(OpenNote::Delete(ids)),
-        }
-        cx.notify();
+            .collect()
     }
 }
 
@@ -228,11 +257,12 @@ impl Render for LibraryView {
             .relative()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                if this.menu.is_some() {
+                if let Some(menu) = &this.menu {
+                    let count = menu.labels().len();
                     match event.keystroke.key.as_str() {
                         "escape" => this.menu = None,
-                        "down" => this.menu_index = (this.menu_index + 1) % 5,
-                        "up" => this.menu_index = (this.menu_index + 4) % 5,
+                        "down" => this.menu_index = (this.menu_index + 1) % count,
+                        "up" => this.menu_index = (this.menu_index + count - 1) % count,
                         "enter" => this.menu_action(this.menu_index, cx),
                         _ => return,
                     }
@@ -241,7 +271,10 @@ impl Render for LibraryView {
                     return;
                 }
                 if event.keystroke.key == "delete" || event.keystroke.key == "backspace" {
-                    this.menu_action(4, cx);
+                    let ids = this.selected_ids();
+                    if !ids.is_empty() {
+                        cx.emit(OpenNote::Delete(ids));
+                    }
                     cx.stop_propagation();
                     return;
                 }
@@ -341,11 +374,13 @@ impl Render for LibraryView {
                                     let id = item.id.clone();
                                     move |this, event: &gpui::MouseDownEvent, window, cx| {
                                         this.focus.focus(window);
-                                        if !this.selection.ids.contains(&id) {
-                                            this.selection.ids.clear();
-                                            this.selection.ids.insert(id.clone());
-                                        }
-                                        this.menu = Some(event.position);
+                                        let ids = this.selected_ids();
+                                        let bulk = !ids.is_empty();
+                                        this.menu = Some(NoteMenu {
+                                            position: event.position,
+                                            ids: if bulk { ids } else { vec![id.clone()].into() },
+                                            bulk,
+                                        });
                                         this.menu_index = 0;
                                         cx.stop_propagation();
                                         cx.notify();
@@ -368,24 +403,16 @@ impl Render for LibraryView {
                                         modifiers.secondary(),
                                         modifiers.shift,
                                     );
-                                    if event.click_count() == 2 {
-                                        cx.emit(OpenNote::Window(id.clone()));
-                                    } else if !modifiers.secondary() && !modifiers.shift {
-                                        cx.emit(OpenNote::Current(id.clone()));
+                                    if !modifiers.secondary() && !modifiers.shift {
+                                        if event.click_count() == 2 {
+                                            cx.emit(OpenNote::Window(id.clone()));
+                                        } else if event.click_count() == 1 {
+                                            cx.emit(OpenNote::Current(id.clone()));
+                                        }
                                     }
                                     cx.notify();
                                 },
                             ))
-                            .on_mouse_down(
-                                gpui::MouseButton::Middle,
-                                cx.listener({
-                                    let id = item.id.clone();
-                                    move |_, _, _, cx| {
-                                        cx.emit(OpenNote::NewTab(id.clone()));
-                                        cx.stop_propagation();
-                                    }
-                                }),
-                            )
                             .child(div().text_sm().line_height(px(20.)).truncate().child(
                                 if item.title.is_empty() {
                                     "Untitled".into()
@@ -410,58 +437,52 @@ impl Render for LibraryView {
                 )
                 .size_full(),
             )
-            .when_some(self.menu, |view, position| {
+            .when_some(self.menu.clone(), |view, menu| {
                 view.child(gpui::deferred(
-                    gpui::anchored().position(position).snap_to_window().child(
-                        div()
-                            .id("note-context-menu")
-                            .w(px(224.))
-                            .p_1()
-                            .rounded(px(8.))
-                            .bg(colors.card)
-                            .border_1()
-                            .border_color(colors.border)
-                            .shadow_lg()
-                            .occlude()
-                            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
-                                cx.stop_propagation();
-                            })
-                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                                this.menu = None;
-                                cx.notify();
-                            }))
-                            .children(
-                                [
-                                    "Open in new tab",
-                                    "Open in new window",
-                                    "Pin selected notes",
-                                    "Move to folder…",
-                                    "Delete selected notes…",
-                                ]
-                                .into_iter()
-                                .enumerate()
-                                .map(|(index, label)| {
-                                    div()
-                                        .id(index)
-                                        .h(px(30.))
-                                        .px_3()
-                                        .flex()
-                                        .items_center()
-                                        .text_sm()
-                                        .rounded(px(4.))
-                                        .cursor_pointer()
-                                        .when(index == self.menu_index, |view| {
-                                            view.bg(colors.accent)
-                                        })
-                                        .hover(|style| style.bg(colors.accent))
-                                        .child(label)
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            cx.stop_propagation();
-                                            this.menu_action(index, cx);
-                                        }))
-                                }),
-                            ),
-                    ),
+                    gpui::anchored()
+                        .position(menu.position)
+                        .snap_to_window()
+                        .child(
+                            div()
+                                .id("note-context-menu")
+                                .w(px(224.))
+                                .p_1()
+                                .rounded(px(8.))
+                                .bg(colors.card)
+                                .border_1()
+                                .border_color(colors.border)
+                                .shadow_lg()
+                                .occlude()
+                                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation();
+                                })
+                                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                    this.menu = None;
+                                    cx.notify();
+                                }))
+                                .children(menu.labels().into_iter().enumerate().map(
+                                    |(index, label)| {
+                                        div()
+                                            .id(index)
+                                            .h(px(30.))
+                                            .px_3()
+                                            .flex()
+                                            .items_center()
+                                            .text_sm()
+                                            .rounded(px(4.))
+                                            .cursor_pointer()
+                                            .when(index == self.menu_index, |view| {
+                                                view.bg(colors.accent)
+                                            })
+                                            .hover(|style| style.bg(colors.accent))
+                                            .child(label)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                cx.stop_propagation();
+                                                this.menu_action(index, cx);
+                                            }))
+                                    },
+                                )),
+                        ),
                 ))
             })
     }
@@ -470,6 +491,19 @@ impl Render for LibraryView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opening_a_note_sets_the_range_anchor_without_selecting_it_for_deletion() {
+        let ids = ["a", "b", "c"].map(|id| SessionId(id.into()));
+        let mut selection = Selection::default();
+        selection.click(ids[0].clone(), &ids, false, false);
+        assert!(selection.ids.is_empty());
+        selection.click(ids[2].clone(), &ids, false, true);
+        assert_eq!(selection.ids, HashSet::from(ids.clone()));
+        selection.click(ids[1].clone(), &ids, false, false);
+        assert!(selection.ids.is_empty());
+        assert_eq!(selection.anchor, Some(ids[1].clone()));
+    }
 
     #[test]
     fn timeline_buckets_match_the_source_relative_day_week_and_month_boundaries() {

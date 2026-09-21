@@ -1,6 +1,6 @@
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
-use desktop_runtime::{Reply, Result, RuntimeHandle, SessionId};
+use desktop_runtime::{CancellationToken, Reply, Result, RuntimeHandle, SessionId};
 use serde_json::json;
 
 use super::mutations::{NOW, failure, statement, transaction};
@@ -12,6 +12,26 @@ pub enum NoteCommand {
         ids: Arc<[SessionId]>,
         folder: Arc<str>,
     },
+}
+
+pub fn directory(runtime: &RuntimeHandle, session: SessionId) -> Result<Reply<PathBuf>> {
+    runtime.read(CancellationToken::new(), move |services| async move {
+        let rows = services
+            .executor
+            .execute(
+                "SELECT id FROM sessions WHERE id=? AND deleted_at IS NULL AND locked=0".into(),
+                vec![json!(session)],
+            )
+            .await
+            .map_err(failure)?;
+        if rows.is_empty() {
+            return Err(failure("This note is unavailable or locked."));
+        }
+        let fs = super::folders::filesystem(&services.executor).await?;
+        tokio::task::spawn_blocking(move || fs.resolve_session_dir(&session.0).map_err(failure))
+            .await
+            .map_err(failure)?
+    })
 }
 
 pub fn select_template(
