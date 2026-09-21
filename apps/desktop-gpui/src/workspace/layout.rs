@@ -183,7 +183,7 @@ impl Render for WorkspaceView {
                         view.flex()
                             .flex_col()
                             .gap_2()
-                            .child(div().w_full().px_2().child(self.search.clone()))
+                            .child(div().flex().w_full().px_2().child(self.search.clone()))
                             .child(div().flex_1().min_h_0().child(self.library.clone()))
                             .child(
                                 div()
