@@ -24,6 +24,7 @@ pub struct LibraryView {
     use_24_hour_time: bool,
     timezone: Option<Tz>,
     show_folder: bool,
+    show_tags: bool,
 }
 
 enum TimelineRow {
@@ -32,6 +33,7 @@ enum TimelineRow {
         index: usize,
         time: String,
         folder: String,
+        tags: Arc<str>,
     },
 }
 
@@ -205,6 +207,7 @@ impl LibraryView {
             use_24_hour_time: false,
             timezone: None,
             show_folder: true,
+            show_tags: false,
         }
     }
 
@@ -221,9 +224,10 @@ impl LibraryView {
         }
     }
 
-    pub fn set_show_folder(&mut self, show_folder: bool, cx: &mut Context<Self>) {
-        if self.show_folder != show_folder {
+    pub fn set_metadata(&mut self, show_folder: bool, show_tags: bool, cx: &mut Context<Self>) {
+        if (self.show_folder, self.show_tags) != (show_folder, show_tags) {
             self.show_folder = show_folder;
+            self.show_tags = show_tags;
             self.set_page(self.page.clone(), cx);
         }
     }
@@ -258,6 +262,11 @@ impl LibraryView {
                 index,
                 time,
                 folder,
+                tags: if self.show_tags {
+                    item.tag_line.clone()
+                } else {
+                    Arc::default()
+                },
             });
         }
         if self.rows.is_empty() || page.offset != self.page.offset {
@@ -405,7 +414,7 @@ impl Render for LibraryView {
                         let Some(row) = this.rows.get(row) else {
                             return div().into_any_element();
                         };
-                        let (index, time, folder) = match row {
+                        let (index, time, folder, tags) = match row {
                             TimelineRow::Heading(title) => {
                                 return div()
                                     .h(px(32.))
@@ -419,7 +428,8 @@ impl Render for LibraryView {
                                 index,
                                 time,
                                 folder,
-                            } => (*index, time.clone(), folder.clone()),
+                                tags,
+                            } => (*index, time.clone(), folder.clone(), tags.clone()),
                         };
                         let item = &this.page.items[index];
                         let id = item.id.clone();
@@ -427,7 +437,11 @@ impl Render for LibraryView {
                             .id(gpui::SharedString::from(item.id.0.clone()))
                             .flex_1()
                             .min_w_0()
-                            .h(px(if folder.is_empty() { 54. } else { 72. }))
+                            .h(px(54.
+                                + 18.
+                                    * (usize::from(!folder.is_empty())
+                                        + usize::from(!tags.is_empty()))
+                                        as f32))
                             .flex()
                             .flex_col()
                             .gap(px(2.))
@@ -528,7 +542,20 @@ impl Render for LibraryView {
                                     } else {
                                         gpui::SharedString::from(time)
                                     }),
-                            );
+                            )
+                            .when(!tags.is_empty(), |view| {
+                                view.child(
+                                    div()
+                                        .min_w_0()
+                                        .flex_shrink_0()
+                                        .h(px(16.))
+                                        .text_size(px(11.))
+                                        .line_height(px(16.))
+                                        .text_color(colors.muted_foreground)
+                                        .truncate()
+                                        .child(gpui::SharedString::from(tags)),
+                                )
+                            });
                         div().w_full().flex().child(item).into_any_element()
                     }),
                 )

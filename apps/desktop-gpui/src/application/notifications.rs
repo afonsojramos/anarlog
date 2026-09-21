@@ -131,9 +131,13 @@ impl ApplicationView {
                                     .get("sidebar_show_folder")
                                     .and_then(|setting| setting.value.as_bool())
                                     .unwrap_or(true);
+                                let show_tags = snapshot
+                                    .get("sidebar_show_tags")
+                                    .and_then(|setting| setting.value.as_bool())
+                                    .unwrap_or(false);
                                 this.workspace.update(cx, |workspace, cx| {
                                     workspace.set_timeline_clock(use_24_hour_time, timezone, cx);
-                                    workspace.set_timeline_show_folder(show_folder, cx);
+                                    workspace.set_timeline_metadata(show_folder, show_tags, cx);
                                 });
                                 this.notifications.preferences = Some(snapshot);
                             }

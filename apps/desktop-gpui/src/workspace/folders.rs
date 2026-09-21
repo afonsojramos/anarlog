@@ -32,12 +32,15 @@ pub fn notes(
     runtime.read(cancel,move |services| async move {
         let rows=services.executor.execute("SELECT id,substr(title,1,4096) AS title,created_at,updated_at,folder_path FROM sessions WHERE deleted_at IS NULL AND (folder_path=?1 OR substr(folder_path,1,length(?1)+1)=?1 || '/') ORDER BY created_at DESC,id LIMIT 101 OFFSET ?2".into(),vec![json!(folder),json!(offset)]).await.map_err(failure)?;
         let has_more=rows.len()>100;
+        let ids=rows.iter().take(100).filter_map(|row| row["id"].as_str()).collect::<Vec<_>>();
+        let mut tags=services.session_tag_lines(&ids).await?;
         let items=rows.into_iter().take(100).map(|row| desktop_runtime::SessionSummary{
             id:desktop_runtime::SessionId(row["id"].as_str().unwrap_or("").into()),
             title:row["title"].as_str().unwrap_or("").into(),
             created_at:row["created_at"].as_str().unwrap_or("").into(),
             updated_at:row["updated_at"].as_str().unwrap_or("").into(),
             folder_path:row["folder_path"].as_str().unwrap_or("").into(),
+            tag_line:tags.remove(row["id"].as_str().unwrap_or("")).unwrap_or_default(),
         }).collect::<Vec<_>>().into();
         Ok(desktop_runtime::LibraryPage{items,offset,has_more})
     })

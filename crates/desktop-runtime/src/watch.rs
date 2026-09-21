@@ -79,6 +79,7 @@ struct Sink {
     errors: mpsc::Sender<ServiceError>,
     terminal_error: Arc<Mutex<Option<ServiceError>>>,
     metrics: Arc<crate::metrics::Metrics>,
+    invalidate_on_refresh: bool,
 }
 
 impl QueryEventSink for Sink {
@@ -97,7 +98,10 @@ impl QueryEventSink for Sink {
             return Err("Watch snapshot exceeds row bound".into());
         }
         self.snapshots.send_if_modified(|snapshot| {
-            if snapshot.sequence > 0 && snapshot.rows.as_ref() == rows.as_slice() {
+            if !self.invalidate_on_refresh
+                && snapshot.sequence > 0
+                && snapshot.rows.as_ref() == rows.as_slice()
+            {
                 return false;
             }
             self.metrics.snapshot_count.fetch_add(1, Ordering::Relaxed);
@@ -197,15 +201,29 @@ impl RuntimeHandle {
     }
 
     pub fn watch_library(&self) -> Result<Reply<QueryWatch>> {
-        self.watch_query(
-            "SELECT id, title, updated_at FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC, id DESC LIMIT 1".into(),
+        self.watch_query_policy(
+            "SELECT id, title, updated_at,
+                EXISTS(SELECT 1 FROM tags LIMIT 1) AS has_tags,
+                EXISTS(SELECT 1 FROM session_tags LIMIT 1) AS has_session_tags
+             FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC, id DESC LIMIT 1"
+                .into(),
             vec![],
+            true,
         )
     }
 
     /// Observes pooled writes. Close and re-register after an external writer or sync restore;
     /// SQLite pool hooks do not observe arbitrary writes from another process.
     pub fn watch_query(&self, sql: String, params: Vec<Value>) -> Result<Reply<QueryWatch>> {
+        self.watch_query_policy(sql, params, false)
+    }
+
+    fn watch_query_policy(
+        &self,
+        sql: String,
+        params: Vec<Value>,
+        invalidate_on_refresh: bool,
+    ) -> Result<Reply<QueryWatch>> {
         self.submit(move |services| async move {
             let slot = services
                 .watch_slots
@@ -228,6 +246,7 @@ impl RuntimeHandle {
                         errors,
                         terminal_error: terminal_error.clone(),
                         metrics: services.metrics,
+                        invalidate_on_refresh,
                     },
                 )
                 .await
@@ -261,6 +280,7 @@ mod tests {
             errors,
             terminal_error: Arc::new(Mutex::new(None)),
             metrics: Arc::new(crate::metrics::Metrics::default()),
+            invalidate_on_refresh: false,
         };
         sink.send_result(vec![]).unwrap();
         assert_eq!(receiver.borrow_and_update().sequence, 1);

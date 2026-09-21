@@ -18,6 +18,107 @@ async fn start(profile: &Profile) -> RuntimeHandle {
 }
 
 #[tokio::test]
+async fn tags_refresh_cached_pages_and_watch_without_modifying_notes() {
+    let directory = tempfile::tempdir().unwrap();
+    let profile = Profile {
+        database: directory.path().join("tags.sqlite"),
+    };
+    let runtime = start(&profile).await;
+    runtime.submit(|services| async move {
+        for sql in [
+            "INSERT INTO sessions(id,title,created_at) VALUES ('one','First','2026-09-02T00:00:00Z'),('two','Second','2026-09-01T00:00:00Z')",
+            "INSERT INTO tags(id,name,deleted_at) VALUES ('a','  prep  ',NULL),('b','launch, prep',NULL),('c','prep',NULL),('d','deleted','2026-09-01'),('e','unlinked',NULL)",
+            "INSERT INTO session_tags(id,session_id,tag_id,deleted_at) VALUES ('a','one','a',NULL),('b','one','b',NULL),('c','one','c',NULL),('d','one','d',NULL),('e','one','e','2026-09-01'),('f','two','b',NULL)",
+        ] {
+            services.executor.execute(sql.into(), vec![]).await.unwrap();
+        }
+        Ok(())
+    }).unwrap().receive().await.unwrap();
+    for (offset, expected) in [(0, "#launch, prep #prep"), (1, "#launch, prep")] {
+        let page = runtime
+            .library(
+                LibraryQuery {
+                    offset,
+                    limit: 1,
+                    ..Default::default()
+                },
+                CancellationToken::new(),
+            )
+            .unwrap()
+            .receive()
+            .await
+            .unwrap();
+        assert_eq!(page.items[0].tag_line.as_ref(), expected);
+    }
+    let mut watch = runtime.watch_library().unwrap().receive().await.unwrap();
+    watch.snapshots.borrow_and_update();
+    for (sql, expected) in [
+        (
+            "UPDATE tags SET name='a renamed' WHERE id='b'",
+            "#a renamed #prep",
+        ),
+        (
+            "UPDATE session_tags SET deleted_at='2026-09-02' WHERE id='a'",
+            "#a renamed #prep",
+        ),
+        (
+            "UPDATE tags SET deleted_at='2026-09-02' WHERE id='c'",
+            "#a renamed",
+        ),
+        ("DELETE FROM session_tags WHERE id='b'", ""),
+    ] {
+        runtime
+            .submit(move |services| async move {
+                services.executor.execute(sql.into(), vec![]).await.unwrap();
+                Ok(())
+            })
+            .unwrap()
+            .receive()
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), watch.snapshots.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        watch.snapshots.borrow_and_update();
+        let page = runtime
+            .library(LibraryQuery::default(), CancellationToken::new())
+            .unwrap()
+            .receive()
+            .await
+            .unwrap();
+        assert_eq!(page.items[0].tag_line.as_ref(), expected);
+        assert_eq!(page.items[0].title.as_ref(), "First");
+    }
+    watch.unsubscribe().await.unwrap();
+    runtime.shutdown().await.unwrap();
+    let runtime = start(&profile).await;
+    let page = runtime
+        .library(
+            LibraryQuery {
+                search: "Second".into(),
+                ..Default::default()
+            },
+            CancellationToken::new(),
+        )
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].tag_line.as_ref(), "#a renamed");
+    let open = runtime
+        .open_session(page.items[0].id.clone(), CancellationToken::new())
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    assert_eq!(open.summary.tag_line, page.items[0].tag_line);
+    assert!(open.note.is_none());
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn library_folder_projection_survives_cache_slicing_and_external_moves() {
     let directory = tempfile::tempdir().unwrap();
     let profile = Profile {

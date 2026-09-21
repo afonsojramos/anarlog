@@ -10,10 +10,13 @@ anlg-db-core = { workspace = true }
 anlg-db-execute = { workspace = true }
 anlg-db-reactive = { workspace = true }
 futures = "0.3"
+icu_collator = "=2.2.0"
+icu_locale_core = "=2.2.0"
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true }
 serde_qs = { workspace = true }
 sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "sqlite-unbundled"] }
+sys-locale = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
 tokio-util = { workspace = true, features = ["rt"] }

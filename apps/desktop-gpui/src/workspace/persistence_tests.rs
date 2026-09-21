@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 
 use super::{
     calendar::{CalendarRequest, load_calendar},
+    folders,
     mutations::{self, Command},
     navigation::Route,
     notes::{self, NoteCommand},
@@ -759,6 +760,52 @@ fn template_commands_duplicate_raw_json_and_keep_conflicting_edits() {
             .len(),
             1
         );
+        runtime.shutdown().await.unwrap();
+    });
+}
+
+#[test]
+fn folder_notes_keep_normalized_live_tag_metadata() {
+    block_on(async {
+        let (_directory, runtime) = start().await;
+        execute(
+            &runtime,
+            "INSERT INTO sessions(id,title,folder_path) VALUES ('tagged','Tagged','Work/日本')",
+            vec![],
+        )
+        .await;
+        execute(
+            &runtime,
+            "INSERT INTO tags(id,name) VALUES ('tag',' release, prep ')",
+            vec![],
+        )
+        .await;
+        execute(
+            &runtime,
+            "INSERT INTO session_tags(id,session_id,tag_id) VALUES ('link','tagged','tag')",
+            vec![],
+        )
+        .await;
+        let page = folders::notes(&runtime, "Work".into(), 0, CancellationToken::new())
+            .unwrap()
+            .receive()
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].tag_line.as_ref(), "#release, prep");
+        execute(
+            &runtime,
+            "UPDATE tags SET deleted_at='2026-09-21' WHERE id='tag'",
+            vec![],
+        )
+        .await;
+        let page = folders::notes(&runtime, "Work".into(), 0, CancellationToken::new())
+            .unwrap()
+            .receive()
+            .await
+            .unwrap();
+        assert_eq!(page.items[0].title.as_ref(), "Tagged");
+        assert!(page.items[0].tag_line.is_empty());
         runtime.shutdown().await.unwrap();
     });
 }

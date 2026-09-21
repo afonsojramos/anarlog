@@ -106,6 +106,7 @@ pub struct SessionSummary {
     pub updated_at: Arc<str>,
     pub created_at: Arc<str>,
     pub folder_path: Arc<str>,
+    pub tag_line: Arc<str>,
 }
 
 #[derive(Clone, Debug)]

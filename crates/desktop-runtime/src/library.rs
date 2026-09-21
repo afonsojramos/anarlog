@@ -6,6 +6,9 @@ use std::{
 
 use anlg_db_app::ListSessions;
 use anlg_db_execute::TransactionStatement;
+use futures::TryStreamExt;
+use icu_collator::{Collator, CollatorBorrowed, options::CollatorOptions};
+use icu_locale_core::Locale;
 use serde_json::json;
 use sqlx::{Connection, SqliteConnection, sqlite::SqliteConnectOptions};
 use uuid::Uuid;
@@ -19,6 +22,86 @@ use crate::{
 const PAGE_STRIDE: u32 = 256;
 const CACHE_ROWS: u32 = PAGE_STRIDE + 200;
 const CACHE_BYTES: usize = 8 * 1024 * 1024;
+const TAG_LINE_BYTES: usize = 4096;
+const TAG_WHITESPACE: &str = "\t\n\u{000b}\u{000c}\r \u{00a0}\u{1680}\u{2000}\u{2001}\u{2002}\u{2003}\u{2004}\u{2005}\u{2006}\u{2007}\u{2008}\u{2009}\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}";
+
+#[derive(Default)]
+struct TagNames {
+    names: Vec<String>,
+    bytes: usize,
+}
+
+impl TagNames {
+    fn insert(&mut self, name: &str, collator: &CollatorBorrowed<'_>) {
+        let name = name.trim_matches(|ch| TAG_WHITESPACE.contains(ch));
+        if name.is_empty() {
+            return;
+        }
+        let index = match self.names.binary_search_by(|existing| {
+            collator
+                .compare(existing, name)
+                .then_with(|| existing.as_str().cmp(name))
+        }) {
+            Ok(_) => return,
+            Err(index) => index,
+        };
+        if index == self.names.len() && self.bytes.saturating_sub(1) >= TAG_LINE_BYTES {
+            return;
+        }
+        self.bytes += name.len() + 2;
+        self.names.insert(index, name.into());
+        while let Some(last) = self.names.last() {
+            let remaining = self.bytes - last.len() - 2;
+            if remaining.saturating_sub(1) < TAG_LINE_BYTES {
+                break;
+            }
+            self.bytes = remaining;
+            self.names.pop();
+        }
+    }
+
+    fn line(self) -> Arc<str> {
+        let mut line = self
+            .names
+            .into_iter()
+            .map(|name| format!("#{name}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        line.truncate(line.floor_char_boundary(TAG_LINE_BYTES.min(line.len())));
+        line.into()
+    }
+}
+
+impl Services {
+    pub async fn session_tag_lines(&self, ids: &[&str]) -> Result<HashMap<String, Arc<str>>> {
+        if ids.len() > CACHE_ROWS as usize {
+            return Err(ServiceError::Unsupported(
+                "Too many sessions for tag projection".into(),
+            ));
+        }
+        let locale = sys_locale::get_locale()
+            .and_then(|locale| locale.parse::<Locale>().ok())
+            .unwrap_or(icu_locale_core::locale!("en"));
+        let collator =
+            Collator::try_new(locale.into(), CollatorOptions::default()).map_err(failure)?;
+        let mut rows = sqlx::query_as::<_, (String, String)>(
+            "SELECT st.session_id, substr(ltrim(t.name, ?2), 1, 4096)
+             FROM session_tags st JOIN tags t ON t.id=st.tag_id AND t.deleted_at IS NULL
+             WHERE st.session_id IN (SELECT value FROM json_each(?1)) AND st.deleted_at IS NULL",
+        )
+        .bind(json!(ids).to_string())
+        .bind(TAG_WHITESPACE)
+        .fetch(self.db.pool());
+        let mut tags: HashMap<String, TagNames> = HashMap::new();
+        while let Some((session, name)) = rows.try_next().await.map_err(failure)? {
+            tags.entry(session).or_default().insert(&name, &collator);
+        }
+        Ok(tags
+            .into_iter()
+            .map(|(id, tags)| (id, tags.line()))
+            .collect())
+    }
+}
 
 pub(crate) struct Cache {
     observer: SqliteConnection,
@@ -106,7 +189,8 @@ impl RuntimeHandle {
             .map_err(failure)?;
             let has_more = rows.len() > CACHE_ROWS as usize;
             rows.truncate(CACHE_ROWS as usize);
-            let ids = rows.iter().map(|row| &row.id).collect::<Vec<_>>();
+            let ids = rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>();
+            let mut tags = services.session_tag_lines(&ids).await?;
             let mut folders: HashMap<String, String> = sqlx::query_as::<_, (String, String)>(
                 "SELECT id, folder_path FROM sessions WHERE id IN (SELECT value FROM json_each(?)) AND deleted_at IS NULL",
             )
@@ -121,6 +205,7 @@ impl RuntimeHandle {
                     .into_iter()
                     .map(|row| SessionSummary {
                         folder_path: folders.remove(&row.id).unwrap_or_default().into(),
+                        tag_line: tags.remove(&row.id).unwrap_or_default(),
                         id: row.id.into(),
                         title: row.title.into(),
                         updated_at: row.updated_at.into(),
@@ -142,6 +227,7 @@ impl RuntimeHandle {
                                 + row.updated_at.len()
                                 + row.created_at.len()
                                 + row.folder_path.len()
+                                + row.tag_line.len()
                                 + std::mem::size_of::<SessionSummary>()
                         })
                         .sum::<usize>();
@@ -256,6 +342,11 @@ async fn load_session(services: &Services, id: SessionId) -> Result<OpenSession>
         });
     Ok(OpenSession {
         summary: SessionSummary {
+            tag_line: services
+                .session_tag_lines(&[&id.0])
+                .await?
+                .remove(id.0.as_ref())
+                .unwrap_or_default(),
             id,
             title: row.title.into(),
             updated_at: row.updated_at.into(),
@@ -264,4 +355,73 @@ async fn load_session(services: &Services, id: SessionId) -> Result<OpenSession>
         },
         note,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tags_trim_deduplicate_and_collate_without_splitting_commas() {
+        let collator = Collator::try_new(
+            icu_locale_core::locale!("en").into(),
+            CollatorOptions::default(),
+        )
+        .unwrap();
+        let mut tags = TagNames::default();
+        for tag in [
+            "zebra",
+            "  alpha ",
+            "éclair",
+            "\u{feff}日本\u{feff}",
+            "alpha",
+            "Alpha",
+            "launch, prep",
+            "\u{a0}",
+        ] {
+            tags.insert(tag, &collator);
+        }
+        assert_eq!(
+            tags.line().as_ref(),
+            "#alpha #Alpha #éclair #launch, prep #zebra #日本"
+        );
+    }
+
+    #[test]
+    fn tag_order_uses_the_system_collators_locale_rules() {
+        let collator = Collator::try_new(
+            icu_locale_core::locale!("sv").into(),
+            CollatorOptions::default(),
+        )
+        .unwrap();
+        let mut tags = TagNames::default();
+        for tag in ["öga", "Zebra", "åland", "äpple", "apple"] {
+            tags.insert(tag, &collator);
+        }
+        assert_eq!(tags.line().as_ref(), "#apple #Zebra #åland #äpple #öga");
+    }
+
+    #[test]
+    fn streamed_tags_keep_the_sorted_visible_prefix_with_bounded_memory() {
+        let collator = Collator::try_new(
+            icu_locale_core::locale!("en").into(),
+            CollatorOptions::default(),
+        )
+        .unwrap();
+        let mut tags = TagNames::default();
+        let mut all = Vec::new();
+        for index in (0..5000).rev() {
+            let name = format!("tag-{index:04}-日本🚀");
+            tags.insert(&name, &collator);
+            tags.insert(&name, &collator);
+            all.push(format!("#{name}"));
+            assert!(tags.bytes <= TAG_LINE_BYTES + name.len() + 2);
+        }
+        all.reverse();
+        let expected = all.join(" ");
+        assert_eq!(
+            tags.line().as_ref(),
+            &expected[..expected.floor_char_boundary(TAG_LINE_BYTES)]
+        );
+    }
 }
