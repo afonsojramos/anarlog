@@ -945,6 +945,7 @@ impl WorkspaceView {
                                         a.id == b.id
                                             && a.title == b.title
                                             && a.created_at == b.created_at
+                                            && a.folder_path == b.folder_path
                                     })
                             })
                         {

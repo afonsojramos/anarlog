@@ -100,7 +100,7 @@ fn local_time(date: DateTime<Utc>, timezone: Option<Tz>) -> DateTime<FixedOffset
     }
 }
 
-fn folder_label(path: &str) -> String {
+pub(super) fn folder_label(path: &str) -> String {
     let normalized = normalize_folder_path(path.trim()).unwrap_or_default();
     if normalized.encode_utf16().count() > 200
         || normalized

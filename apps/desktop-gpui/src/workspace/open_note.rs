@@ -5,9 +5,11 @@ use desktop_runtime::{
 };
 use gpui::{
     AnyView, Context, Entity, EventEmitter, FocusHandle, Focusable, MouseButton, Render,
-    Subscription, Window, div, prelude::*, px, svg,
+    Subscription, Task, Window, canvas, div, prelude::*, px, svg,
 };
+use serde_json::json;
 
+use super::library::folder_label;
 use crate::{
     contracts::{MeetingIntent, ProductRoute, WorkspaceEvent},
     ui::{
@@ -33,6 +35,9 @@ pub struct NoteView {
     menu_index: usize,
     menu_focus: FocusHandle,
     return_focus: Option<FocusHandle>,
+    folder: String,
+    folder_task: Option<Task<()>>,
+    compact_folder: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -85,6 +90,9 @@ impl NoteView {
             menu_index: 0,
             menu_focus: cx.focus_handle(),
             return_focus: None,
+            folder: String::new(),
+            folder_task: None,
+            compact_folder: false,
             _subscriptions: vec![input, blur],
         }
     }
@@ -134,6 +142,8 @@ impl NoteView {
         {
             self.cancel_open();
             self.current = None;
+            self.folder.clear();
+            self.folder_task = None;
             self.content = None;
             self.message.clear();
             self.title
@@ -261,6 +271,8 @@ impl NoteView {
         self.menu = false;
         self.rename_pending = false;
         self.rename_error = false;
+        self.folder = folder_label(&session.summary.folder_path);
+        self.watch_folder(session.summary.id.clone(), cx);
         let session = Arc::new(session);
         cx.emit(NoteEvent::Opened(session.clone()));
         if let Some(document) = &session.note {
@@ -281,6 +293,64 @@ impl NoteView {
         };
         self.current = Some(session);
         cx.notify();
+    }
+
+    fn watch_folder(&mut self, id: SessionId, cx: &mut Context<Self>) {
+        self.folder_task = None;
+        let reply = self.runtime.watch_query(
+            "SELECT folder_path FROM sessions WHERE id=? AND deleted_at IS NULL".into(),
+            vec![json!(id)],
+        );
+        self.folder_task = Some(cx.spawn(async move |this, cx| {
+            let result = async { reply?.receive().await }.await;
+            let mut watch = match result {
+                Ok(watch) => watch,
+                Err(error) => {
+                    let _ = this.update(cx, |this, cx| {
+                        this.message = format!("Folder updates unavailable: {error}");
+                        cx.notify();
+                    });
+                    return;
+                }
+            };
+            loop {
+                let rows = watch.snapshots.borrow_and_update().rows.clone();
+                let error = watch
+                    .terminal_error()
+                    .or_else(|| watch.errors.try_recv().ok());
+                let terminal = error.is_some();
+                if this
+                    .update(cx, |this, cx| {
+                        if this
+                            .current
+                            .as_ref()
+                            .is_some_and(|session| session.summary.id == id)
+                        {
+                            if let Some(error) = error {
+                                this.message = format!("Folder updates unavailable: {error}");
+                                cx.notify();
+                            } else {
+                                let folder = folder_label(
+                                    rows.first()
+                                        .and_then(|row| row["folder_path"].as_str())
+                                        .unwrap_or_default(),
+                                );
+                                if this.folder != folder {
+                                    this.folder = folder;
+                                    cx.notify();
+                                }
+                            }
+                        }
+                    })
+                    .is_err()
+                    || terminal
+                    || watch.snapshots.changed().await.is_err()
+                {
+                    break;
+                }
+            }
+            let _ = watch.unsubscribe().await;
+        }));
     }
 
     pub(super) fn rename(&mut self, cx: &mut Context<Self>) {
@@ -372,6 +442,8 @@ impl Drop for NoteView {
 impl Render for NoteView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme(window);
+        let compact_folder = self.compact_folder;
+        let entity = cx.entity().downgrade();
         div()
             .size_full()
             .relative()
@@ -400,10 +472,19 @@ impl Render for NoteView {
                         .child(
                             div()
                                 .id("note-folder")
-                                .size(px(28.))
+                                .h(px(28.))
                                 .flex()
                                 .items_center()
-                                .justify_center()
+                                .when(self.folder.is_empty(), |view| {
+                                    view.w(px(28.)).justify_center()
+                                })
+                                .when(!self.folder.is_empty(), |view| {
+                                    view.max_w(px(144.)).min_w_0().when_else(
+                                        self.compact_folder,
+                                        |view| view.w(px(28.)),
+                                        |view| view.gap_1().px(px(6.)),
+                                    )
+                                })
                                 .rounded_full()
                                 .hover(|view| view.bg(colors.accent))
                                 .text_color(colors.muted_foreground)
@@ -417,8 +498,18 @@ impl Render for NoteView {
                                     svg()
                                         .path("workspace/Folder01Icon.svg")
                                         .size(px(16.))
+                                        .flex_shrink_0()
                                         .text_color(colors.muted_foreground),
-                                ),
+                                )
+                                .when(!self.folder.is_empty() && !self.compact_folder, |view| {
+                                    view.child(
+                                        div()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_xs()
+                                            .child(self.folder.clone()),
+                                    )
+                                }),
                         )
                         .child(div().text_color(colors.muted_foreground).child("/"))
                         .child(
@@ -483,6 +574,26 @@ impl Render for NoteView {
                         ),
                 )
             })
+            .child(
+                canvas(
+                    move |bounds, window, cx| {
+                        let compact = bounds.size.width < px(480.);
+                        if compact != compact_folder {
+                            window.defer(cx, move |_, cx| {
+                                let _ = entity.update(cx, |this, cx| {
+                                    if this.compact_folder != compact {
+                                        this.compact_folder = compact;
+                                        cx.notify();
+                                    }
+                                });
+                            });
+                        }
+                    },
+                    |_, (), _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
             .when(!self.message.is_empty(), |view| {
                 view.child(
                     div()
