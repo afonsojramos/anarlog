@@ -7,7 +7,7 @@ use gpui::{
     prelude::*, px,
 };
 
-use crate::ui::theme::theme;
+use crate::ui::theme::{monospace_font, theme};
 
 pub struct LibraryView {
     page: Arc<LibraryPage>,
@@ -317,16 +317,19 @@ impl Render for LibraryView {
                         let id = item.id.clone();
                         div()
                             .id(gpui::SharedString::from(item.id.0.clone()))
-                            .h(px(56.))
+                            .h(px(54.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
                             .px_3()
                             .py_2()
                             .mx_1()
-                            .rounded(px(6.))
-                            .hover(|style| style.bg(colors.accent))
+                            .rounded(px(8.))
+                            .hover(|style| style.bg(colors.accent.opacity(0.5)))
                             .when(
                                 this.selection.ids.contains(&id)
                                     || this.active.as_ref() == Some(&id),
-                                |view| view.bg(colors.sidebar_accent),
+                                |view| view.bg(colors.accent),
                             )
                             .cursor_pointer()
                             .overflow_hidden()
@@ -381,18 +384,25 @@ impl Render for LibraryView {
                                     }
                                 }),
                             )
-                            .child(div().text_sm().truncate().child(if item.title.is_empty() {
-                                "Untitled note".into()
-                            } else {
-                                gpui::SharedString::from(item.title.clone())
-                            }))
-                            .child(div().text_xs().text_color(colors.muted_foreground).child(
-                                if this.recording.contains(&item.id) {
-                                    "Recording".into()
+                            .child(div().text_sm().line_height(px(20.)).truncate().child(
+                                if item.title.is_empty() {
+                                    "Untitled".into()
                                 } else {
-                                    gpui::SharedString::from(time)
+                                    gpui::SharedString::from(item.title.clone())
                                 },
                             ))
+                            .child(
+                                div()
+                                    .font_family(monospace_font(cx))
+                                    .text_xs()
+                                    .line_height(px(16.))
+                                    .text_color(colors.muted_foreground)
+                                    .child(if this.recording.contains(&item.id) {
+                                        "Recording".into()
+                                    } else {
+                                        gpui::SharedString::from(time)
+                                    }),
+                            )
                             .into_any_element()
                     }),
                 )

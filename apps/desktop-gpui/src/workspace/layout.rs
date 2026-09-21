@@ -128,10 +128,11 @@ impl Render for WorkspaceView {
             .flex_shrink_0()
             .flex()
             .flex_col()
-            .gap_2()
+            .gap_1()
             .child(
                 div()
-                    .h_10()
+                    .h(px(36.))
+                    .flex_shrink_0()
                     .px_2()
                     .flex()
                     .items_center()
@@ -139,7 +140,6 @@ impl Render for WorkspaceView {
                     .child(
                         div()
                             .flex()
-                            .gap_1()
                             .child(
                                 div()
                                     .id("open-picker")
@@ -147,16 +147,17 @@ impl Render for WorkspaceView {
                                     .flex()
                                     .items_center()
                                     .justify_center()
+                                    .rounded_full()
+                                    .text_color(colors.muted_foreground)
+                                    .hover(|style| {
+                                        style.bg(colors.accent).text_color(colors.foreground)
+                                    })
+                                    .tooltip(|_, cx| cx.new(|_| Hint("Search")).into())
                                     .cursor_pointer()
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.show_picker(window, cx)
                                     }))
-                                    .child(
-                                        svg()
-                                            .path("Search01Icon.svg")
-                                            .size(px(16.))
-                                            .text_color(colors.foreground),
-                                    ),
+                                    .child(svg().path("Search01Icon.svg").size(px(15.))),
                             )
                             .child(
                                 div()
@@ -165,60 +166,16 @@ impl Render for WorkspaceView {
                                     .flex()
                                     .items_center()
                                     .justify_center()
+                                    .rounded_full()
+                                    .text_color(colors.muted_foreground)
+                                    .hover(|style| {
+                                        style.bg(colors.accent).text_color(colors.foreground)
+                                    })
+                                    .tooltip(|_, cx| cx.new(|_| Hint("New note")).into())
                                     .cursor_pointer()
                                     .on_click(cx.listener(|this, _, _, cx| this.create(false, cx)))
-                                    .child(
-                                        svg()
-                                            .path("FileAddIcon.svg")
-                                            .size(px(16.))
-                                            .text_color(colors.foreground),
-                                    ),
+                                    .child(svg().path("NoteEditIcon.svg").size(px(15.))),
                             ),
-                    ),
-            )
-            .child(
-                div()
-                    .px_2()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_1()
-                    .children(
-                        [
-                            Route::Empty,
-                            Route::Calendar,
-                            Route::Contacts,
-                            Route::Folders,
-                            Route::Templates,
-                            Route::Automations,
-                        ]
-                        .into_iter()
-                        .map(|target| {
-                            let label = if target == Route::Empty {
-                                "Notes"
-                            } else {
-                                target.label()
-                            };
-                            div()
-                                .id(SharedString::from(label))
-                                .size(px(28.))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded_full()
-                                .cursor_pointer()
-                                .tooltip(move |_, cx| cx.new(|_| Hint(label)).into())
-                                .bg(if target.same_resource(&route) {
-                                    colors.sidebar_accent
-                                } else {
-                                    colors.background
-                                })
-                                .hover(|style| style.bg(colors.accent))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.navigate(Navigate::Open(target.clone(), false), cx)
-                                }))
-                                .child(icon(label, colors.foreground))
-                        }),
                     ),
             )
             .child(
@@ -230,8 +187,7 @@ impl Render for WorkspaceView {
                     .when(catalog.is_none(), |view| {
                         view.flex()
                             .flex_col()
-                            .gap_2()
-                            .child(div().flex().w_full().px_2().child(self.search.clone()))
+                            .gap_1()
                             .child(div().flex_1().min_h_0().child(self.library.clone()))
                             .child(
                                 div()
@@ -277,17 +233,6 @@ impl Render for WorkspaceView {
                                     ),
                             )
                     }),
-            )
-            .child(
-                div().px_2().pb_2().text_xs().child(
-                    div()
-                        .id("settings")
-                        .cursor_pointer()
-                        .child("Settings")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.navigate(Navigate::Open(Route::settings("app"), false), cx)
-                        })),
-                ),
             );
         let surface = div()
             .flex_1()

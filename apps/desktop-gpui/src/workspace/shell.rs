@@ -26,7 +26,7 @@ use super::{
 };
 use crate::{
     contracts::{LaneContext, MeetingIntent, ProductRoute, WorkspaceEvent},
-    ui::input::{InputEvent, TextInput},
+    ui::input::TextInput,
 };
 
 #[derive(Clone)]
@@ -49,7 +49,6 @@ pub(super) enum Navigate {
 pub struct WorkspaceView {
     runtime: RuntimeHandle,
     pub(super) focus: FocusHandle,
-    pub(super) search: Entity<TextInput>,
     pub(super) library: Entity<LibraryView>,
     pub(super) note: Entity<NoteView>,
     pub(super) picker: Entity<NotePicker>,
@@ -167,22 +166,12 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let search = cx.new(|cx| TextInput::new("Search titles; Enter", cx));
         let library = cx.new(LibraryView::new);
         let note = cx.new(|cx| NoteView::new(context.runtime.clone(), window, cx));
         let picker = cx.new(|cx| NotePicker::new(context.runtime.clone(), cx));
         let calendar = cx.new(|_| CalendarView::new(context.runtime.clone()));
         let focus = cx.focus_handle();
         focus.focus(window);
-        let search_subscription = cx.subscribe(&search, |this, _, event, cx| {
-            if matches!(event, InputEvent::Submitted) {
-                this.query.search = this.search.read(cx).buffer.text.as_str().into();
-                this.query.offset = 0;
-                this.reload(cx);
-            } else if matches!(event, InputEvent::Rejected) {
-                this.set_status("Search input is limited to 4096 bytes.".into(), cx);
-            }
-        });
         let open_subscription = cx.subscribe(&library, |this, _, event: &OpenNote, cx| {
             this.handle_note(event, cx)
         });
@@ -280,7 +269,6 @@ impl WorkspaceView {
         Self {
             runtime: context.runtime,
             focus,
-            search,
             library,
             note,
             picker,
@@ -316,7 +304,6 @@ impl WorkspaceView {
             automation_client: None,
             subscriptions: vec![
                 operation_subscription,
-                search_subscription,
                 open_subscription,
                 forward_subscription,
                 note_subscription,

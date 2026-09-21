@@ -245,8 +245,7 @@ impl ProductPane {
             "imports" => Some(Surface::Imports),
             "permissions" => Some(Surface::Permissions),
             "developers" => Some(Surface::Developers),
-            "calendar" => Some(Surface::Calendar),
-            "folders" | "contacts" | "templates" | "automations" | "insights" => {
+            "calendar" | "folders" | "contacts" | "templates" | "automations" | "insights" => {
                 cx.emit(OpenWorkspaceSection(page.id));
                 cx.notify();
                 return;

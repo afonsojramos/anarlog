@@ -10,6 +10,7 @@ impl AssetSource for Assets {
             "FileAddIcon.svg" => Some(include_bytes!("../../assets/FileAddIcon.svg")),
             "Search01Icon.svg" => Some(include_bytes!("../../assets/Search01Icon.svg")),
             "PencilEdit01Icon.svg" => Some(include_bytes!("../../assets/PencilEdit01Icon.svg")),
+            "NoteEditIcon.svg" => Some(include_bytes!("../../assets/NoteEditIcon.svg")),
             _ => None,
         };
         Ok(bytes.map(Cow::Borrowed))
@@ -20,6 +21,7 @@ impl AssetSource for Assets {
             "FileAddIcon.svg",
             "Search01Icon.svg",
             "PencilEdit01Icon.svg",
+            "NoteEditIcon.svg",
         ]
         .into_iter()
         .map(Into::into)
