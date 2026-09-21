@@ -107,6 +107,46 @@ impl Persistence {
             .map_err(|_| ServiceError::Closed)
     }
 
+    pub fn try_push(&self, mut delta: LiveTranscriptDelta) -> Result<()> {
+        let _admission = self.admission.try_lock().map_err(|_| ServiceError::Busy)?;
+        if self.retired.load(Ordering::Acquire) {
+            return Err(ServiceError::Closed);
+        }
+        validate_delta(&delta)?;
+        delta.partials.clear();
+        if delta.new_words.is_empty() && delta.replaced_ids.is_empty() {
+            return Ok(());
+        }
+        let text = delta
+            .new_words
+            .iter()
+            .map(|word| word.id.len() + word.text.len())
+            .sum::<usize>()
+            + delta.replaced_ids.iter().map(String::len).sum::<usize>();
+        let mut permits = Vec::new();
+        for (semaphore, size) in [
+            (&self.text, text),
+            (&self.words, delta.new_words.len()),
+            (&self.replacements, delta.replaced_ids.len()),
+        ] {
+            permits.push(
+                semaphore
+                    .clone()
+                    .try_acquire_many_owned(size as u32)
+                    .map_err(|_| ServiceError::Busy)?,
+            );
+        }
+        self.sender
+            .try_send(Command::Delta(Entry {
+                delta,
+                _permits: permits,
+            }))
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => ServiceError::Busy,
+                mpsc::error::TrySendError::Closed(_) => ServiceError::Closed,
+            })
+    }
+
     pub async fn retire(&self) -> Result<()> {
         let _admission = self.admission.lock().await;
         self.flush().await?;

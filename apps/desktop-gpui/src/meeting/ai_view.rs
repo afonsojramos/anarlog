@@ -25,6 +25,7 @@ pub type ContextResolver =
 pub struct AiViewServices {
     pub ai: Arc<AiServices>,
     pub context: ContextResolver,
+    pub approvals: super::tools::Approvals,
 }
 impl Global for AiViewServices {}
 
@@ -45,6 +46,7 @@ pub struct AiPane {
     reasoning: String,
     status: String,
     busy: bool,
+    proposal: Option<super::tools::Proposal>,
     cancellation: CancellationToken,
     _poll: Task<()>,
 }
@@ -57,6 +59,12 @@ impl AiPane {
                 gpui::Timer::after(Duration::from_millis(33)).await;
                 if this
                     .update(cx, |this, cx| {
+                        let proposal = this.services.approvals.pending();
+                        if proposal.as_ref().map(|p| &p.id) != this.proposal.as_ref().map(|p| &p.id)
+                        {
+                            this.proposal = proposal;
+                            cx.notify();
+                        }
                         let (text, reasoning) = std::mem::take(
                             &mut *this
                                 .pending
@@ -89,6 +97,7 @@ impl AiPane {
             reasoning: String::new(),
             status: "Loading meeting chat…".into(),
             busy: true,
+            proposal: None,
             cancellation: CancellationToken::new(),
             _poll: poll,
         };
@@ -117,6 +126,7 @@ impl AiPane {
                             this.rows = this
                                 .history
                                 .iter()
+                                .filter(|message| message.role != Role::System)
                                 .map(|message| cx.new(|_| MessageRow::from(message)))
                                 .collect();
                             this.list.reset(this.rows.len());
@@ -345,6 +355,51 @@ impl Render for AiPane {
             })
             .when(!self.stream.is_empty(), |view| {
                 view.child(SharedString::from(self.stream.clone()))
+            })
+            .when_some(self.proposal.as_ref(), |view, proposal| {
+                let approve = proposal.id.clone();
+                let reject = proposal.id.clone();
+                view.child(
+                    div()
+                        .id("review-meeting-edit")
+                        .max_h_64()
+                        .overflow_y_scroll()
+                        .p_3()
+                        .border_1()
+                        .border_color(colors.border)
+                        .child("Review proposed edit")
+                        .child(
+                            div()
+                                .text_color(colors.muted)
+                                .child(SharedString::from(proposal.before.clone())),
+                        )
+                        .child(div().child(SharedString::from(proposal.after.clone())))
+                        .child(
+                            div()
+                                .flex()
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .id("apply-meeting-edit")
+                                        .cursor_pointer()
+                                        .child("Apply")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.services.approvals.decide(&approve, true);
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .id("reject-meeting-edit")
+                                        .cursor_pointer()
+                                        .child("Cancel")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.services.approvals.decide(&reject, false);
+                                            cx.notify();
+                                        })),
+                                ),
+                        ),
+                )
             })
             .child(self.status.clone())
             .child(self.input.clone())

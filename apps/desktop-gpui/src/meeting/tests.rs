@@ -13,7 +13,8 @@ use super::model::{Interval, MAX_TEXT, Retention, Word, recovered_additions, val
 use super::persistence::{Persistence, coalesce};
 use super::retention::Activities;
 use super::store::{SpeakerAssignment, SpeakerScope, TranscriptStore};
-use futures::{StreamExt, future::BoxFuture, stream::BoxStream};
+use futures::{SinkExt, StreamExt, future::BoxFuture, stream::BoxStream};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 struct Fixture {
     runtime: RuntimeHandle,
@@ -21,6 +22,517 @@ struct Fixture {
     session: SessionId,
     transcript: Arc<str>,
     directory: PathBuf,
+}
+
+impl Fixture {
+    async fn setting(&self, id: &str, value: Value) {
+        self.sql(
+            "INSERT OR REPLACE INTO app_settings (id, value_json) VALUES (?, ?)",
+            vec![json!(id), json!(value.to_string())],
+        )
+        .await;
+    }
+
+    fn providers(&self, url: &str) -> super::config::ProviderServices {
+        let url = url.to_owned();
+        super::config::ProviderServices {
+            runtime: self.runtime.clone(),
+            api_url: url.clone(),
+            cloud: Arc::new(|| {
+                Box::pin(async {
+                    Ok(super::config::CloudAccess {
+                        access_token: "fixture-token".into(),
+                        user_id: "fixture-owner".into(),
+                        is_paid: true,
+                    })
+                })
+            }),
+            local: Arc::new(move |_| {
+                let url = url.clone();
+                Box::pin(async move { Ok(url) })
+            }),
+            secret: Arc::new(|_, _| Box::pin(async { Ok(Some("fixture-key".into())) })),
+            secret_write: Arc::new(|_, _, _| Box::pin(async { Ok(()) })),
+        }
+    }
+}
+
+struct NetworkFixture {
+    url: String,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for NetworkFixture {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+async fn provider_fixture() -> NetworkFixture {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut probe = [0; 3];
+                stream.peek(&mut probe).await.unwrap();
+                if &probe == b"GET" {
+                    let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                    let mut sent = false;
+                    while let Some(Ok(message)) = socket.next().await {
+                        if message.is_binary() && !sent {
+                            sent = true;
+                            let response = json!({
+                                "type":"Results", "start":0.0, "duration":1.0,
+                                "is_final":true, "speech_final":true, "from_finalize":false,
+                                "channel_index":[0,2],
+                                "channel":{"alternatives":[{"transcript":"durable résumé", "confidence":1.0,
+                                    "words":[{"word":"durable", "start":0.0,"end":0.4,"confidence":1.0,"speaker":0},
+                                        {"word":"résumé","start":0.4,"end":1.0,"confidence":1.0,"speaker":0}]}]},
+                                "metadata":{"request_id":"fixture","model_uuid":"fixture","model_info":{"name":"fixture","version":"1","arch":"test"}}
+                            });
+                            assert!(
+                                !owhisper_client::RealtimeSttAdapter::parse_response(
+                                    &owhisper_client::DeepgramAdapter,
+                                    &response.to_string()
+                                )
+                                .is_empty()
+                            );
+                            socket
+                                .send(tokio_tungstenite::tungstenite::Message::Text(
+                                    response.to_string().into(),
+                                ))
+                                .await
+                                .unwrap();
+                            let mut continuation = response;
+                            continuation["start"] = json!(3.0);
+                            for word in continuation["channel"]["alternatives"][0]["words"]
+                                .as_array_mut()
+                                .unwrap()
+                            {
+                                word["start"] = json!(word["start"].as_f64().unwrap() + 3.0);
+                                word["end"] = json!(word["end"].as_f64().unwrap() + 3.0);
+                            }
+                            socket
+                                .send(tokio_tungstenite::tungstenite::Message::Text(
+                                    continuation.to_string().into(),
+                                ))
+                                .await
+                                .unwrap();
+                        }
+                        if message
+                            .to_text()
+                            .is_ok_and(|text| text.contains("Finalize"))
+                        {
+                            for channel in 0..2 {
+                                let response = json!({"type":"Results","start":4.0,"duration":0.0,"is_final":true,"speech_final":true,"from_finalize":true,"channel_index":[channel,2],"channel":{"alternatives":[{"transcript":"","confidence":1.0,"words":[]}]},"metadata":{"request_id":"fixture","model_uuid":"fixture","model_info":{"name":"fixture","version":"1","arch":"test"}}});
+                                socket
+                                    .send(tokio_tungstenite::tungstenite::Message::Text(
+                                        response.to_string().into(),
+                                    ))
+                                    .await
+                                    .unwrap();
+                            }
+                        }
+                        if message.is_close() {
+                            break;
+                        }
+                    }
+                } else {
+                    let mut data = Vec::new();
+                    let headers = loop {
+                        let mut buffer = [0; 8192];
+                        let count = stream.read(&mut buffer).await.unwrap();
+                        if count == 0 {
+                            return;
+                        }
+                        data.extend_from_slice(&buffer[..count]);
+                        if let Some(end) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+                            break end + 4;
+                        }
+                        assert!(data.len() < 65536);
+                    };
+                    let header = String::from_utf8_lossy(&data[..headers]);
+                    let length = header
+                        .lines()
+                        .find_map(|line| {
+                            let (key, value) = line.split_once(':')?;
+                            key.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    assert!(length < 32 * 1024 * 1024);
+                    let ai = header.contains("/chat/completions");
+                    while data.len() < headers + length {
+                        let mut buffer = [0; 8192];
+                        let count = stream.read(&mut buffer).await.unwrap();
+                        if count == 0 {
+                            return;
+                        }
+                        data.extend_from_slice(&buffer[..count]);
+                    }
+                    let (mime, body) = if ai {
+                        let request: Value =
+                            serde_json::from_slice(&data[headers..headers + length]).unwrap();
+                        assert_eq!(request["stream"], true);
+                        ("text/event-stream", "data: {\"choices\":[{\"delta\":{\"content\":\"fixture résumé\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".to_owned())
+                    } else {
+                        assert!(data.len() > headers);
+                        ("application/json", json!({"metadata": {}, "results": {"channels": [{"alternatives": [{"transcript":"recovered résumé", "confidence":1.0,"words":[{"word":"recovered","start":0.0,"end":0.1,"confidence":1.0,"speaker":0},{"word":"résumé","start":0.1,"end":0.2,"confidence":1.0,"speaker":0}]}]}]}}).to_string())
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+            });
+        }
+    });
+    NetworkFixture { url, task }
+}
+
+#[tokio::test]
+async fn canonical_provider_settings_cloud_admission_and_local_paths() {
+    let fixture = Fixture::new().await;
+    fixture
+        .setting("current_stt_provider", json!("deepgram"))
+        .await;
+    fixture.setting("current_stt_model", json!("nova-3")).await;
+    fixture
+        .setting("spoken_languages", json!("[\"en\",\"fr\"]"))
+        .await;
+    fixture
+        .setting(
+            "ai_provider:stt:deepgram",
+            json!({"base_url":"http://127.0.0.1:4321"}),
+        )
+        .await;
+    fixture.setting("audio_retention", json!("none")).await;
+    let mut services = fixture.providers("http://127.0.0.1:4321");
+    let capture = services.capture(fixture.session.clone()).await.unwrap();
+    assert_eq!(capture.params.api_key, "fixture-key");
+    assert_eq!(capture.params.base_url, "http://127.0.0.1:4321");
+    assert_eq!(capture.retention, Retention::Never);
+    assert_eq!(capture.params.languages.len(), 2);
+    fixture
+        .setting("current_stt_provider", json!("anarlog"))
+        .await;
+    fixture.setting("current_stt_model", json!("cloud")).await;
+    services.cloud = Arc::new(|| {
+        Box::pin(async {
+            Ok(super::config::CloudAccess {
+                access_token: "fixture".into(),
+                user_id: "owner".into(),
+                is_paid: false,
+            })
+        })
+    });
+    assert!(services.capture(fixture.session.clone()).await.is_err());
+    fixture
+        .setting("current_stt_provider", json!("local_file"))
+        .await;
+    fixture
+        .setting("current_stt_model", json!("local-file"))
+        .await;
+    assert!(services.capture(fixture.session.clone()).await.is_err());
+    fixture
+        .setting("local_stt_model_path", json!("/fixture/model.bin"))
+        .await;
+    let local = services.capture(fixture.session.clone()).await.unwrap();
+    assert!(local.params.api_key.is_empty());
+    assert!(matches!(
+        local.params.effective_transcription_mode(),
+        anlg_listener_core::TranscriptionMode::Batch
+    ));
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn canonical_context_http_stream_and_tool_approval_persist() {
+    let fixture = Fixture::new().await;
+    let server = provider_fixture().await;
+    fixture
+        .setting("current_llm_provider", json!("custom"))
+        .await;
+    fixture.setting("current_llm_model", json!("fixture")).await;
+    fixture
+        .setting("ai_provider:llm:custom", json!({"base_url":server.url}))
+        .await;
+    let services = fixture.providers(&server.url);
+    let context = super::context::load(&fixture.runtime, fixture.session.clone())
+        .await
+        .unwrap();
+    assert!(context.history[0].role == Role::System);
+    let views = services.ai_services(Arc::new(|_| false)).unwrap();
+    let chat = views
+        .ai
+        .chat(fixture.session.clone(), context.group)
+        .unwrap();
+    let result = chat
+        .send(
+            Message {
+                id: "fixture-http-user".into(),
+                role: Role::User,
+                parts: vec![Part::Text {
+                    text: "Summarize".into(),
+                }],
+            },
+            context.history,
+            None,
+            Arc::new(|_| {}),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(&result.parts[0], Part::Text { text } if text == "fixture résumé"));
+    let base = fixture
+        .runtime
+        .open_session(fixture.session.clone(), CancellationToken::new())
+        .unwrap()
+        .receive()
+        .await
+        .unwrap()
+        .note
+        .unwrap();
+    let tool = super::ai::MeetingTool::EditMemo {
+        session_id: fixture.session.0.to_string(),
+        expected: base.updated_at.to_string(),
+        body: "Approved résumé".into(),
+    };
+    let execute = super::tools::executor(fixture.runtime.clone(), views.approvals.clone());
+    let pending = tokio::spawn(execute(tool, CancellationToken::new()));
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Some(proposal) = views.approvals.pending() {
+                views.approvals.decide(&proposal.id, true);
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    pending.await.unwrap().unwrap();
+    let updated = fixture
+        .runtime
+        .open_session(fixture.session.clone(), CancellationToken::new())
+        .unwrap()
+        .receive()
+        .await
+        .unwrap()
+        .note
+        .unwrap();
+    assert!(updated.body.contains("Approved résumé"));
+    let (summary, context) = super::context::load(&fixture.runtime, fixture.session.clone())
+        .await
+        .unwrap()
+        .summary
+        .unwrap();
+    views
+        .ai
+        .summarize(summary, context, CancellationToken::new(), Arc::new(|_| {}))
+        .await
+        .unwrap();
+    drop(chat);
+    drop(views);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn native_streaming_capture_stops_and_reopens_durable_transcript() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("listener_core=debug,owhisper_client=debug")
+        .with_test_writer()
+        .try_init();
+    let fixture = Fixture::new().await;
+    let server = provider_fixture().await;
+    fixture
+        .setting("current_stt_provider", json!("deepgram"))
+        .await;
+    fixture.setting("current_stt_model", json!("nova-3")).await;
+    fixture.setting("spoken_languages", json!("[\"en\"]")).await;
+    fixture
+        .setting("ai_provider:stt:deepgram", json!({"base_url":server.url}))
+        .await;
+    fixture.setting("audio_retention", json!("none")).await;
+    let services = fixture.providers(&server.url);
+    let capture = super::capture::CaptureService::spawn(
+        fixture.runtime.clone(),
+        Arc::new(anlg_audio_mock::MockAudio::new(1)),
+        Arc::new(FixtureStorage(fixture.directory.clone())),
+        services.start_resolver(),
+    )
+    .unwrap();
+    capture
+        .start(fixture.session.clone())
+        .unwrap()
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(40), async {
+        loop {
+            let loaded = fixture
+                .store
+                .load(fixture.session.clone(), CancellationToken::new())
+                .unwrap()
+                .receive()
+                .await
+                .unwrap();
+            if loaded
+                .transcripts
+                .iter()
+                .any(|t| t.words.iter().any(|w| w.text.trim() == "résumé"))
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    capture.stop().unwrap().await.unwrap().unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(40), async {
+        loop {
+            let update = capture.take_update(0);
+            assert_ne!(
+                update.phase,
+                super::capture::Phase::Failed,
+                "{:?}",
+                update.error
+            );
+            if update.phase == super::capture::Phase::Idle {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        fixture
+            .sql(
+                "SELECT id FROM app_settings WHERE id LIKE 'capture_lifecycle_pending:%'",
+                vec![]
+            )
+            .await
+            .is_empty()
+    );
+    let reopened = fixture
+        .runtime
+        .open_session(fixture.session.clone(), CancellationToken::new())
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    assert_eq!(reopened.summary.id, fixture.session);
+    let loaded = fixture
+        .store
+        .load(fixture.session.clone(), CancellationToken::new())
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    assert!(
+        loaded
+            .transcripts
+            .iter()
+            .any(|t| t.words.iter().any(|w| w.text.trim() == "résumé"))
+    );
+    drop(capture);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn interrupted_mock_capture_recovers_through_configured_batch_provider() {
+    let fixture = Fixture::new().await;
+    let server = provider_fixture().await;
+    fixture
+        .setting("current_stt_provider", json!("deepgram"))
+        .await;
+    fixture.setting("current_stt_model", json!("nova-3")).await;
+    fixture.setting("spoken_languages", json!("[\"en\"]")).await;
+    fixture
+        .setting("ai_provider:stt:deepgram", json!({"base_url":server.url}))
+        .await;
+    let services = fixture.providers(&server.url);
+    let start = services.start_resolver();
+    let capture = super::capture::CaptureService::spawn(
+        fixture.runtime.clone(),
+        Arc::new(anlg_audio_mock::MockAudio::new(1)),
+        Arc::new(FixtureStorage(fixture.directory.clone())),
+        Arc::new(move |session| {
+            let start = start.clone();
+            Box::pin(async move {
+                let mut config = start(session).await?;
+                config.params.transcription_mode = anlg_listener_core::TranscriptionMode::Batch;
+                config.recovery = None;
+                Ok(config)
+            })
+        }),
+    )
+    .unwrap();
+    capture
+        .start(fixture.session.clone())
+        .unwrap()
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while capture.take_update(0).phase != super::capture::Phase::Listening {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while capture.take_update(0).amplitude == (0, 0) {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    capture.stop().unwrap().await.unwrap().unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while capture.take_update(0).phase != super::capture::Phase::Failed {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    drop(capture);
+    let reports = super::recovery::recover_startup(
+        &fixture.runtime,
+        fixture.directory.clone(),
+        Activities::default(),
+        services.recovery_resolver(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reports.len(), 1);
+    reports[0].result.as_ref().unwrap();
+    let loaded = fixture
+        .store
+        .load(fixture.session.clone(), CancellationToken::new())
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    assert!(
+        loaded
+            .transcripts
+            .iter()
+            .any(|t| t.words.iter().any(|w| w.text.trim() == "résumé"))
+    );
+    assert!(
+        fixture
+            .sql(
+                "SELECT id FROM app_settings WHERE id LIKE 'capture_lifecycle_pending:%'",
+                vec![]
+            )
+            .await
+            .is_empty()
+    );
+    fixture.close().await;
 }
 
 impl Fixture {
@@ -301,6 +813,89 @@ async fn locked_or_deleted_session_rejects_authoritative_transcript_writes() {
             .receive()
             .await
             .is_err()
+    );
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn speaker_creation_and_participant_assignment_commit_together() {
+    let fixture = Fixture::new().await;
+    fixture
+        .delta("speaker-word", delta("word", "hello", 0))
+        .await;
+    let assignment = SpeakerAssignment {
+        transcript_id: fixture.transcript.clone(),
+        anchor: "word".into(),
+        human_id: "new-human".into(),
+        scope: SpeakerScope::Segment {
+            word_ids: vec!["word".into()],
+        },
+    };
+    fixture
+        .store
+        .assign_participant(
+            fixture.session.clone(),
+            assignment.clone(),
+            None,
+            Some("Zoë".into()),
+        )
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    let people = fixture.sql("SELECT h.name FROM humans h JOIN session_participants p ON p.human_id = h.id WHERE p.session_id = ?", vec![json!(fixture.session)]).await;
+    assert_eq!(people[0]["name"], "Zoë");
+    let loaded = fixture
+        .store
+        .load(fixture.session.clone(), CancellationToken::new())
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    assert_eq!(loaded.segments[0].speaker_label, "Zoë");
+    fixture
+        .store
+        .assign_participant(fixture.session.clone(), assignment, None, None)
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture
+            .sql(
+                "SELECT COUNT(*) AS n FROM session_participants WHERE session_id = ?",
+                vec![json!(fixture.session)]
+            )
+            .await[0]["n"],
+        1
+    );
+    let invalid = SpeakerAssignment {
+        transcript_id: fixture.transcript.clone(),
+        anchor: "missing".into(),
+        human_id: "rejected".into(),
+        scope: SpeakerScope::Segment {
+            word_ids: vec!["missing".into()],
+        },
+    };
+    assert!(
+        fixture
+            .store
+            .assign_participant(
+                fixture.session.clone(),
+                invalid,
+                None,
+                Some("Rejected".into())
+            )
+            .unwrap()
+            .receive()
+            .await
+            .is_err()
+    );
+    assert!(
+        fixture
+            .sql("SELECT id FROM humans WHERE id = 'rejected'", vec![])
+            .await
+            .is_empty()
     );
     fixture.close().await;
 }

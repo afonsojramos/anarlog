@@ -122,6 +122,7 @@ struct Adapter {
     storage: Arc<dyn StorageRuntime>,
     state: Arc<Mutex<State>>,
     events: mpsc::Sender<SessionLifecycleEvent>,
+    overload: tokio::sync::Notify,
 }
 
 impl StorageRuntime for Adapter {
@@ -135,8 +136,11 @@ impl StorageRuntime for Adapter {
 
 impl ListenerRuntime for Adapter {
     fn emit_lifecycle(&self, event: SessionLifecycleEvent) {
-        if futures::executor::block_on(self.events.send(event)).is_err() {
-            self.fail(failure("Capture lifecycle receiver closed."));
+        if self.events.try_send(event).is_err() {
+            self.fail(failure(
+                "Capture lifecycle queue failed; recording is stopping for recovery.",
+            ));
+            self.overload.notify_one();
         }
     }
 
@@ -220,8 +224,9 @@ impl ListenerRuntime for Adapter {
                 drop(state);
                 match persistence {
                     Some(persistence) => {
-                        if let Err(error) = futures::executor::block_on(persistence.push(*delta)) {
-                            self.fail(error);
+                        if let Err(error) = persistence.try_push(*delta) {
+                            self.fail(failure(format!("Transcript admission failed ({error}); recording is stopping. Recovery remains pending.")));
+                            self.overload.notify_one();
                         }
                     }
                     None => self.fail(failure("No persistence owner for capture.")),
@@ -272,6 +277,10 @@ impl Adapter {
             .unwrap_or_else(|poison| poison.into_inner());
         state.error = Some(error);
         state.incomplete = true;
+        state.repair_through = state.capture_start.elapsed().as_millis() as u64;
+        if let Some(repair) = &state.repair {
+            repair.recovery.incident();
+        }
         state.revision += 1;
     }
 }
@@ -281,6 +290,42 @@ fn matches_session(state: &State, id: &str) -> bool {
         .session
         .as_ref()
         .is_some_and(|session| session.0.as_ref() == id)
+}
+
+#[cfg(test)]
+mod callback_tests {
+    use super::*;
+
+    struct Storage;
+    impl StorageRuntime for Storage {
+        fn global_base(&self) -> std::result::Result<PathBuf, anlg_storage::Error> {
+            Ok(PathBuf::new())
+        }
+        fn vault_base(&self) -> std::result::Result<PathBuf, anlg_storage::Error> {
+            Ok(PathBuf::new())
+        }
+    }
+
+    #[test]
+    fn lifecycle_overload_never_waits_and_marks_recovery() {
+        let (events, _receiver) = mpsc::channel(1);
+        let state = Arc::new(Mutex::new(State::default()));
+        let adapter = Adapter {
+            storage: Arc::new(Storage),
+            state: state.clone(),
+            events,
+            overload: tokio::sync::Notify::new(),
+        };
+        adapter.emit_lifecycle(SessionLifecycleEvent::Finalizing {
+            session_id: "fixture".into(),
+        });
+        adapter.emit_lifecycle(SessionLifecycleEvent::Finalizing {
+            session_id: "fixture".into(),
+        });
+        let state = state.lock().unwrap();
+        assert!(state.incomplete);
+        assert!(state.error.is_some());
+    }
 }
 
 enum Command {
@@ -318,7 +363,7 @@ impl CaptureService {
         std::thread::Builder::new().name("meeting-capture".into()).spawn(move || {
             let executor = tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build();
             let (events, mut lifecycle) = mpsc::channel(16);
-            let adapter = Arc::new(Adapter { storage, state: shared.clone(), events });
+            let adapter = Arc::new(Adapter { storage, state: shared.clone(), events, overload: tokio::sync::Notify::new() });
             let executor = match executor { Ok(executor) => executor, Err(error) => { adapter.fail(failure(error)); return; } };
             executor.block_on(async move {
                 let group = match PersistenceGroup::install(&runtime).await {
@@ -326,13 +371,18 @@ impl CaptureService {
                     Err(error) => { adapter.fail(error); return; }
                 };
                 shared.lock().unwrap_or_else(|poison| poison.into_inner()).persistence_group = Some(group);
-                let (root, _) = match Actor::spawn(Some(RootActor::name()), RootActor, RootArgs { runtime: adapter.clone(), audio: audio.clone() }).await {
+                let (root, root_task) = match Actor::spawn(None, RootActor, RootArgs { runtime: adapter.clone(), audio: audio.clone() }).await {
                     Ok(root) => root,
                     Err(error) => { adapter.fail(failure(error)); return; }
                 };
                 let mut microphone: Option<Option<String>> = None;
                 loop {
                     tokio::select! {
+                        _ = adapter.overload.notified() => {
+                            if let Err(error) = root.call(RootMsg::StopSession, Some(Duration::from_secs(30))).await {
+                                adapter.fail(failure(error));
+                            }
+                        }
                         Some(event) = lifecycle.recv() => {
                             let inactive = matches!(event, SessionLifecycleEvent::Inactive { .. });
                             if let Err(error) = handle_lifecycle(&runtime, &shared, event).await {
@@ -409,6 +459,7 @@ impl CaptureService {
                             None => {
                                 let _ = root.call(RootMsg::StopSession, Some(Duration::from_secs(30))).await;
                                 root.stop(None);
+                                let _ = root_task.await;
                                 break;
                             }
                         }
@@ -461,6 +512,18 @@ impl CaptureService {
             .try_send(Command::AudioPath(session, reply))
             .map_err(|_| ServiceError::Busy)?;
         Ok(receive)
+    }
+
+    pub fn is_active(&self, session: &SessionId) -> bool {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        state.session.as_ref() == Some(session)
+            && matches!(
+                state.phase,
+                Phase::Loading | Phase::Listening | Phase::Finalizing
+            )
     }
 
     pub fn take_update(&self, after: u64) -> CaptureUpdate {
