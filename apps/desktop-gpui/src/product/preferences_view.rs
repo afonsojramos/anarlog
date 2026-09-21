@@ -281,7 +281,9 @@ impl PreferencesView {
             let mut watch = match result {
                 Ok(watch) => watch,
                 Err(error) => {
-                    let _ = this.update(cx, |this, cx| this.fail(error, cx));
+                    if !cancel.is_cancelled() {
+                        let _ = this.update(cx, |this, cx| this.fail(error, cx));
+                    }
                     return;
                 }
             };
