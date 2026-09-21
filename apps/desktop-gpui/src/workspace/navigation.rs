@@ -396,9 +396,6 @@ impl SidebarState {
 
     pub fn resize_container(&mut self, width: f32) {
         if width.is_finite() && width > 0. {
-            if width != self.container_width && self.can_resize() && width < 200. + 500. + 8. {
-                self.expanded = false;
-            }
             self.container_width = width;
             if let Some(proportion) = self.proportion {
                 self.width = (proportion * width).clamp(200., 360.);
@@ -579,22 +576,25 @@ mod tests {
     }
 
     #[test]
-    fn narrow_window_collapses_timeline_until_explicitly_reopened() {
+    fn window_resize_preserves_expansion_for_default_and_manual_sidebars() {
         let mut sidebar = SidebarState::default();
         sidebar.resize_container(800.);
-        sidebar.resize(280.);
-        sidebar.resize_container(500.);
-        assert!(!sidebar.expanded);
-        sidebar.resize_container(800.);
-        assert!(!sidebar.expanded);
-        sidebar.toggle();
-        assert!(sidebar.expanded);
-        assert_eq!(sidebar.width(), 280.);
-
-        sidebar.set_route(&Route::Contacts);
-        sidebar.resize_container(500.);
-        assert!(sidebar.expanded);
-        assert_eq!(sidebar.width(), 200.);
+        for manual in [false, true] {
+            if manual {
+                sidebar.resize(280.);
+            }
+            for width in [708., 707., 600., 500., 800.] {
+                sidebar.resize_container(width);
+                assert!(sidebar.expanded);
+            }
+            assert_eq!(sidebar.width(), if manual { 280. } else { 200. });
+            sidebar.toggle();
+            for width in [500., 800.] {
+                sidebar.resize_container(width);
+                assert!(!sidebar.expanded);
+            }
+            sidebar.toggle();
+        }
     }
 
     #[test]
