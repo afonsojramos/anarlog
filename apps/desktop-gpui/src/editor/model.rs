@@ -378,7 +378,16 @@ impl EditorModel {
             return Err("Finish composition before pasting rich content".into());
         }
         let range = self.selection.range();
-        if range.start == 0 && range.end == self.document.units() {
+        let empty_document = range.is_empty()
+            && range.start == self.document.first_caret()
+            && self.document.root.children.len() == 1
+            && self
+                .document
+                .root
+                .children
+                .get(0)
+                .is_some_and(|node| node.kind() == "paragraph" && node.children.len() == 0);
+        if (range.start == 0 && range.end == self.document.units()) || empty_document {
             super::transform::removable(&self.document.root)?;
             let before = self.checkpoint();
             let cost = fragment.original.len() + range.len() * 4 + 4096;
@@ -386,7 +395,7 @@ impl EditorModel {
                 .document
                 .root
                 .with_children(fragment.root.children.clone());
-            self.selection = Selection::caret(self.document.first_caret());
+            self.selection = Selection::caret(self.document.edge_caret(true));
             self.record(before, cost);
             return Ok(());
         }

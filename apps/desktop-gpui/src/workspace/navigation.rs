@@ -396,6 +396,9 @@ impl SidebarState {
 
     pub fn resize_container(&mut self, width: f32) {
         if width.is_finite() && width > 0. {
+            if width != self.container_width && self.can_resize() && width < 200. + 500. + 8. {
+                self.expanded = false;
+            }
             self.container_width = width;
             if let Some(proportion) = self.proportion {
                 self.width = (proportion * width).clamp(200., 360.);
@@ -573,6 +576,25 @@ mod tests {
         );
         assert_eq!(Route::settings("folders"), Route::Folders);
         assert_eq!(Route::settings("removed"), Route::Settings("app".into()));
+    }
+
+    #[test]
+    fn narrow_window_collapses_timeline_until_explicitly_reopened() {
+        let mut sidebar = SidebarState::default();
+        sidebar.resize_container(800.);
+        sidebar.resize(280.);
+        sidebar.resize_container(500.);
+        assert!(!sidebar.expanded);
+        sidebar.resize_container(800.);
+        assert!(!sidebar.expanded);
+        sidebar.toggle();
+        assert!(sidebar.expanded);
+        assert_eq!(sidebar.width(), 280.);
+
+        sidebar.set_route(&Route::Contacts);
+        sidebar.resize_container(500.);
+        assert!(sidebar.expanded);
+        assert_eq!(sidebar.width(), 200.);
     }
 
     #[test]

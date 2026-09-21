@@ -1127,6 +1127,48 @@ fn rich_clipboard_preserves_marks_and_portable_attachment_metadata() {
 }
 
 #[test]
+fn whole_document_cut_paste_preserves_structure_and_undo() {
+    for content in [
+        json!([{"type":"paragraph","content":[{"type":"text","text":"ABCBC"}]}]),
+        json!([
+            {"type":"heading","attrs":{"level":2},"content":[{"type":"text","text":"日本語 😀"}]},
+            {"type":"paragraph","content":[]},
+            {"type":"paragraph","content":[{"type":"text","text":"bold","marks":[{"type":"bold"}]}]},
+            {"type":"bulletList","content":[{"type":"listItem","content":[
+                {"type":"paragraph","content":[{"type":"text","text":"nested"}]}
+            ]}]}
+        ]),
+    ] {
+        let mut editor = fixture(json!({"type":"doc","content":content}));
+        let original = editor.document.root.value();
+        for _ in 0..3 {
+            editor.select(Selection {
+                anchor: 0,
+                head: editor.document.units(),
+            });
+            let payload = clipboard::copy(&editor.document, editor.selection).unwrap();
+            editor.replace(editor.selection.range(), "").unwrap();
+            let empty = editor.document.root.value();
+            let (fragment, open) = clipboard::parse_slice(&payload.metadata).unwrap();
+            editor.insert_slice(fragment, open).unwrap();
+            assert_eq!(editor.document.root.value(), original);
+            assert_eq!(
+                editor.selection,
+                Selection::caret(editor.document.edge_caret(true))
+            );
+            editor.undo().unwrap();
+            assert_eq!(editor.document.root.value(), empty);
+            editor.undo().unwrap();
+            assert_eq!(editor.document.root.value(), original);
+            editor.redo().unwrap();
+            assert_eq!(editor.document.root.value(), empty);
+            editor.redo().unwrap();
+            assert_eq!(editor.document.root.value(), original);
+        }
+    }
+}
+
+#[test]
 fn rich_inline_paste_inherits_slice_marks_without_losing_surroundings() {
     let mut source = model("bold");
     source.select(Selection { anchor: 1, head: 5 });
