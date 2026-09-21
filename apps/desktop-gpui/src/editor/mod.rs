@@ -1,27 +1,15 @@
-use gpui::{Context, EventEmitter, Render, Window, div, prelude::*};
+pub mod accessibility;
+mod clipboard;
+pub mod document;
+mod input;
+pub mod menu;
+pub mod model;
+mod pane;
+pub mod persistence;
+mod sequence;
+mod surface;
 
-use crate::contracts::{EditorEvent, EditorInit, LaneContext};
+pub use pane::EditorPane;
 
-pub struct EditorPane {
-    pub context: LaneContext,
-    pub init: EditorInit,
-}
-
-impl EditorPane {
-    pub fn new(
-        context: LaneContext,
-        init: EditorInit,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Self {
-        Self { context, init }
-    }
-}
-
-impl EventEmitter<EditorEvent> for EditorPane {}
-
-impl Render for EditorPane {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().p_4().child("Rich-text editing is unavailable in this foundation. Stored documents remain unchanged.")
-    }
-}
+#[cfg(test)]
+mod tests;
