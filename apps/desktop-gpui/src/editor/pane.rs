@@ -61,6 +61,7 @@ pub struct EditorPane {
     attachment_previews: HashMap<String, Result<super::AttachmentPreview, String>>,
     attachment_loading: HashSet<String>,
     pending_attachment: Option<super::AttachmentPreview>,
+    attachment_importing: bool,
 }
 
 impl EditorPane {
@@ -212,6 +213,7 @@ impl EditorPane {
             attachment_previews: HashMap::new(),
             attachment_loading: HashSet::new(),
             pending_attachment: None,
+            attachment_importing: false,
         }
     }
 
@@ -542,9 +544,13 @@ impl EditorPane {
     }
 
     fn choose_attachment(&mut self, cx: &mut Context<Self>) {
+        if self.attachment_importing {
+            return;
+        }
         let Some(service) = self.attachment_service.clone() else {
             return;
         };
+        self.attachment_importing = true;
         let session = self.init.session_id.clone();
         let job = cx.background_executor().spawn(async move {
             let Some(file) = rfd::AsyncFileDialog::new().pick_file().await else {
@@ -560,14 +566,14 @@ impl EditorPane {
             let _ = entity.update(cx, |this, cx| {
                 match result {
                     Ok(Some(preview)) => {
-                        this.attachment_previews
-                            .insert(preview.id.clone(), Ok(preview.clone()));
+                        this.cache_attachment_preview(preview.id.clone(), Ok(preview.clone()));
                         this.pending_attachment = Some(preview);
                         this.insert_pending_attachment(cx);
                     }
                     Ok(None) => {}
                     Err(error) => this.message = error,
                 }
+                this.attachment_importing = false;
                 cx.notify();
             });
         })
@@ -575,10 +581,16 @@ impl EditorPane {
     }
 
     pub(super) fn paste_image(&mut self, image: gpui::Image, cx: &mut Context<Self>) {
+        if self.attachment_importing {
+            self.message =
+                "Wait for the current attachment import before pasting another image.".into();
+            return;
+        }
         let Some(service) = self.attachment_service.clone() else {
             self.message = "Configure the active vault before importing attachments.".into();
             return;
         };
+        self.attachment_importing = true;
         let session = self.init.session_id.clone();
         let job = cx.background_executor().spawn(async move {
             let extension = image
@@ -597,17 +609,28 @@ impl EditorPane {
             let _ = entity.update(cx, |this, cx| {
                 match result {
                     Ok(preview) => {
-                        this.attachment_previews
-                            .insert(preview.id.clone(), Ok(preview.clone()));
+                        this.cache_attachment_preview(preview.id.clone(), Ok(preview.clone()));
                         this.pending_attachment = Some(preview);
                         this.insert_pending_attachment(cx);
                     }
                     Err(error) => this.message = error,
                 }
+                this.attachment_importing = false;
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    fn cache_attachment_preview(
+        &mut self,
+        id: String,
+        preview: Result<super::AttachmentPreview, String>,
+    ) {
+        if self.attachment_previews.len() >= 128 {
+            self.attachment_previews.clear();
+        }
+        self.attachment_previews.insert(id, preview);
     }
 
     fn insert_pending_attachment(&mut self, cx: &mut Context<Self>) {
@@ -683,6 +706,10 @@ impl EditorPane {
                         gpui::img(src.to_owned())
                             .max_w_full()
                             .max_h(px(360.))
+                            .when_some(
+                                node.attr("width").and_then(serde_json::Value::as_f64),
+                                |view, width| view.w(px(width.clamp(80., 1600.) as f32)),
+                            )
                             .object_fit(gpui::ObjectFit::Contain),
                     )
                     .child(self.attachment_remove_control(start, node.id, cx))
@@ -715,10 +742,7 @@ impl EditorPane {
                 let preview = job.await;
                 let _ = entity.update(cx, |this, cx| {
                     this.attachment_loading.remove(&request_id);
-                    if this.attachment_previews.len() >= 128 {
-                        this.attachment_previews.clear();
-                    }
-                    this.attachment_previews.insert(request_id, preview);
+                    this.cache_attachment_preview(request_id, preview);
                     cx.notify();
                 });
             })
@@ -735,7 +759,10 @@ impl EditorPane {
                         .rounded_lg()
                         .border_1()
                         .px_3()
-                        .py_2()
+                        .py(px(10.))
+                        .when(node.kind() == "fileAttachment", |view| {
+                            view.flex().items_center().gap_3()
+                        })
                         .cursor_pointer()
                         .on_mouse_down(
                             MouseButton::Left,
@@ -762,14 +789,30 @@ impl EditorPane {
                                 gpui::img(preview.path.as_ref().clone())
                                     .max_h(px(if node.kind() == "image" { 360. } else { 40. }))
                                     .max_w_full()
+                                    .when(node.kind() == "fileAttachment", |view| {
+                                        view.w(px(40.)).h(px(40.))
+                                    })
+                                    .when_some(
+                                        node.attr("width")
+                                            .and_then(serde_json::Value::as_f64)
+                                            .filter(|_| node.kind() == "image"),
+                                        |view, width| view.w(px(width.clamp(80., 1600.) as f32)),
+                                    )
                                     .object_fit(gpui::ObjectFit::Contain),
                             )
                         })
-                        .child(format!(
-                            "{} · {:.1} KB",
-                            preview.name,
-                            preview.size as f64 / 1024.
-                        ))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .flex_1()
+                                .text_sm()
+                                .child(preview.name.clone())
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .child(format!("{:.1} KB", preview.size as f64 / 1024.)),
+                                ),
+                        )
                         .child(self.attachment_remove_control(start, node.id, cx))
                         .into_any_element(),
                 )
