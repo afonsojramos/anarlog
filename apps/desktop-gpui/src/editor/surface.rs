@@ -372,7 +372,7 @@ pub fn render_row(
             match mark.get("type").and_then(Value::as_str).unwrap_or("") {
                 "bold" => run.font.weight = FontWeight::BOLD,
                 "italic" => run.font.style = FontStyle::Italic,
-                "code" => run.font.family = "monospace".into(),
+                "code" => run.font.family = crate::ui::theme::monospace_font(cx),
                 "link" | "underline" => {
                     run.underline = Some(UnderlineStyle {
                         thickness: px(1.),
@@ -394,7 +394,7 @@ pub fn render_row(
             }
         }
         if row.kind == "codeBlock" {
-            run.font.family = "monospace".into();
+            run.font.family = crate::ui::theme::monospace_font(cx);
         }
         if row.kind == "heading" {
             run.font.weight = if row.level == 1 {

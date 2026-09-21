@@ -121,7 +121,9 @@ uncached and reference samples; these are not whole-application measurements.
 
 ## Remaining parity and validation gates
 
-No GUI tests were authorized for this integration. Visual/focus/drag/drop/IME
+Recorded Linux comparisons against the shipping Tauri application are in progress
+with isolated profiles. They found substantial layout differences and concrete
+interaction regressions; fixed paths are being retested. Visual/focus/drag/drop/IME
 parity, native accessibility, i18n, macOS/Windows, hardware/provider/keyring
 behavior and signed packaging/update installation remain unverified. GPUI 0.2.2
 lacks the required integrated accessibility hooks, a Wayland shortcut portal and

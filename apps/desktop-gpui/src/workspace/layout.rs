@@ -274,7 +274,7 @@ impl Render for WorkspaceView {
                             .justify_center()
                             .rounded_full()
                             .hover(|style| style.bg(colors.accent))
-                            .tooltip(|_, cx| cx.new(|_| Hint("Toggle sidebar · Mod+B")).into())
+                            .tooltip(|_, cx| cx.new(|_| Hint("Toggle sidebar · Mod+\\")).into())
                             .cursor_pointer()
                             .child(icon("Sidebar"))
                             .on_click(cx.listener(|this, _, _, cx| {
@@ -527,7 +527,7 @@ impl Render for WorkspaceView {
             .pl(px(4.))
             .gap(px(4.))
             .overflow_hidden()
-            .font_family(system_font(window))
+            .font_family(system_font(cx))
             .text_color(colors.foreground)
             .bg(colors.background)
             .track_focus(&self.focus)

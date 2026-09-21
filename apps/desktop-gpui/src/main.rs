@@ -4,6 +4,7 @@ use desktop_gpui::{application::ApplicationView, workspace::assets::Assets};
 use desktop_gpui::{
     native_events::NativeEvents,
     platform::{tray::TrayAdapter, windows::WindowIdentity},
+    ui::theme::UiFonts,
 };
 use desktop_runtime::Profile;
 use gpui::{AppContext, Application};
@@ -52,6 +53,7 @@ fn main() -> anyhow::Result<()> {
     let application = Application::new().with_assets(Assets);
     let events = NativeEvents::install(&application);
     application.run(move |cx| {
+        UiFonts::init(cx);
         let (mut handles, errors) = events.attach(cx);
         for error in errors {
             tracing::warn!("{error}");

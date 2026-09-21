@@ -7,8 +7,8 @@ use desktop_runtime::{AttachmentId, CancellationToken, DocumentSnapshot, HumanId
 use futures::{StreamExt, channel::oneshot};
 use gpui::{
     App, ClipboardItem, Context, ElementInputHandler, EventEmitter, FocusHandle, Focusable,
-    ListAlignment, ListState, MouseButton, Pixels, Point, Window, canvas, div, list, prelude::*,
-    px,
+    ListAlignment, ListOffset, ListState, MouseButton, Pixels, Point, Window, canvas, div, list,
+    prelude::*, px,
 };
 
 use super::{
@@ -52,6 +52,7 @@ pub struct EditorPane {
     drag_position: Option<Point<Pixels>>,
     drag_scroll: Option<gpui::Task<()>>,
     pub(super) viewport: Option<gpui::Bounds<Pixels>>,
+    pending_reveal: Option<usize>,
     clipboard_generation: u64,
     external_generation: u64,
     external: Option<DocumentSnapshot>,
@@ -204,6 +205,7 @@ impl EditorPane {
             drag_position: None,
             drag_scroll: None,
             viewport: None,
+            pending_reveal: None,
             clipboard_generation: 0,
             external_generation: 0,
             external: None,
@@ -277,6 +279,7 @@ impl EditorPane {
             {
                 self.list.splice(index..index + 1, 1);
             }
+            self.reveal_caret();
         }
         cx.notify();
     }
@@ -1234,11 +1237,61 @@ impl EditorPane {
             })
     }
 
-    pub(super) fn reveal_caret(&self) {
+    pub(super) fn reveal_caret(&mut self) {
         if let Some(model) = &self.model
             && let Some(index) = surface::block_index(&model.document, model.selection.head)
         {
-            self.list.scroll_to_reveal_item(index);
+            let head = model.selection.head;
+            self.pending_reveal = Some(head);
+            if !self
+                .layouts
+                .values()
+                .any(|layout| layout.bounds_for(head..head).is_some())
+            {
+                self.list.scroll_to(ListOffset {
+                    item_ix: index,
+                    offset_in_item: px(0.),
+                });
+            }
+        }
+    }
+
+    fn finish_reveal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(head) = self.pending_reveal else {
+            return;
+        };
+        let Some(viewport) = self.viewport else {
+            return;
+        };
+        let Some(caret) = self
+            .layouts
+            .values()
+            .find_map(|layout| layout.bounds_for(head..head))
+        else {
+            return;
+        };
+        let distance = if caret.top() < viewport.top() {
+            caret.top() - viewport.top()
+        } else if caret.bottom() > viewport.bottom() {
+            caret.bottom() - viewport.bottom()
+        } else {
+            px(0.)
+        };
+        self.pending_reveal = None;
+        if distance != px(0.) {
+            let entity = cx.weak_entity();
+            window.on_next_frame(move |_, cx| {
+                let _ = entity.update(cx, |this, cx| {
+                    if this
+                        .model
+                        .as_ref()
+                        .is_some_and(|model| model.selection.head == head)
+                    {
+                        this.list.scroll_by(distance);
+                        cx.notify();
+                    }
+                });
+            });
         }
     }
 
@@ -1387,6 +1440,7 @@ impl Render for EditorPane {
         let colors = theme(window);
         let entity = cx.entity();
         let handler = entity.clone();
+        let viewport_entity = entity.clone();
         let menu =
             self.slash.as_ref().map(|menu| {
                 div()
@@ -1484,6 +1538,7 @@ impl Render for EditorPane {
             .flex_col()
             .relative()
             .bg(colors.background)
+            .font_family(crate::ui::theme::system_font(cx))
             .text_color(colors.foreground)
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key))
@@ -1704,12 +1759,30 @@ impl Render for EditorPane {
                 )
             })
             .child(
-                list(self.list.clone(), move |index, window, cx| {
-                    entity.update(cx, |this, cx| this.render_block(index, window, cx))
-                })
-                .flex_1()
-                .min_h_0()
-                .w_full(),
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .child(
+                        list(self.list.clone(), move |index, window, cx| {
+                            entity.update(cx, |this, cx| this.render_block(index, window, cx))
+                        })
+                        .size_full(),
+                    )
+                    .child(
+                        canvas(
+                            move |_, _, _| (),
+                            move |bounds, (), window, cx| {
+                                viewport_entity.update(cx, |this, cx| {
+                                    this.viewport = Some(bounds);
+                                    this.finish_reveal(window, cx);
+                                });
+                            },
+                        )
+                        .absolute()
+                        .inset_0(),
+                    ),
             )
             .children(menu.map(gpui::deferred))
             .children(mentions.map(gpui::deferred))
@@ -1717,7 +1790,6 @@ impl Render for EditorPane {
                 canvas(
                     move |_, _, _| (),
                     move |bounds, (), window, cx| {
-                        handler.update(cx, |this, _| this.viewport = Some(bounds));
                         let focus = handler.read(cx).focus.clone();
                         window.handle_input(&focus, ElementInputHandler::new(bounds, handler), cx);
                     },
