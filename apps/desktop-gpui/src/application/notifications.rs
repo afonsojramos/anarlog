@@ -6,7 +6,7 @@ use super::ApplicationView;
 use crate::{
     contracts::ProductRoute,
     product::settings::{self, Snapshot},
-    ui::theme::theme,
+    ui::theme::{system_font, theme},
 };
 
 pub(super) struct Notifications {
@@ -184,6 +184,7 @@ impl ApplicationView {
                 .border_1()
                 .border_color(colors.border.opacity(0.7))
                 .bg(colors.card)
+                .font_family(system_font(cx))
                 .text_color(colors.foreground)
                 .shadow_md()
                 .occlude()
