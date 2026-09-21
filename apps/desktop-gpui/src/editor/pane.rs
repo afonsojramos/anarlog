@@ -707,8 +707,12 @@ impl EditorPane {
                             .max_w_full()
                             .max_h(px(360.))
                             .when_some(
-                                node.attr("width").and_then(serde_json::Value::as_f64),
-                                |view, width| view.w(px(width.clamp(80., 1600.) as f32)),
+                                node.attr("editorWidth").and_then(serde_json::Value::as_f64),
+                                |view, width| {
+                                    view.w(gpui::DefiniteLength::Fraction(
+                                        (width.clamp(10., 100.) / 100.) as f32,
+                                    ))
+                                },
                             )
                             .object_fit(gpui::ObjectFit::Contain),
                     )
@@ -793,10 +797,14 @@ impl EditorPane {
                                         view.w(px(40.)).h(px(40.))
                                     })
                                     .when_some(
-                                        node.attr("width")
+                                        node.attr("editorWidth")
                                             .and_then(serde_json::Value::as_f64)
                                             .filter(|_| node.kind() == "image"),
-                                        |view, width| view.w(px(width.clamp(80., 1600.) as f32)),
+                                        |view, width| {
+                                            view.w(gpui::DefiniteLength::Fraction(
+                                                (width.clamp(10., 100.) / 100.) as f32,
+                                            ))
+                                        },
                                     )
                                     .object_fit(gpui::ObjectFit::Contain),
                             )
