@@ -61,6 +61,7 @@ pub fn decode(raw: &str) -> Result<Vec<Route>, serde_json::Error> {
             Some("templates") => Some(Route::Templates),
             Some("automations") => Some(Route::Automations),
             Some("folders") => Some(Route::Folders),
+            Some("folder") => id.map(Route::Folder),
             Some("calendar") => Some(Route::Calendar),
             Some("changelog") => Some(Route::Changelog),
             Some("onboarding") => Some(Route::Onboarding),
@@ -98,6 +99,7 @@ pub fn encode(routes: &[Route]) -> Result<String, serde_json::Error> {
                 Route::Templates => ("templates", None),
                 Route::Automations => ("automations", None),
                 Route::Folders => ("folders", None),
+                Route::Folder(id) => ("folder", Some(id)),
                 Route::Calendar => ("calendar", None),
                 Route::Changelog => ("changelog", None),
                 Route::Settings(_) => ("settings", None),
@@ -120,6 +122,12 @@ pub fn encode(routes: &[Route]) -> Result<String, serde_json::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn folder_pins_keep_stable_ids_across_renames() {
+        let routes = vec![Route::Folder("folder-id".into()), Route::Folders];
+        assert_eq!(decode(&encode(&routes).unwrap()).unwrap(), routes);
+    }
 
     #[test]
     fn shipping_pin_allowlist_redirects_and_session_ids_roundtrip() {

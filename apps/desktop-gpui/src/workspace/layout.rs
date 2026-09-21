@@ -1,10 +1,56 @@
 use gpui::{Context, MouseButton, Render, SharedString, Window, div, prelude::*, px, svg};
 
 use super::{
-    navigation::Route,
+    navigation::{Route, SlotId},
     shell::{Navigate, WorkspaceView},
 };
 use crate::ui::theme::{SYSTEM_FONT, theme};
+
+struct Hint(&'static str);
+
+impl Render for Hint {
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let colors = theme(window);
+        div()
+            .px_2()
+            .py_1()
+            .rounded(px(6.))
+            .bg(colors.card)
+            .border_1()
+            .border_color(colors.border)
+            .text_xs()
+            .text_color(colors.foreground)
+            .child(self.0)
+    }
+}
+
+fn icon(label: &'static str) -> impl IntoElement {
+    let name = match label {
+        "Back" => "ArrowLeft02Icon",
+        "Forward" => "ArrowRight02Icon",
+        "Sidebar" => "SidebarLeftIcon",
+        "Contacts" => "UsersIcon",
+        "Folders" => "Folder01Icon",
+        "Calendar" => "Calendar03Icon",
+        "Automations" => "ZapIcon",
+        "Pin" | "Unpin" => "PinIcon",
+        _ => "FileTextIcon",
+    };
+    svg().path(format!("workspace/{name}.svg")).size(px(16.))
+}
+
+#[derive(Clone)]
+struct TabDrag(SlotId);
+
+impl Render for TabDrag {
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .p_2()
+            .rounded(px(6.))
+            .bg(theme(window).accent)
+            .child("Move tab")
+    }
+}
 
 impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -80,41 +126,49 @@ impl Render for WorkspaceView {
                     ),
             )
             .child(
-                div().px_2().flex().flex_wrap().gap_1().children(
-                    [
-                        Route::Empty,
-                        Route::Calendar,
-                        Route::Contacts,
-                        Route::Folders,
-                        Route::Templates,
-                        Route::Automations,
-                    ]
-                    .into_iter()
-                    .map(|target| {
-                        let label = if target == Route::Empty {
-                            "Notes"
-                        } else {
-                            target.label()
-                        };
-                        div()
-                            .id(SharedString::from(label))
-                            .px_2()
-                            .py_1()
-                            .text_xs()
-                            .rounded(px(8.))
-                            .cursor_pointer()
-                            .bg(if target.same_resource(&route) {
-                                colors.sidebar_accent
+                div()
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_1()
+                    .children(
+                        [
+                            Route::Empty,
+                            Route::Calendar,
+                            Route::Contacts,
+                            Route::Folders,
+                            Route::Templates,
+                            Route::Automations,
+                        ]
+                        .into_iter()
+                        .map(|target| {
+                            let label = if target == Route::Empty {
+                                "Notes"
                             } else {
-                                colors.background
-                            })
-                            .hover(|style| style.bg(colors.accent))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.navigate(Navigate::Open(target.clone(), false), cx)
-                            }))
-                            .child(label)
-                    }),
-                ),
+                                target.label()
+                            };
+                            div()
+                                .id(SharedString::from(label))
+                                .size(px(28.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_full()
+                                .cursor_pointer()
+                                .tooltip(move |_, cx| cx.new(|_| Hint(label)).into())
+                                .bg(if target.same_resource(&route) {
+                                    colors.sidebar_accent
+                                } else {
+                                    colors.background
+                                })
+                                .hover(|style| style.bg(colors.accent))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.navigate(Navigate::Open(target.clone(), false), cx)
+                                }))
+                                .child(icon(label))
+                        }),
+                    ),
             )
             .child(
                 div()
@@ -214,9 +268,15 @@ impl Render for WorkspaceView {
                     .child(
                         div()
                             .id("toggle-sidebar")
-                            .px_2()
+                            .size(px(28.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_full()
+                            .hover(|style| style.bg(colors.accent))
+                            .tooltip(|_, cx| cx.new(|_| Hint("Toggle sidebar · Mod+B")).into())
                             .cursor_pointer()
-                            .child("Sidebar")
+                            .child(icon("Sidebar"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.sidebar.toggle();
                                 cx.notify();
@@ -225,9 +285,15 @@ impl Render for WorkspaceView {
                     .child(
                         div()
                             .id("history-back")
-                            .px_2()
+                            .size(px(28.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_full()
+                            .hover(|style| style.bg(colors.accent))
+                            .tooltip(|_, cx| cx.new(|_| Hint("Back · Alt+Left")).into())
                             .cursor_pointer()
-                            .child("Back")
+                            .child(icon("Back"))
                             .text_color(
                                 if self.navigation.current().is_some_and(|tab| tab.can_back()) {
                                     colors.foreground
@@ -242,9 +308,15 @@ impl Render for WorkspaceView {
                     .child(
                         div()
                             .id("history-forward")
-                            .px_2()
+                            .size(px(28.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_full()
+                            .hover(|style| style.bg(colors.accent))
+                            .tooltip(|_, cx| cx.new(|_| Hint("Forward · Alt+Right")).into())
                             .cursor_pointer()
-                            .child("Forward")
+                            .child(icon("Forward"))
                             .text_color(
                                 if self
                                     .navigation
@@ -270,17 +342,54 @@ impl Render for WorkspaceView {
                             .h_full()
                             .children(self.navigation.tabs.iter().map(|tab| {
                                 let slot = tab.slot;
+                                let pinned = tab.pinned;
                                 let title = if let Route::Session(id) = &tab.route {
                                     self.titles
                                         .get(id)
                                         .cloned()
                                         .map(SharedString::from)
                                         .unwrap_or("Note".into())
+                                } else if let Route::Folder(id) = &tab.route {
+                                    self.catalogs
+                                        .iter()
+                                        .find(|(kind, _)| *kind == super::ports::Catalog::Folders)
+                                        .and_then(|(_, view)| view.read(cx).title(id))
+                                        .map(SharedString::from)
+                                        .unwrap_or_else(|| {
+                                            format!(
+                                                "Folder · {}",
+                                                id.chars().take(8).collect::<String>()
+                                            )
+                                            .into()
+                                        })
                                 } else {
                                     tab.route.label().into()
                                 };
                                 div()
                                     .id(("tab", slot.0))
+                                    .on_drag(TabDrag(slot), |drag, _, _, cx| {
+                                        cx.new(|_| drag.clone())
+                                    })
+                                    .on_drop(cx.listener(move |this, drag: &TabDrag, _, cx| {
+                                        if this.navigation.reorder(drag.0, slot) {
+                                            if this.pin_persistence {
+                                                cx.emit(
+                                                    super::shell::WorkspaceAction::PinnedChanged(
+                                                        this.navigation
+                                                            .tabs
+                                                            .iter()
+                                                            .filter(|tab| {
+                                                                tab.pinned
+                                                                    && tab.route.persistent_pin()
+                                                            })
+                                                            .map(|tab| tab.route.clone())
+                                                            .collect(),
+                                                    ),
+                                                );
+                                            }
+                                            cx.notify();
+                                        }
+                                    }))
                                     .min_w(px(90.))
                                     .max_w(px(200.))
                                     .px_2()
@@ -302,8 +411,21 @@ impl Render for WorkspaceView {
                                         view.child(
                                             div()
                                                 .id(("pin", slot.0))
-                                                .text_xs()
-                                                .child(if tab.pinned { "Unpin" } else { "Pin" })
+                                                .size(px(20.))
+                                                .rounded_full()
+                                                .opacity(if tab.pinned { 1. } else { 0.5 })
+                                                .hover(|style| style.bg(colors.sidebar_accent))
+                                                .tooltip(move |_, cx| {
+                                                    cx.new(|_| {
+                                                        Hint(if pinned {
+                                                            "Unpin tab"
+                                                        } else {
+                                                            "Pin tab"
+                                                        })
+                                                    })
+                                                    .into()
+                                                })
+                                                .child(icon("Pin"))
                                                 .on_click(cx.listener(move |this, _, _, cx| {
                                                     cx.stop_propagation();
                                                     this.pin(slot, cx);
@@ -436,6 +558,18 @@ impl Render for WorkspaceView {
                 )
             })
             .child(surface)
+            .when_some(self.note_operation.clone(),|view,(ids,moving)| view.child(
+                div().absolute().inset_0().bg(gpui::rgba(0x00000055)).flex().items_center().justify_center().child(
+                    div().w(px(420.)).p_6().rounded(px(12.)).bg(colors.card).border_1().border_color(colors.border).flex().flex_col().gap_4()
+                        .child(div().text_lg().child(format!("{} {} notes?",if moving {"Move"} else {"Delete"},ids.len())))
+                        .when(moving,|view| view.child(self.move_target.clone()))
+                        .when(!moving,|view| view.child(div().text_sm().child("The selected notes and their related records will be removed from the library.")))
+                        .child(div().flex().justify_end().gap_3()
+                            .child(div().id("cancel-note-operation").cursor_pointer().px_3().py_2().child("Cancel").on_click(cx.listener(|this,_,_,cx| { if !this.mutation_busy { this.note_operation=None; cx.notify(); } })))
+                            .child(div().id("confirm-note-operation").cursor_pointer().px_3().py_2().rounded(px(6.)).bg(colors.accent).child(if self.mutation_busy {"Saving…"} else if moving {"Move notes"} else {"Delete notes"}).on_click(cx.listener(|this,_,_,cx| this.submit_note_operation(cx))))
+                        )
+                )
+            ))
             .when(self.picker_open, |view| {
                 view.child(
                     div()

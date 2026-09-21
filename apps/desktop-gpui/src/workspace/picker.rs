@@ -43,6 +43,7 @@ pub struct PickerRow {
 
 pub struct NotePicker {
     runtime: RuntimeHandle,
+    engine: super::search::SearchEngine,
     input: Entity<TextInput>,
     rows: Arc<[PickerRow]>,
     selected: usize,
@@ -74,6 +75,7 @@ impl NotePicker {
         });
         Self {
             runtime,
+            engine: super::search::SearchEngine::default(),
             input,
             rows: Arc::from([]),
             selected: 0,
@@ -124,6 +126,31 @@ impl NotePicker {
         let query: Arc<str> = self.input.read(cx).buffer.text.as_str().into();
         let viewer = self.viewer.clone();
         let recent = self.recent.iter().take(5).cloned().collect::<Vec<_>>();
+        if !query.trim().is_empty() {
+            let reply = self
+                .engine
+                .query(&self.runtime, query, viewer, self.cancel.clone());
+            self.loading = true;
+            self.message = "Searching notes and transcripts…".into();
+            cx.notify();
+            cx.spawn(async move |this, cx| {
+                let result = match reply { Ok(reply) => reply.receive().await, Err(error) => Err(error) };
+                let _ = this.update(cx, |this, cx| {
+                    if generation != this.generation { return; }
+                    this.loading = false;
+                    match result {
+                        Ok(results) => {
+                            this.rows = results.hits.iter().map(|hit| PickerRow { route: hit.route.clone(), title: hit.title.clone(), recent: false }).collect();
+                            this.selected = 0;
+                            this.message = if results.limited { "Bounded search: some content or results were omitted; refine the query." } else if this.rows.is_empty() { "No matching notes." } else { "↑ ↓ to select · Enter to open · Esc to close" }.into();
+                        }
+                        Err(error) => { this.rows = Arc::from([]); this.message = format!("Search failed: {error}"); }
+                    }
+                    cx.notify();
+                });
+            }).detach();
+            return;
+        }
         let reply = self
             .runtime
             .read(self.cancel.clone(), move |services| async move {

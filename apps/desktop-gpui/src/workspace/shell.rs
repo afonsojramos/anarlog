@@ -79,6 +79,10 @@ pub struct WorkspaceView {
     auto_start: Option<SessionId>,
     pub(super) route_content: Option<(Route, AnyView)>,
     pub(super) pin_persistence: bool,
+    pub(super) note_operation: Option<(Arc<[SessionId]>, bool)>,
+    pub(super) move_target: Entity<TextInput>,
+    pub(super) mutation_busy: bool,
+    automation_client: Option<super::automation_runner::AutomationClient>,
     subscriptions: Vec<Subscription>,
 }
 
@@ -92,6 +96,59 @@ impl Focusable for WorkspaceView {
 }
 
 impl WorkspaceView {
+    pub fn run_automations(
+        &mut self,
+        trigger: super::automation_runner::Trigger,
+        session: SessionId,
+        cx: &mut Context<Self>,
+    ) {
+        let runtime = self.runtime.clone();
+        let client = self.automation_client.clone();
+        let reply =
+            super::automation_runner::matching_workflows(&runtime, trigger, session.clone());
+        cx.spawn(async move |this, cx| {
+            let result = async {
+                let workflows = reply?.receive().await?;
+                let mut messages = Vec::new();
+                for id in workflows {
+                    let result = super::automation_runner::run(
+                        &runtime,
+                        id,
+                        session.clone(),
+                        client.clone(),
+                    )?
+                    .receive()
+                    .await;
+                    messages.push(match result {
+                        Ok(detail) => detail,
+                        Err(error) => error.to_string(),
+                    });
+                }
+                Ok::<_, desktop_runtime::ServiceError>(messages.join(" · "))
+            }
+            .await;
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(message) if !message.is_empty() => this.set_status(message, cx),
+                Err(error) => this.set_status(error.to_string(), cx),
+                _ => {}
+            });
+        })
+        .detach();
+    }
+    pub fn set_automation_client(
+        &mut self,
+        client: Option<super::automation_runner::AutomationClient>,
+        cx: &mut Context<Self>,
+    ) {
+        self.automation_client = client.clone();
+        for (catalog, view) in &self.catalogs {
+            if *catalog == Catalog::Automations {
+                view.update(cx, |view, cx| {
+                    view.set_automation_client(client.clone(), cx)
+                });
+            }
+        }
+    }
     pub fn new(
         context: LaneContext,
         ready: Reply<()>,
@@ -114,12 +171,9 @@ impl WorkspaceView {
                 this.set_status("Search input is limited to 4096 bytes.".into(), cx);
             }
         });
-        let open_subscription =
-            cx.subscribe(&library, |this, _, event: &OpenNote, cx| match event {
-                OpenNote::Current(id) => this.open_session(id.clone(), cx),
-                OpenNote::NewTab(id) => this.open_route(Route::Session(id.clone()), true, cx),
-                OpenNote::Window(id) => cx.emit(WorkspaceAction::OpenNoteWindow(id.clone())),
-            });
+        let open_subscription = cx.subscribe(&library, |this, _, event: &OpenNote, cx| {
+            this.handle_note(event, cx)
+        });
         let forward_subscription = cx.subscribe(&note, |_, _, event: &WorkspaceEvent, cx| {
             cx.emit(event.clone())
         });
@@ -218,6 +272,10 @@ impl WorkspaceView {
             auto_start: None,
             route_content: None,
             pin_persistence: false,
+            note_operation: None,
+            move_target: cx.new(|cx| TextInput::new("Folder path (empty moves to root)", cx)),
+            mutation_busy: false,
+            automation_client: None,
             subscriptions: vec![
                 search_subscription,
                 open_subscription,
@@ -232,6 +290,100 @@ impl WorkspaceView {
     pub fn set_status(&mut self, message: String, cx: &mut Context<Self>) {
         self.message = message;
         cx.notify();
+    }
+
+    fn handle_note(&mut self, event: &OpenNote, cx: &mut Context<Self>) {
+        match event {
+            OpenNote::Current(id) => self.open_session(id.clone(), cx),
+            OpenNote::NewTab(id) => self.open_route(Route::Session(id.clone()), true, cx),
+            OpenNote::Window(id) => {
+                if self.can_navigate(cx) {
+                    cx.emit(WorkspaceAction::OpenNoteWindow(id.clone()));
+                }
+            }
+            OpenNote::Delete(ids) | OpenNote::Move(ids) => {
+                if !self.can_navigate(cx) || ids.iter().any(|id| self.recording.contains(id)) {
+                    self.set_status(
+                        "Save edits and stop selected recordings before changing these notes."
+                            .into(),
+                        cx,
+                    );
+                    return;
+                }
+                self.note_operation = Some((ids.clone(), matches!(event, OpenNote::Move(_))));
+                cx.notify();
+            }
+            OpenNote::Pin(ids) => {
+                if !self.can_navigate(cx) || !self.pin_persistence {
+                    return;
+                }
+                let active = self.navigation.active;
+                for id in ids.iter() {
+                    let slot = self
+                        .navigation
+                        .open(Route::Session(id.clone()), true, false);
+                    self.navigation.pin(slot, true);
+                }
+                self.navigation.active = active;
+                cx.emit(WorkspaceAction::PinnedChanged(
+                    self.navigation
+                        .tabs
+                        .iter()
+                        .filter(|tab| tab.pinned && tab.route.persistent_pin())
+                        .map(|tab| tab.route.clone())
+                        .collect(),
+                ));
+                cx.notify();
+            }
+        }
+    }
+
+    pub(super) fn submit_note_operation(&mut self, cx: &mut Context<Self>) {
+        if self.mutation_busy {
+            return;
+        }
+        let Some((ids, moving)) = self.note_operation.clone() else {
+            return;
+        };
+        if !self.can_navigate(cx) || ids.iter().any(|id| self.recording.contains(id)) {
+            return;
+        }
+        let command = if moving {
+            super::notes::NoteCommand::Move {
+                ids: ids.clone(),
+                folder: self.move_target.read(cx).buffer.text.trim().into(),
+            }
+        } else {
+            super::notes::NoteCommand::Delete(ids.clone())
+        };
+        let reply = super::notes::dispatch(&self.runtime, command);
+        self.mutation_busy = true;
+        cx.notify();
+        cx.spawn(async move |this,cx| {
+            let result=match reply {Ok(reply)=>reply.receive().await,Err(error)=>Err(error)};
+            let _=this.update(cx,|this,cx| {
+                this.mutation_busy=false;
+                match result {
+                    Ok(())=>{
+                        this.note_operation=None;
+                        if !moving {
+                            let slots=this.navigation.tabs.iter().filter(|tab| matches!(&tab.route,Route::Session(id) if ids.contains(id))).map(|tab| tab.slot).collect::<Vec<_>>();
+                            for slot in slots { this.navigation.close(slot); }
+                            this.sync_route(cx);
+                        }
+                        this.library.update(cx,|library,cx| library.clear_selection(cx));
+                        for (catalog,view) in &this.catalogs {
+                            if *catalog==Catalog::Folders {
+                                view.update(cx,|view,cx| view.refresh_folder_notes(cx));
+                            }
+                        }
+                        this.reload(cx);
+                    }
+                    Err(error)=>this.set_status(format!("Could not complete note operation: {error}"),cx),
+                }
+                cx.notify();
+            });
+        }).detach();
     }
 
     pub fn current_route(&self) -> Route {
@@ -296,17 +448,16 @@ impl WorkspaceView {
             return;
         }
         self.viewer = viewer.clone();
+        self.set_automation_client(None, cx);
         self.picker
             .update(cx, |picker, cx| picker.set_viewer(viewer.clone(), cx));
-        if let Some((_, contacts)) = self
-            .catalogs
-            .iter()
-            .find(|(kind, _)| *kind == Catalog::Contacts)
-        {
-            contacts.update(cx, |contacts, cx| {
-                contacts.set_viewer(viewer);
-                if self.active_catalog == Some(Catalog::Contacts) {
-                    contacts.load(cx);
+        self.calendar
+            .update(cx, |calendar, _| calendar.viewer = viewer.clone());
+        for (kind, catalog) in &self.catalogs {
+            catalog.update(cx, |catalog, cx| {
+                catalog.set_viewer(viewer.clone());
+                if *kind == Catalog::Contacts && self.active_catalog == Some(Catalog::Contacts) {
+                    catalog.load(cx);
                 }
             });
         }
@@ -366,6 +517,9 @@ impl WorkspaceView {
     }
 
     pub fn can_close(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.note_operation.is_some() {
+            return false;
+        }
         if !self.recording.is_empty() {
             self.set_status(
                 "Stop recording and finish saving before closing the window.".into(),
@@ -377,7 +531,15 @@ impl WorkspaceView {
     }
 
     fn can_navigate(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.creating || self.note.read(cx).has_unsaved_title(cx) || !self.dirty.is_empty() {
+        if self.mutation_busy
+            || self.creating
+            || self.note.read(cx).has_unsaved_title(cx)
+            || !self.dirty.is_empty()
+            || self
+                .catalogs
+                .iter()
+                .any(|(_, catalog)| catalog.read(cx).blocked(cx))
+        {
             self.set_status(
                 "Save or restore unsaved edits before closing or changing tabs.".into(),
                 cx,
@@ -423,6 +585,20 @@ impl WorkspaceView {
     }
 
     pub(super) fn navigate(&mut self, intent: Navigate, cx: &mut Context<Self>) {
+        if self.note_operation.is_some() {
+            return;
+        }
+        if self
+            .catalogs
+            .iter()
+            .any(|(_, catalog)| catalog.read(cx).blocked(cx))
+        {
+            self.set_status(
+                "Save or discard catalog edits before navigating.".into(),
+                cx,
+            );
+            return;
+        }
         if !self.can_navigate(cx) {
             return;
         }
@@ -514,7 +690,7 @@ impl WorkspaceView {
         });
         let catalog = match route {
             Route::Contacts | Route::Human(_) | Route::Organization(_) => Some(Catalog::Contacts),
-            Route::Folders => Some(Catalog::Folders),
+            Route::Folders | Route::Folder(_) => Some(Catalog::Folders),
             Route::Templates => Some(Catalog::Templates),
             Route::Automations => Some(Catalog::Automations),
             _ => None,
@@ -536,9 +712,41 @@ impl WorkspaceView {
                     let view = cx.new(|cx| {
                         let mut view = CatalogView::new(self.runtime.clone(), catalog, cx);
                         view.set_viewer(self.viewer.clone());
+                        if catalog == Catalog::Automations {
+                            view.set_automation_client(self.automation_client.clone(), cx);
+                        }
                         view
                     });
+                    self.subscriptions.push(
+                        cx.subscribe(&view, |this, _, event: &OpenNote, cx| {
+                            this.handle_note(event, cx)
+                        }),
+                    );
                     self.catalogs.push((catalog, view.clone()));
+                    self.subscriptions.push(cx.subscribe(
+                        &view,
+                        |this, _, event: &super::catalog::PinFolders, cx| {
+                            if !this.can_navigate(cx) || !this.pin_persistence {
+                                return;
+                            }
+                            let active = this.navigation.active;
+                            for id in event.0.iter() {
+                                let slot =
+                                    this.navigation.open(Route::Folder(id.clone()), true, false);
+                                this.navigation.pin(slot, true);
+                            }
+                            this.navigation.active = active;
+                            cx.emit(WorkspaceAction::PinnedChanged(
+                                this.navigation
+                                    .tabs
+                                    .iter()
+                                    .filter(|tab| tab.pinned && tab.route.persistent_pin())
+                                    .map(|tab| tab.route.clone())
+                                    .collect(),
+                            ));
+                            cx.notify();
+                        },
+                    ));
                     view
                 };
                 view.update(cx, |view, cx| view.load(cx));
@@ -559,6 +767,16 @@ impl WorkspaceView {
                 .find(|(catalog, _)| *catalog == Catalog::Contacts)
         {
             view.update(cx, |view, cx| view.select_resource(kind, id.clone(), cx));
+        }
+        if let Route::Folder(id) = &route
+            && let Some((_, view)) = self
+                .catalogs
+                .iter()
+                .find(|(catalog, _)| *catalog == Catalog::Folders)
+        {
+            view.update(cx, |view, cx| {
+                view.select_resource("folder", id.clone(), cx)
+            });
         }
         match &route {
             Route::Settings(section) => cx.emit(WorkspaceEvent::Product(match section.as_ref() {
@@ -745,6 +963,24 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) {
         let modifiers = event.keystroke.modifiers;
+        if self.note_operation.is_some() {
+            match event.keystroke.key.as_str() {
+                "escape" if !self.mutation_busy => {
+                    self.note_operation = None;
+                    self.focus.focus(window);
+                    cx.notify();
+                }
+                "enter" => self.submit_note_operation(cx),
+                _ => return,
+            }
+            cx.stop_propagation();
+            return;
+        }
+        if modifiers.alt && matches!(event.keystroke.key.as_str(), "left" | "right") {
+            self.navigate(Navigate::History(event.keystroke.key == "right"), cx);
+            cx.stop_propagation();
+            return;
+        }
         if !modifiers.secondary() {
             return;
         }

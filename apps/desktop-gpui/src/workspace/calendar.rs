@@ -13,6 +13,7 @@ use gpui::{
 };
 use serde_json::{Value, json};
 
+use super::mutations::{failure, statement, transaction};
 use crate::ui::theme::theme;
 
 pub fn visible_columns(width: f32) -> usize {
@@ -159,6 +160,58 @@ pub fn load_calendar(
 
 pub struct CalendarOpen(pub SessionId);
 
+pub fn open_event(
+    runtime: &RuntimeHandle,
+    event_id: Arc<str>,
+    viewer: Option<Arc<str>>,
+) -> Result<Reply<SessionId>> {
+    runtime.submit(move |services| async move {
+        let executor = &services.executor;
+        let rows = executor.execute("SELECT * FROM events WHERE id=? AND deleted_at IS NULL".into(),vec![json!(event_id)]).await.map_err(failure)?;
+        let event = rows.first().ok_or(ServiceError::Conflict)?;
+        let participants: Value = serde_json::from_str(event["participants_json"].as_str().unwrap_or("[]")).map_err(failure)?;
+        let participants = participants.as_array().ok_or_else(|| failure("Invalid event participants"))?;
+        let id = uuid::Uuid::new_v4().to_string();
+        let tracking = event["tracking_id_event"].as_str().unwrap_or("");
+        let provider=event["provider"].as_str().unwrap_or("");
+        let event_json = json!({
+            "tracking_id":tracking,"calendar_id":event["calendar_id"],"title":event["title"],
+            "started_at":event["started_at"],"ended_at":event["ended_at"],"is_all_day":event["is_all_day"]==1,
+            "has_recurrence_rules":event["has_recurrence_rules"]==1,"location":event["location"],
+            "meeting_link":event["meeting_link"],"description":event["description"],"recurrence_series_id":event["recurrence_series_id"]
+        });
+        transaction(executor,vec![
+            statement("INSERT INTO sessions(id,workspace_id,owner_user_id,title,started_at,ended_at,event_id,external_event_id,external_provider,series_id,event_json)
+                SELECT ?1,NULLIF((SELECT json_extract(value_json,'$.workspace_id') FROM app_settings WHERE id='cloudsync_workspace_binding'),''),
+                    COALESCE((SELECT library_workspace_id FROM local_library_connections WHERE active=1),NULLIF(NULLIF(?6,''),'00000000-0000-0000-0000-000000000000'),NULLIF((SELECT json_extract(value_json,'$.workspace_id') FROM app_settings WHERE id='cloudsync_workspace_binding'),'')),
+                    title,started_at,ended_at,id,tracking_id_event,provider,recurrence_series_id,?2
+                FROM events WHERE id=?3 AND deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM sessions WHERE deleted_at IS NULL AND (event_id=?3 OR (?4<>'' AND external_event_id=?4 AND external_provider=?5)))".into(),
+                vec![json!(id),json!(event_json.to_string()),json!(event_id),json!(tracking),json!(provider),json!(viewer)],None),
+            statement("INSERT INTO session_documents(id,workspace_id,session_id,kind,body_format,body,created_by,updated_by) SELECT id,workspace_id,id,'note','prosemirror_json','{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\"}]}',owner_user_id,owner_user_id FROM sessions WHERE id=?".into(),vec![json!(id)],None),
+        ]).await?;
+        let rows = executor.execute("SELECT id FROM sessions WHERE deleted_at IS NULL AND (event_id=?1 OR (?2<>'' AND external_event_id=?2 AND external_provider=?3)) ORDER BY created_at,id LIMIT 1".into(),vec![json!(event_id),json!(tracking),json!(provider)]).await.map_err(failure)?;
+        let id = rows.first().and_then(|row| row["id"].as_str()).ok_or(ServiceError::Conflict)?.to_owned();
+        let mut statements = Vec::new();
+        let mut emails = std::collections::HashSet::new();
+        for person in participants {
+            if person["is_current_user"]==true { continue; }
+            let email = person["email"].as_str().unwrap_or("").trim().to_lowercase();
+            if email.is_empty() || !emails.insert(email.clone()) { continue; }
+            let human = uuid::Uuid::new_v4().to_string();
+            let name = person["name"].as_str().filter(|name| !name.is_empty()).unwrap_or(&email);
+            statements.push(statement("INSERT INTO humans(id,workspace_id,owner_user_id,name,email) SELECT ?1,workspace_id,owner_user_id,?2,?3 FROM sessions WHERE id=?4 AND NOT EXISTS(SELECT 1 FROM humans WHERE lower(email)=?3 AND deleted_at IS NULL)".into(),vec![json!(human),json!(name),json!(email),json!(id)],None));
+            statements.push(statement("INSERT INTO session_participants(id,workspace_id,owner_user_id,session_id,human_id,display_name,email,source)
+                SELECT ?1,s.workspace_id,s.owner_user_id,s.id,h.id,?2,?3,'auto' FROM sessions s JOIN humans h ON lower(h.email)=?3 AND h.deleted_at IS NULL
+                WHERE s.id=?4 AND h.id IS NOT s.owner_user_id
+                AND NOT EXISTS(SELECT 1 FROM humans owner WHERE owner.id=s.owner_user_id AND lower(owner.email)=?3 AND owner.deleted_at IS NULL)
+                AND NOT EXISTS(SELECT 1 FROM session_participants p WHERE p.session_id=s.id AND p.deleted_at IS NULL AND (p.human_id=h.id OR lower(p.email)=?3))
+                ORDER BY h.id LIMIT 1".into(),vec![json!(uuid::Uuid::new_v4().to_string()),json!(name),json!(email),json!(id)],None));
+        }
+        transaction(executor,statements).await?;
+        Ok(id.into())
+    })
+}
+
 pub struct CalendarView {
     runtime: RuntimeHandle,
     request: CalendarRequest,
@@ -170,6 +223,8 @@ pub struct CalendarView {
     selected: Option<CalendarItem>,
     watch_cancel: CancellationToken,
     watch_range: Option<(Arc<str>, Arc<str>)>,
+    opening: bool,
+    pub(super) viewer: Option<Arc<str>>,
 }
 
 impl EventEmitter<CalendarOpen> for CalendarView {}
@@ -177,6 +232,8 @@ impl EventEmitter<CalendarOpen> for CalendarView {}
 impl CalendarView {
     pub fn new(runtime: RuntimeHandle) -> Self {
         Self {
+            opening: false,
+            viewer: None,
             runtime,
             request: CalendarRequest::default(),
             page: None,
@@ -424,7 +481,7 @@ impl Render for CalendarView {
                     .pb_2()
                     .text_xs()
                     .text_color(colors.muted_foreground)
-                    .child("Stored enabled calendars. Provider synchronization is not connected."),
+                    .child("Events from enabled calendars stored on this device."),
             )
             .child(
                 div().flex_1().min_h_0().child(
@@ -532,6 +589,53 @@ impl Render for CalendarView {
                                     .child("Open note")
                                     .on_click(cx.listener(move |_, _, _, cx| {
                                         cx.emit(CalendarOpen(id.clone()))
+                                    })),
+                            )
+                        })
+                        .when(item.session.is_none(), |view| {
+                            let id = item.id.clone();
+                            view.child(
+                                div()
+                                    .id("calendar-create-note")
+                                    .cursor_pointer()
+                                    .child(if self.opening {
+                                        "Opening…"
+                                    } else {
+                                        "Create note for this event"
+                                    })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if this.opening {
+                                            return;
+                                        }
+                                        let reply = open_event(
+                                            &this.runtime,
+                                            id.clone(),
+                                            this.viewer.clone(),
+                                        );
+                                        this.opening = true;
+                                        cx.notify();
+                                        cx.spawn(async move |this, cx| {
+                                            let result = match reply {
+                                                Ok(reply) => reply.receive().await,
+                                                Err(error) => Err(error),
+                                            };
+                                            let _ = this.update(cx, |this, cx| {
+                                                this.opening = false;
+                                                match result {
+                                                    Ok(id) => {
+                                                        cx.emit(CalendarOpen(id));
+                                                        this.load(cx);
+                                                    }
+                                                    Err(error) => {
+                                                        this.message = format!(
+                                                            "Could not open event: {error}"
+                                                        );
+                                                        cx.notify();
+                                                    }
+                                                }
+                                            });
+                                        })
+                                        .detach();
                                     })),
                             )
                         })

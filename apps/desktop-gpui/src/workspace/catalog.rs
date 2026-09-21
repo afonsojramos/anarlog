@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use desktop_runtime::{CancellationToken, Generation, RuntimeHandle};
 use futures::{
@@ -6,8 +6,8 @@ use futures::{
     future::{Either, select},
 };
 use gpui::{
-    Context, Entity, Render, SharedString, Subscription, UniformListScrollHandle, Window, div,
-    prelude::*, px, uniform_list,
+    Context, Entity, MouseButton, Pixels, Point, Render, SharedString, Subscription,
+    UniformListScrollHandle, Window, anchored, deferred, div, prelude::*, px, uniform_list,
 };
 
 use crate::ui::{
@@ -15,6 +15,7 @@ use crate::ui::{
     theme::theme,
 };
 
+use super::catalog_editor::{CatalogEditor, EditorAction, EditorSaved};
 use super::ports::{self, Catalog, CatalogPage, CatalogQuery, CatalogRow, Detail, PAGE_SIZE};
 
 pub struct CatalogView {
@@ -30,19 +31,54 @@ pub struct CatalogView {
     message: String,
     loading: bool,
     viewer: Option<Arc<str>>,
-    _subscription: Subscription,
+    menu: Option<(Point<Pixels>, CatalogRow)>,
+    collapsed: HashSet<Arc<str>>,
+    folder_selection: HashSet<Arc<str>>,
+    folder_anchor: Option<Arc<str>>,
+    folder_action: Option<bool>,
+    folder_target: Entity<TextInput>,
+    folder_busy: bool,
+    operation_message: String,
+    focus: gpui::FocusHandle,
+    _subscriptions: Vec<Subscription>,
 }
 
+impl gpui::EventEmitter<super::library::OpenNote> for CatalogView {}
+
+pub struct PinFolders(pub Arc<[Arc<str>]>);
+impl gpui::EventEmitter<PinFolders> for CatalogView {}
+
 impl CatalogView {
+    fn pin_folders(&mut self, cx: &mut Context<Self>) {
+        self.menu = None;
+        if !self.blocked(cx) {
+            cx.emit(PinFolders(self.folder_selection.iter().cloned().collect()));
+        }
+        cx.notify();
+    }
+
     pub fn new(runtime: RuntimeHandle, catalog: Catalog, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| TextInput::new("Filter; press Enter", cx));
-        let detail = cx.new(|_| DetailView::new(runtime.clone(), catalog));
+        let detail = cx.new(|cx| DetailView::new(runtime.clone(), catalog, cx));
+        let folder_target = cx.new(|cx| TextInput::new("Destination parent; blank means root", cx));
         let subscription = cx.subscribe(&search, |this, _, event, cx| {
             if matches!(event, InputEvent::Submitted) {
                 this.query.search = this.search.read(cx).buffer.text.as_str().into();
                 this.query.offset = 0;
                 this.load(cx);
             }
+        });
+        let editor = detail.read(cx).editor.clone();
+        let note_subscription = cx
+            .subscribe(&editor, |_, _, event: &super::library::OpenNote, cx| {
+                cx.emit(event.clone())
+            });
+        let saved = cx.subscribe(&editor, |this, _, event: &EditorSaved, cx| {
+            this.selected = event
+                .0
+                .as_ref()
+                .map(|row| (row.kind.clone(), row.id.clone()));
+            this.load(cx);
         });
         Self {
             runtime,
@@ -61,7 +97,16 @@ impl CatalogView {
             message: String::new(),
             loading: false,
             viewer: None,
-            _subscription: subscription,
+            menu: None,
+            collapsed: HashSet::new(),
+            folder_selection: HashSet::new(),
+            folder_anchor: None,
+            folder_action: None,
+            folder_target,
+            folder_busy: false,
+            operation_message: String::new(),
+            focus: cx.focus_handle(),
+            _subscriptions: vec![subscription, saved, note_subscription],
         }
     }
 
@@ -69,8 +114,36 @@ impl CatalogView {
         self.detail.clone()
     }
 
+    pub(super) fn title(&self, id: &str) -> Option<Arc<str>> {
+        self.page
+            .rows
+            .iter()
+            .find(|row| row.id.as_ref() == id)
+            .map(|row| row.title.clone())
+    }
+
+    pub(super) fn refresh_folder_notes(&mut self, cx: &mut Context<Self>) {
+        let editor = self.detail.read(cx).editor.clone();
+        editor.update(cx, |editor, cx| editor.refresh_notes(cx));
+    }
+
     pub fn set_viewer(&mut self, viewer: Option<Arc<str>>) {
         self.viewer = viewer;
+    }
+
+    pub fn blocked(&self, cx: &gpui::App) -> bool {
+        self.folder_action.is_some()
+            || self.folder_busy
+            || self.detail.read(cx).editor.read(cx).blocked()
+    }
+
+    pub fn set_automation_client(
+        &mut self,
+        client: Option<super::automation_runner::AutomationClient>,
+        cx: &mut Context<Self>,
+    ) {
+        let editor = self.detail.read(cx).editor.clone();
+        editor.update(cx, |editor, _| editor.set_automation_client(client));
     }
 
     pub fn select_resource(&mut self, kind: &'static str, id: Arc<str>, cx: &mut Context<Self>) {
@@ -213,9 +286,52 @@ impl CatalogView {
     }
 
     fn choose(&mut self, row: CatalogRow, cx: &mut Context<Self>) {
+        if self.blocked(cx) {
+            self.message = "Save or discard the current draft first.".into();
+            cx.notify();
+            return;
+        }
+        self.detail
+            .read(cx)
+            .editor
+            .clone()
+            .update(cx, |editor, _| editor.set_viewer(self.viewer.clone()));
         self.selected = Some((row.kind.clone(), row.id.clone()));
         self.detail.update(cx, |detail, cx| detail.load(row, cx));
         cx.notify();
+    }
+
+    fn submit_folders(&mut self, cx: &mut Context<Self>) {
+        if self.folder_busy {
+            return;
+        }
+        let Some(moving) = self.folder_action else {
+            return;
+        };
+        let ids = self.folder_selection.iter().cloned().collect();
+        let target = moving.then(|| Arc::from(self.folder_target.read(cx).buffer.text.trim()));
+        let reply = super::folders::batch(&self.runtime, ids, target);
+        self.folder_busy = true;
+        self.operation_message.clear();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = match reply {
+                Ok(reply) => reply.receive().await,
+                Err(error) => Err(error),
+            };
+            let _ = this.update(cx, |this, cx| {
+                this.folder_busy = false;
+                this.folder_action = None;
+                this.folder_selection.clear();
+                this.load(cx);
+                this.operation_message = match result {
+                    Ok(message) => message,
+                    Err(error) => error.to_string(),
+                };
+                cx.notify();
+            });
+        })
+        .detach();
     }
 }
 
@@ -228,24 +344,90 @@ impl Drop for CatalogView {
 impl Render for CatalogView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme(window);
+        let rows = self
+            .page
+            .rows
+            .iter()
+            .filter(|row| {
+                row.kind.as_ref() != "folder"
+                    || !self.collapsed.iter().any(|path| {
+                        row.title
+                            .strip_prefix(path.as_ref())
+                            .is_some_and(|suffix| suffix.starts_with('/'))
+                    })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
         div()
+            .relative()
             .size_full()
             .flex()
             .flex_col()
             .gap_2()
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(|this,event:&gpui::KeyDownEvent,_,cx| {
+                if event.keystroke.key=="escape" && !this.folder_busy {
+                    this.menu=None;this.folder_action=None;this.folder_selection.clear();cx.stop_propagation();cx.notify();
+                } else if event.keystroke.key=="enter" && this.folder_action.is_some() {
+                    this.submit_folders(cx);cx.stop_propagation();
+                }
+            }))
+            .child(
+                div()
+                    .px_2()
+                    .flex()
+                    .justify_between()
+                    .child(self.query.catalog.label())
+                    .child(
+                        div()
+                            .id("catalog-add")
+                            .cursor_pointer()
+                            .child("+")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                let editor = this.detail.read(cx).editor.clone();
+                                editor.update(cx, |editor, cx| {
+                                    editor.set_viewer(this.viewer.clone());
+                                    editor.create(window, cx);
+                                });
+                            })),
+                    ),
+            )
             .child(div().px_2().child(self.search.clone()))
+            .when(self.folder_selection.len()>1,|view| view.child(
+                div().px_2().flex().gap_2().text_xs().child(format!("{} selected",self.folder_selection.len()))
+                    .child(div().id("move-folders").cursor_pointer().child("Move…").on_click(cx.listener(|this,_,_,cx| {if !this.blocked(cx) {this.folder_action=Some(true);cx.notify();}})))
+                    .child(div().id("delete-folders").cursor_pointer().child("Delete…").on_click(cx.listener(|this,_,_,cx| {if !this.blocked(cx) {this.folder_action=Some(false);cx.notify();}})))
+            ))
+            .when(!self.operation_message.is_empty(),|view| view.child(div().px_2().text_xs().child(self.operation_message.clone())))
+            .when_some(self.folder_action,|view,moving| view.child(
+                div().px_2().py_2().bg(colors.card).flex().flex_col().gap_2()
+                    .child(if moving {"Move selected folders"} else {"Delete folders; keep notes at root"})
+                    .when(moving,|view| view.child(self.folder_target.clone()))
+                    .child(div().flex().gap_2()
+                        .child(div().id("confirm-folders").cursor_pointer().child(if self.folder_busy {"Saving…"} else {"Confirm"}).on_click(cx.listener(|this,_,_,cx| this.submit_folders(cx))))
+                        .child(div().id("cancel-folders").cursor_pointer().child("Cancel").on_click(cx.listener(|this,_,_,cx| {if !this.folder_busy {this.folder_action=None;cx.notify();}})))
+                    )
+            ))
             .child(
                 div().flex_1().min_h_0().child(
                     uniform_list(
                         "catalog-rows",
-                        self.page.rows.len(),
+                        rows.len(),
                         cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
                             range
                                 .map(|index| {
-                                    let row = this.page.rows[index].clone();
-                                    let selected = this.selected.as_ref()
+                                    let row = rows[index].clone();
+                                    let context_row = row.clone();
+                                    let folder = row.kind.as_ref() == "folder";
+                                    let path = row.title.clone();
+                                    let expanded = !this.collapsed.contains(&path);
+                                    let selected = this.folder_selection.contains(&row.id) || this.selected.as_ref()
                                         == Some(&(row.kind.clone(), row.id.clone()));
-                                    let title = row.title.clone();
+                                    let title: Arc<str> = if folder {
+                                        row.title.rsplit('/').next().unwrap_or("").into()
+                                    } else {
+                                        row.title.clone()
+                                    };
                                     let subtitle = row.subtitle.clone();
                                     div()
                                         .id(SharedString::from(format!("{}:{}", row.kind, row.id)))
@@ -261,11 +443,76 @@ impl Render for CatalogView {
                                         })
                                         .hover(|style| style.bg(colors.accent))
                                         .cursor_pointer()
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.choose(row.clone(), cx)
+                                        .on_mouse_down(
+                                            MouseButton::Right,
+                                            cx.listener(
+                                                move |this, event: &gpui::MouseDownEvent, window, cx| {
+                                                    cx.stop_propagation();
+                                                    this.focus.focus(window);
+                                                    if context_row.kind.as_ref()=="folder" && !this.folder_selection.contains(&context_row.id) {
+                                                        this.folder_selection.clear();this.folder_selection.insert(context_row.id.clone());
+                                                    }
+                                                    this.menu =
+                                                        Some((event.position, context_row.clone()));
+                                                    cx.notify();
+                                                },
+                                            ),
+                                        )
+                                        .on_click(cx.listener(move |this,event:&gpui::ClickEvent,window,cx| {
+                                            this.focus.focus(window);
+                                            if row.kind.as_ref()=="folder" && !this.blocked(cx) {
+                                                let modifiers=event.modifiers();
+                                                if modifiers.shift {
+                                                    let rows=&this.page.rows;
+                                                    let start=this.folder_anchor.as_ref().and_then(|id| rows.iter().position(|row| &row.id==id));
+                                                    let end=rows.iter().position(|item| item.id==row.id);
+                                                    if let (Some(start),Some(end))=(start,end) {
+                                                        this.folder_selection.extend(rows[start.min(end)..=start.max(end)].iter().map(|row| row.id.clone()));
+                                                    }
+                                                } else if modifiers.secondary() {
+                                                    if !this.folder_selection.remove(&row.id) {this.folder_selection.insert(row.id.clone());}
+                                                    this.folder_anchor=Some(row.id.clone());
+                                                } else {
+                                                    this.folder_selection.clear();this.folder_selection.insert(row.id.clone());this.folder_anchor=Some(row.id.clone());
+                                                }
+                                                if modifiers.secondary() || modifiers.shift {cx.notify();return;}
+                                            }
+                                            this.choose(row.clone(), cx);
                                         }))
                                         .child(
                                             div()
+                                                .flex()
+                                                .items_center()
+                                                .gap_1()
+                                                .when(folder, |view| {
+                                                    view.pl(px((path.matches('/').count().min(8)
+                                                        * 12)
+                                                        as f32))
+                                                        .child(
+                                                            div()
+                                                                .id(("folder-toggle", index))
+                                                                .w(px(16.))
+                                                                .child(if expanded {
+                                                                    "⌄"
+                                                                } else {
+                                                                    "›"
+                                                                })
+                                                                .on_click(cx.listener(
+                                                                    move |this, _, _, cx| {
+                                                                        cx.stop_propagation();
+                                                                        if !this
+                                                                            .collapsed
+                                                                            .remove(&path)
+                                                                        {
+                                                                            this.collapsed.insert(
+                                                                                path.clone(),
+                                                                            );
+                                                                        }
+                                                                        cx.notify();
+                                                                    },
+                                                                )),
+                                                        )
+                                                })
                                                 .text_sm()
                                                 .truncate()
                                                 .child(SharedString::from(title)),
@@ -327,12 +574,89 @@ impl Render for CatalogView {
                         )
                     }),
             )
+            .when_some(self.menu.clone(), |view, (position, row)| {
+                let mut actions = vec![(None, "Open / edit")];
+                if matches!(row.kind.as_ref(), "workflow" | "template") {
+                    actions.push((Some(EditorAction::Duplicate), "Duplicate"));
+                }
+                if row.kind.as_ref()=="template" {
+                    actions.push((Some(EditorAction::SelectDefault),"Set / unset default"));
+                }
+                if matches!(row.kind.as_ref(), "human" | "organization" | "template" | "folder") {
+                    actions.push((Some(EditorAction::Pin), if row.kind.as_ref()=="folder" {"Pin selected folders"} else {"Pin / unpin"}));
+                }
+                if !row.self_contact {
+                    actions.push((Some(EditorAction::Delete), "Delete…"));
+                }
+                view.child(deferred(
+                    anchored().position(position).snap_to_window().child(
+                        div()
+                            .id("catalog-menu")
+                            .w(px(200.))
+                            .p_1()
+                            .bg(colors.card)
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(colors.border)
+                            .shadow_md()
+                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                this.menu = None;
+                                cx.notify();
+                            }))
+                            .when(row.kind.as_ref()=="folder",|view| view.child(
+                                div().id("menu-move-folders").px_3().py_2().text_sm().rounded(px(6.)).cursor_pointer().hover(|style| style.bg(colors.accent))
+                                    .child("Move selected folders…").on_click(cx.listener(|this,_,_,cx| {
+                                        this.menu=None;
+                                        if !this.blocked(cx) {this.folder_action=Some(true);cx.notify();}
+                                    }))
+                            ))
+                            .children(actions.into_iter().enumerate().map(
+                                |(index, (action, label))| {
+                                    let row = row.clone();
+                                    div()
+                                        .id(("catalog-action", index))
+                                        .px_3()
+                                        .py_2()
+                                        .text_sm()
+                                        .rounded(px(6.))
+                                        .cursor_pointer()
+                                        .hover(|style| style.bg(colors.accent))
+                                        .child(label)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.menu = None;
+                                            if row.kind.as_ref()=="folder" && matches!(action,Some(EditorAction::Pin)) {
+                                                this.pin_folders(cx);return;
+                                            }
+                                            if this.blocked(cx) {
+                                                this.message =
+                                                    "Save or discard the current draft first."
+                                                        .into();
+                                                cx.notify();
+                                                return;
+                                            }
+                                            if row.kind.as_ref()=="folder" && matches!(action,Some(EditorAction::Delete)) {
+                                                this.folder_action=Some(false);cx.notify();return;
+                                            }
+                                            this.choose(row.clone(), cx);
+                                            if let Some(action) = action {
+                                                let editor = this.detail.read(cx).editor.clone();
+                                                editor.update(cx, |editor, cx| {
+                                                    editor.open_action(row.clone(), action, cx)
+                                                });
+                                            }
+                                            cx.notify();
+                                        }))
+                                },
+                            )),
+                    ),
+                ))
+            })
     }
 }
 
 pub struct DetailView {
     runtime: RuntimeHandle,
-    catalog: Catalog,
+    editor: Entity<CatalogEditor>,
     row: Option<CatalogRow>,
     detail: Option<Arc<Detail>>,
     cancel: CancellationToken,
@@ -341,10 +665,10 @@ pub struct DetailView {
 }
 
 impl DetailView {
-    fn new(runtime: RuntimeHandle, catalog: Catalog) -> Self {
+    fn new(runtime: RuntimeHandle, catalog: Catalog, cx: &mut Context<Self>) -> Self {
         Self {
+            editor: cx.new(|cx| CatalogEditor::new(runtime.clone(), catalog, cx)),
             runtime,
-            catalog,
             row: None,
             detail: None,
             cancel: CancellationToken::new(),
@@ -354,6 +678,8 @@ impl DetailView {
     }
 
     fn load(&mut self, row: CatalogRow, cx: &mut Context<Self>) {
+        self.editor
+            .update(cx, |editor, cx| editor.load(row.clone(), cx));
         if self
             .row
             .as_ref()
@@ -501,20 +827,7 @@ impl Render for DetailView {
             .flex()
             .flex_col()
             .gap_4()
-            .child(
-                div().text_xl().child(
-                    self.detail
-                        .as_ref()
-                        .map(|detail| SharedString::from(detail.title.clone()))
-                        .unwrap_or_else(|| self.catalog.label().into()),
-                ),
-            )
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(colors.muted_foreground)
-                    .child(self.catalog.limitation()),
-            )
+            .child(self.editor.clone())
             .when(
                 self.row.as_ref().is_some_and(|row| row.self_contact),
                 |view| view.child(div().text_sm().child("Your profile")),
