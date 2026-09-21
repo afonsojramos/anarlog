@@ -1,3 +1,5 @@
+mod chrome;
+
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use desktop_runtime::{DocumentSnapshot, Reply, RuntimeHandle, ServiceError, SessionId};
@@ -43,6 +45,7 @@ impl anlg_storage::StorageRuntime for ProfileStorage {
 
 pub struct ApplicationView {
     runtime: RuntimeHandle,
+    chrome: chrome::Chrome,
     workspace: Entity<WorkspaceView>,
     editor: Option<Entity<EditorPane>>,
     meeting: Option<Entity<MeetingPane>>,
@@ -270,6 +273,7 @@ impl ApplicationView {
         .detach();
         Self {
             runtime,
+            chrome: chrome::Chrome::default(),
             workspace,
             editor: None,
             meeting: None,
@@ -1327,9 +1331,14 @@ impl Render for ApplicationView {
             .flex_col()
             .bg(colors.background)
             .text_color(colors.foreground)
-            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 if this.closing || this.writers_paused {
                     cx.stop_propagation();
+                    return;
+                }
+                if this.chrome_key(event, window, cx) {
+                    cx.stop_propagation();
+                    return;
                 }
                 if event.keystroke.key == "q"
                     && (event.keystroke.modifiers.platform || event.keystroke.modifiers.control)
@@ -1338,6 +1347,9 @@ impl Render for ApplicationView {
                     cx.stop_propagation();
                 }
             }))
+            .when(!cfg!(target_os = "macos"), |view| {
+                view.child(self.title_bar(window, cx))
+            })
             .when(!self.closing && self.product.is_some(), |view| {
                 view.child(div().flex().gap_4().px_3().py_1().when(
                     self.product.is_some(),
@@ -1405,5 +1417,6 @@ impl Render for ApplicationView {
             .when(!self.status.is_empty(), |view| {
                 view.child(div().p_2().text_sm().child(self.status.clone()))
             })
+            .when_some(self.title_menu(window, cx), |view, menu| view.child(menu))
     }
 }

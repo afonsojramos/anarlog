@@ -162,7 +162,11 @@ impl LibraryView {
                 .unwrap_or_default();
             rows.push(TimelineRow::Note(index, time));
         }
-        self.scroll.splice(0..self.rows.len(), rows.len());
+        if self.rows.is_empty() || page.offset != self.page.offset {
+            self.scroll.reset(rows.len());
+        } else {
+            self.scroll.splice(0..self.rows.len(), rows.len());
+        }
         self.rows = rows;
         self.page = page;
         cx.notify();

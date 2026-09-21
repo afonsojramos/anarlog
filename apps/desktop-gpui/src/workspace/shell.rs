@@ -99,6 +99,15 @@ impl Focusable for WorkspaceView {
 }
 
 impl WorkspaceView {
+    pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.sidebar.toggle();
+        cx.notify();
+    }
+
+    pub fn sidebar_expanded(&self) -> bool {
+        self.sidebar.expanded
+    }
+
     pub fn run_automations(
         &mut self,
         trigger: super::automation_runner::Trigger,

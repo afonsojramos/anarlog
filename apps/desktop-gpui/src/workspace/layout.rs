@@ -79,6 +79,7 @@ impl WorkspaceView {
             .py_2()
             .rounded_full()
             .text_sm()
+            .line_height(px(20.))
             .text_color(colors.foreground)
             .cursor_pointer()
             .hover(|style| style.bg(colors.accent))
@@ -99,6 +100,7 @@ impl WorkspaceView {
                     .text_color(colors.muted_foreground)
                     .font_family(monospace_font(cx))
                     .text_xs()
+                    .line_height(px(12.))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .child(format!("{modifier} {keys}")),
             )
@@ -305,110 +307,124 @@ impl Render for WorkspaceView {
             .border_l_1()
             .border_t_1()
             .border_color(colors.border)
-            .rounded_tl(px(8.))
-            .child(
-                div()
-                    .h(px(40.))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .border_b_1()
-                    .border_color(colors.border)
-                    .child(
+            .rounded_tl(px(12.))
+            .when(
+                self.navigation.tabs.len() > 1 || route != Route::Empty,
+                |view| {
+                    view.child(
                         div()
-                            .id("toggle-sidebar")
-                            .size(px(28.))
+                            .h(px(40.))
+                            .flex_shrink_0()
                             .flex()
                             .items_center()
-                            .justify_center()
-                            .rounded_full()
-                            .hover(|style| style.bg(colors.accent))
-                            .tooltip(|_, cx| cx.new(|_| Hint("Toggle sidebar · Mod+\\")).into())
-                            .cursor_pointer()
-                            .child(icon("Sidebar", colors.foreground))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.sidebar.toggle();
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id("history-back")
-                            .size(px(28.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded_full()
-                            .hover(|style| style.bg(colors.accent))
-                            .tooltip(|_, cx| cx.new(|_| Hint("Back · Alt+Left")).into())
-                            .cursor_pointer()
-                            .child(icon("Back", colors.foreground))
-                            .text_color(
-                                if self.navigation.current().is_some_and(|tab| tab.can_back()) {
-                                    colors.foreground
-                                } else {
-                                    colors.muted_foreground
-                                },
-                            )
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.navigate(Navigate::History(false), cx)
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id("history-forward")
-                            .size(px(28.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded_full()
-                            .hover(|style| style.bg(colors.accent))
-                            .tooltip(|_, cx| cx.new(|_| Hint("Forward · Alt+Right")).into())
-                            .cursor_pointer()
-                            .child(icon("Forward", colors.foreground))
-                            .text_color(
-                                if self
-                                    .navigation
-                                    .current()
-                                    .is_some_and(|tab| tab.can_forward())
-                                {
-                                    colors.foreground
-                                } else {
-                                    colors.muted_foreground
-                                },
-                            )
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.navigate(Navigate::History(true), cx)
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id("tabs")
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_x_scroll()
-                            .flex()
-                            .h_full()
-                            .children(
-                                self.navigation
-                                    .tabs
-                                    .iter()
-                                    .filter(|_| {
-                                        self.navigation.tabs.len() > 1
-                                            || self.navigation.tabs.iter().any(|tab| tab.pinned)
+                            .gap_1()
+                            .border_b_1()
+                            .border_color(colors.border)
+                            .child(
+                                div()
+                                    .id("toggle-sidebar")
+                                    .size(px(28.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_full()
+                                    .hover(|style| style.bg(colors.accent))
+                                    .tooltip(|_, cx| {
+                                        cx.new(|_| Hint("Toggle sidebar · Mod+\\")).into()
                                     })
-                                    .map(|tab| {
-                                        let slot = tab.slot;
-                                        let pinned = tab.pinned;
-                                        let title = if let Route::Session(id) = &tab.route {
-                                            self.titles
-                                                .get(id)
-                                                .cloned()
-                                                .map(SharedString::from)
-                                                .unwrap_or("Note".into())
-                                        } else if let Route::Folder(id) = &tab.route {
-                                            self.catalogs
+                                    .cursor_pointer()
+                                    .child(icon("Sidebar", colors.foreground))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.sidebar.toggle();
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("history-back")
+                                    .size(px(28.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_full()
+                                    .hover(|style| style.bg(colors.accent))
+                                    .tooltip(|_, cx| cx.new(|_| Hint("Back · Alt+Left")).into())
+                                    .cursor_pointer()
+                                    .child(icon("Back", colors.foreground))
+                                    .text_color(
+                                        if self
+                                            .navigation
+                                            .current()
+                                            .is_some_and(|tab| tab.can_back())
+                                        {
+                                            colors.foreground
+                                        } else {
+                                            colors.muted_foreground
+                                        },
+                                    )
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.navigate(Navigate::History(false), cx)
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("history-forward")
+                                    .size(px(28.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_full()
+                                    .hover(|style| style.bg(colors.accent))
+                                    .tooltip(|_, cx| cx.new(|_| Hint("Forward · Alt+Right")).into())
+                                    .cursor_pointer()
+                                    .child(icon("Forward", colors.foreground))
+                                    .text_color(
+                                        if self
+                                            .navigation
+                                            .current()
+                                            .is_some_and(|tab| tab.can_forward())
+                                        {
+                                            colors.foreground
+                                        } else {
+                                            colors.muted_foreground
+                                        },
+                                    )
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.navigate(Navigate::History(true), cx)
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("tabs")
+                                    .flex_1()
+                                    .min_w_0()
+                                    .overflow_x_scroll()
+                                    .flex()
+                                    .h_full()
+                                    .children(
+                                        self.navigation
+                                            .tabs
+                                            .iter()
+                                            .filter(|_| {
+                                                self.navigation.tabs.len() > 1
+                                                    || self
+                                                        .navigation
+                                                        .tabs
+                                                        .iter()
+                                                        .any(|tab| tab.pinned)
+                                            })
+                                            .map(|tab| {
+                                                let slot = tab.slot;
+                                                let pinned = tab.pinned;
+                                                let title =
+                                                    if let Route::Session(id) = &tab.route {
+                                                        self.titles
+                                                            .get(id)
+                                                            .cloned()
+                                                            .map(SharedString::from)
+                                                            .unwrap_or("Note".into())
+                                                    } else if let Route::Folder(id) = &tab.route {
+                                                        self.catalogs
                                                 .iter()
                                                 .find(|(kind, _)| {
                                                     *kind == super::ports::Catalog::Folders
@@ -422,19 +438,20 @@ impl Render for WorkspaceView {
                                                     )
                                                     .into()
                                                 })
-                                        } else {
-                                            tab.route.label().into()
-                                        };
-                                        div()
-                                            .id(("tab", slot.0))
-                                            .on_drag(TabDrag(slot), |drag, _, _, cx| {
-                                                cx.new(|_| drag.clone())
-                                            })
-                                            .on_drop(cx.listener(
-                                                move |this, drag: &TabDrag, _, cx| {
-                                                    if this.navigation.reorder(drag.0, slot) {
-                                                        if this.pin_persistence {
-                                                            cx.emit(
+                                                    } else {
+                                                        tab.route.label().into()
+                                                    };
+                                                div()
+                                                    .id(("tab", slot.0))
+                                                    .on_drag(TabDrag(slot), |drag, _, _, cx| {
+                                                        cx.new(|_| drag.clone())
+                                                    })
+                                                    .on_drop(cx.listener(
+                                                        move |this, drag: &TabDrag, _, cx| {
+                                                            if this.navigation.reorder(drag.0, slot)
+                                                            {
+                                                                if this.pin_persistence {
+                                                                    cx.emit(
                                                     super::shell::WorkspaceAction::PinnedChanged(
                                                         this.navigation
                                                             .tabs
@@ -447,98 +464,112 @@ impl Render for WorkspaceView {
                                                             .collect(),
                                                     ),
                                                 );
-                                                        }
-                                                        cx.notify();
-                                                    }
-                                                },
-                                            ))
-                                            .min_w(px(90.))
-                                            .max_w(px(200.))
-                                            .px_2()
-                                            .h_full()
-                                            .flex()
-                                            .items_center()
-                                            .gap_2()
-                                            .bg(if self.navigation.active == Some(slot) {
-                                                colors.accent
-                                            } else {
-                                                colors.card
-                                            })
-                                            .cursor_pointer()
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.navigate(Navigate::Select(slot), cx)
-                                            }))
-                                            .child(div().flex_1().truncate().text_sm().child(title))
-                                            .when(
-                                                self.pin_persistence && tab.route.pinnable(),
-                                                |view| {
-                                                    view.child(
+                                                                }
+                                                                cx.notify();
+                                                            }
+                                                        },
+                                                    ))
+                                                    .min_w(px(90.))
+                                                    .max_w(px(200.))
+                                                    .px_2()
+                                                    .h_full()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap_2()
+                                                    .bg(if self.navigation.active == Some(slot) {
+                                                        colors.accent
+                                                    } else {
+                                                        colors.card
+                                                    })
+                                                    .cursor_pointer()
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        this.navigate(Navigate::Select(slot), cx)
+                                                    }))
+                                                    .child(
                                                         div()
-                                                            .id(("pin", slot.0))
-                                                            .size(px(20.))
-                                                            .rounded_full()
-                                                            .opacity(if tab.pinned {
-                                                                1.
-                                                            } else {
-                                                                0.5
-                                                            })
-                                                            .hover(|style| {
-                                                                style.bg(colors.sidebar_accent)
-                                                            })
-                                                            .tooltip(move |_, cx| {
-                                                                cx.new(|_| {
-                                                                    Hint(if pinned {
-                                                                        "Unpin tab"
+                                                            .flex_1()
+                                                            .truncate()
+                                                            .text_sm()
+                                                            .child(title),
+                                                    )
+                                                    .when(
+                                                        self.pin_persistence
+                                                            && tab.route.pinnable(),
+                                                        |view| {
+                                                            view.child(
+                                                                div()
+                                                                    .id(("pin", slot.0))
+                                                                    .size(px(20.))
+                                                                    .rounded_full()
+                                                                    .opacity(if tab.pinned {
+                                                                        1.
                                                                     } else {
-                                                                        "Pin tab"
+                                                                        0.5
                                                                     })
-                                                                })
-                                                                .into()
-                                                            })
-                                                            .child(icon("Pin", colors.foreground))
+                                                                    .hover(|style| {
+                                                                        style
+                                                                            .bg(colors
+                                                                                .sidebar_accent)
+                                                                    })
+                                                                    .tooltip(move |_, cx| {
+                                                                        cx.new(|_| {
+                                                                            Hint(if pinned {
+                                                                                "Unpin tab"
+                                                                            } else {
+                                                                                "Pin tab"
+                                                                            })
+                                                                        })
+                                                                        .into()
+                                                                    })
+                                                                    .child(icon(
+                                                                        "Pin",
+                                                                        colors.foreground,
+                                                                    ))
+                                                                    .on_click(cx.listener(
+                                                                        move |this, _, _, cx| {
+                                                                            cx.stop_propagation();
+                                                                            this.pin(slot, cx);
+                                                                        },
+                                                                    )),
+                                                            )
+                                                        },
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .id(("close", slot.0))
+                                                            .px_1()
+                                                            .child("×")
+                                                            .on_mouse_down(
+                                                                MouseButton::Left,
+                                                                |_, window, _| {
+                                                                    window.prevent_default();
+                                                                },
+                                                            )
                                                             .on_click(cx.listener(
                                                                 move |this, _, _, cx| {
                                                                     cx.stop_propagation();
-                                                                    this.pin(slot, cx);
+                                                                    this.navigate(
+                                                                        Navigate::Close(slot),
+                                                                        cx,
+                                                                    );
                                                                 },
                                                             )),
                                                     )
-                                                },
-                                            )
-                                            .child(
-                                                div()
-                                                    .id(("close", slot.0))
-                                                    .px_1()
-                                                    .child("×")
-                                                    .on_mouse_down(
-                                                        MouseButton::Left,
-                                                        |_, window, _| {
-                                                            window.prevent_default();
-                                                        },
-                                                    )
-                                                    .on_click(cx.listener(
-                                                        move |this, _, _, cx| {
-                                                            cx.stop_propagation();
-                                                            this.navigate(
-                                                                Navigate::Close(slot),
-                                                                cx,
-                                                            );
-                                                        },
-                                                    )),
-                                            )
-                                    }),
+                                            }),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id("new-tab")
+                                    .px_3()
+                                    .cursor_pointer()
+                                    .child("+")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.navigate(Navigate::Open(Route::Empty, true), cx)
+                                    })),
                             ),
                     )
-                    .child(
-                        div()
-                            .id("new-tab")
-                            .px_3()
-                            .cursor_pointer()
-                            .child("+")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.navigate(Navigate::Open(Route::Empty, true), cx)
-                            })),
-                    ),
+                },
             )
             .child(
                 div()
