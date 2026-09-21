@@ -1,0 +1,362 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
+use desktop_runtime::{
+    CancellationToken, Generation, LibraryQuery, Profile, QUEUE_CAPACITY, RenameSession,
+    RuntimeHandle, SaveDocument, ServiceError,
+};
+use serde_json::json;
+use tokio::sync::oneshot;
+
+async fn start(profile: &Profile) -> RuntimeHandle {
+    let (runtime, ready) = RuntimeHandle::start(profile.clone()).unwrap();
+    ready.receive().await.unwrap();
+    runtime
+}
+
+#[tokio::test]
+async fn durable_roundtrip_opaque_json_and_conflicting_writes() {
+    let directory = tempfile::tempdir().unwrap();
+    let profile = Profile {
+        database: directory.path().join("library.sqlite"),
+    };
+    let runtime = start(&profile).await;
+    let session = runtime
+        .create_note("日本語 😀".into())
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    let first = runtime
+        .library(LibraryQuery::default(), CancellationToken::new())
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    assert_eq!(first.items.len(), 1);
+    let base = session.note.unwrap();
+    let raw: Arc<str> = r#" { "type":"doc", "unknown": [1, 2], "content":[{"type":"custom","attrs":{"x":"😀"}}] } "#.into();
+    let saved = runtime
+        .save_document(SaveDocument {
+            base: base.clone(),
+            body: raw.clone(),
+        })
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    assert_eq!(saved.body, raw);
+    assert!(matches!(
+        runtime
+            .save_document(SaveDocument {
+                base,
+                body: r#"{"type":"doc"}"#.into()
+            })
+            .unwrap()
+            .receive()
+            .await,
+        Err(ServiceError::Conflict)
+    ));
+    let renamed = runtime
+        .rename_session(RenameSession {
+            base: session.summary.clone(),
+            title: "Updated".into(),
+        })
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    assert!(matches!(
+        runtime
+            .rename_session(RenameSession {
+                base: session.summary,
+                title: "Lost update".into()
+            })
+            .unwrap()
+            .receive()
+            .await,
+        Err(ServiceError::Conflict)
+    ));
+    runtime.shutdown().await.unwrap();
+
+    let runtime = start(&profile).await;
+    let restored = runtime
+        .open_session(renamed.summary.id, CancellationToken::new())
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    assert_eq!(restored.summary.title.as_ref(), "Updated");
+    assert_eq!(restored.note.unwrap().body, raw);
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn failures_preserve_original_and_deleted_documents_cannot_be_saved() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = start(&Profile {
+        database: directory.path().join("library.sqlite"),
+    })
+    .await;
+    let session = runtime
+        .create_note("Preserve".into())
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    let document = session.note.unwrap();
+    assert!(
+        runtime
+            .save_document(SaveDocument {
+                base: document.clone(),
+                body: "malformed".into()
+            })
+            .unwrap()
+            .receive()
+            .await
+            .is_err()
+    );
+    let loaded = runtime
+        .open_session(session.summary.id.clone(), CancellationToken::new())
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    assert_eq!(loaded.note.unwrap().body, document.body);
+    let id = document.id.clone();
+    runtime
+        .submit(move |services| async move {
+            services
+                .executor
+                .execute(
+                    "UPDATE session_documents SET deleted_at = 'deleted' WHERE id = ?".into(),
+                    vec![json!(id)],
+                )
+                .await
+                .map_err(|e| ServiceError::Failed(e.to_string().into()))?;
+            Ok(())
+        })
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    assert!(matches!(
+        runtime
+            .save_document(SaveDocument {
+                base: document,
+                body: r#"{"type":"doc"}"#.into()
+            })
+            .unwrap()
+            .receive()
+            .await,
+        Err(ServiceError::Conflict)
+    ));
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn bounded_queue_rejects_overflow_drains_writes_and_flushes_on_shutdown() {
+    let directory = tempfile::tempdir().unwrap();
+    let profile = Profile {
+        database: directory.path().join("library.sqlite"),
+    };
+    let runtime = start(&profile).await;
+    let flushed = Arc::new(AtomicBool::new(false));
+    let flush_flag = flushed.clone();
+    runtime
+        .register_flush(Box::new(move || {
+            Box::pin(async move {
+                flush_flag.store(true, Ordering::Release);
+                Ok(())
+            })
+        }))
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    let (started_tx, started_rx) = oneshot::channel();
+    let (release_tx, release_rx) = oneshot::channel();
+    let held = runtime
+        .submit(move |_| async move {
+            let _ = started_tx.send(());
+            let _ = release_rx.await;
+            Ok(())
+        })
+        .unwrap();
+    started_rx.await.unwrap();
+    let mut writes = Vec::new();
+    for index in 0..QUEUE_CAPACITY {
+        writes.push(
+            runtime
+                .create_note(format!("Queued {index}").into())
+                .unwrap(),
+        );
+    }
+    assert!(matches!(
+        runtime.create_note("Overflow".into()),
+        Err(ServiceError::Busy)
+    ));
+    let shutdown_runtime = runtime.clone();
+    let shutdown = tokio::spawn(async move { shutdown_runtime.shutdown().await });
+    release_tx.send(()).unwrap();
+    held.receive().await.unwrap();
+    drop(writes);
+    shutdown.await.unwrap().unwrap();
+    assert!(flushed.load(Ordering::Acquire));
+    assert!(matches!(
+        runtime.create_note("After shutdown".into()),
+        Err(ServiceError::Closed)
+    ));
+    let runtime = start(&profile).await;
+    let page = runtime
+        .library(
+            LibraryQuery {
+                limit: 200,
+                ..Default::default()
+            },
+            CancellationToken::new(),
+        )
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    assert_eq!(page.items.len(), QUEUE_CAPACITY);
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn cancellation_and_generation_do_not_apply_stale_reads() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = start(&Profile {
+        database: directory.path().join("library.sqlite"),
+    })
+    .await;
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    assert!(matches!(
+        runtime
+            .library(LibraryQuery::default(), cancel)
+            .unwrap()
+            .receive()
+            .await,
+        Err(ServiceError::Cancelled)
+    ));
+    let mut generation = Generation::default();
+    let old = generation.advance();
+    let current = generation.advance();
+    assert_ne!(old, current);
+    assert_eq!(generation, current);
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn reactive_watch_initial_before_mutation_and_hard_unsubscribe() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = start(&Profile {
+        database: directory.path().join("library.sqlite"),
+    })
+    .await;
+    let mut watch = runtime.watch_library().unwrap().receive().await.unwrap();
+    assert_eq!(watch.snapshots.borrow_and_update().sequence, 1);
+    assert!(watch.snapshots.borrow().rows.is_empty());
+    runtime
+        .create_note("Reactive".into())
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), watch.snapshots.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(watch.snapshots.borrow().rows.len(), 1);
+    let receiver = watch.snapshots.clone();
+    watch.unsubscribe().await.unwrap();
+    let sequence = receiver.borrow().sequence;
+    runtime
+        .create_note("After unsubscribe".into())
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    assert_eq!(receiver.borrow().sequence, sequence);
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn malformed_legacy_content_is_returned_without_replacement() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = start(&Profile {
+        database: directory.path().join("new-profile/library.sqlite"),
+    })
+    .await;
+    let session = runtime
+        .create_note("Legacy".into())
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    let id = session.note.unwrap().id;
+    let raw = "{ invalid legacy text 日本語";
+    runtime.submit(move |services| async move {
+        services.executor.execute(
+            "UPDATE session_documents SET body = ?, body_format = 'custom_format' WHERE id = ?".into(),
+            vec![json!(raw), json!(id)],
+        ).await.map_err(|e| ServiceError::Failed(e.to_string().into()))?;
+        Ok(())
+    }).unwrap().receive().await.unwrap();
+    let opened = runtime
+        .open_session(session.summary.id, CancellationToken::new())
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    let document = opened.note.unwrap();
+    assert_eq!(document.body.as_ref(), raw);
+    assert_eq!(document.body_format.as_ref(), "custom_format");
+    assert!(matches!(
+        runtime
+            .save_document(SaveDocument {
+                base: document,
+                body: r#"{"type":"doc"}"#.into(),
+            })
+            .unwrap()
+            .receive()
+            .await,
+        Err(ServiceError::Unsupported(_))
+    ));
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn watch_admission_is_bounded_and_released_by_unsubscribe() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = start(&Profile {
+        database: directory.path().join("library.sqlite"),
+    })
+    .await;
+    let mut watches = Vec::new();
+    for _ in 0..desktop_runtime::MAX_WATCHES {
+        watches.push(runtime.watch_library().unwrap().receive().await.unwrap());
+    }
+    assert!(matches!(
+        runtime.watch_library().unwrap().receive().await,
+        Err(ServiceError::Busy)
+    ));
+    watches.pop().unwrap().unsubscribe().await.unwrap();
+    runtime
+        .watch_library()
+        .unwrap()
+        .receive()
+        .await
+        .unwrap()
+        .unsubscribe()
+        .await
+        .unwrap();
+    for watch in watches {
+        watch.unsubscribe().await.unwrap();
+    }
+    runtime.shutdown().await.unwrap();
+}

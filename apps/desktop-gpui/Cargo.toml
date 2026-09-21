@@ -1,0 +1,19 @@
+[package]
+name = "desktop-gpui"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+anlg-tiptap = { workspace = true }
+anyhow = { workspace = true }
+desktop-runtime = { path = "../../crates/desktop-runtime" }
+futures = "0.3"
+gpui = "=0.2.2"
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+unicode-segmentation = "=1.13.2"
+
+[dev-dependencies]
+tempfile = { workspace = true }

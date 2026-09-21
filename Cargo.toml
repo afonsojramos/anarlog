@@ -12,6 +12,7 @@ resolver = "2"
 members = [
   "apps/api",
   "apps/cli",
+  "apps/desktop-gpui",
   "apps/desktop/src-tauri",
   "crates/*",
   "plugins/*",
