@@ -493,7 +493,7 @@ pub fn render_row(
             canvas(
                 move |_, _, _| (),
                 move |_, (), window, app| {
-                    entity.update(app, |this, _| {
+                    entity.update(app, |this, cx| {
                         if !current {
                             return;
                         }
@@ -502,6 +502,7 @@ pub fn render_row(
                                 &visible,
                                 model.selection,
                                 this.focus.is_focused(window),
+                                this.caret.read(cx).visible(window),
                                 window,
                                 colors.foreground,
                                 colors.sidebar_accent,
@@ -527,11 +528,12 @@ fn paint_selection(
     layout: &VisibleLayout,
     selection: Selection,
     focused: bool,
+    caret_visible: bool,
     window: &mut Window,
     caret_color: gpui::Hsla,
     selection_color: gpui::Hsla,
 ) {
-    if !focused {
+    if !focused || (selection.is_empty() && !caret_visible) {
         return;
     }
     let row_start = layout.block_start + layout.row.start;

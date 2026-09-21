@@ -1,4 +1,5 @@
 pub mod assets;
+pub mod caret;
 pub mod input;
 pub mod text;
 pub mod theme;

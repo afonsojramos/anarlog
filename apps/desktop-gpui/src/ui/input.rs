@@ -1,13 +1,14 @@
 use std::ops::Range;
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, DispatchPhase, ElementInputHandler, EntityInputHandler,
-    EventEmitter, FocusHandle, Focusable, KeyDownEvent, MouseButton, MouseMoveEvent, Pixels, Point,
-    ShapedLine, TextRun, UTF16Selection, UnderlineStyle, Window, canvas, div, fill, point,
-    prelude::*, px, size,
+    App, Bounds, ClipboardItem, Context, DispatchPhase, ElementInputHandler, Entity,
+    EntityInputHandler, EventEmitter, FocusHandle, Focusable, KeyDownEvent, MouseButton,
+    MouseMoveEvent, Pixels, Point, ShapedLine, TextRun, UTF16Selection, UnderlineStyle, Window,
+    canvas, div, fill, point, prelude::*, px, size,
 };
 
 use super::{
+    caret::Caret,
     text::TextBuffer,
     theme::{RADIUS, theme},
 };
@@ -37,6 +38,7 @@ pub struct TextInput {
     inline: bool,
     lines: Vec<(Range<usize>, Bounds<Pixels>, ShapedLine)>,
     dragging: bool,
+    caret: Option<Entity<Caret>>,
 }
 
 impl EventEmitter<InputEvent> for TextInput {}
@@ -54,6 +56,7 @@ impl TextInput {
             inline: false,
             lines: Vec::new(),
             dragging: false,
+            caret: None,
         }
     }
 
@@ -86,10 +89,18 @@ impl TextInput {
         self.layout = None;
         self.lines.clear();
         self.dragging = false;
+        self.reset_caret(cx);
         cx.notify();
     }
 
+    fn reset_caret(&self, cx: &mut App) {
+        if let Some(caret) = &self.caret {
+            Caret::reset_entity(caret, cx);
+        }
+    }
+
     fn changed(&mut self, accepted: bool, cx: &mut Context<Self>) {
+        self.reset_caret(cx);
         cx.emit(if accepted {
             InputEvent::Changed
         } else {
@@ -255,6 +266,7 @@ impl TextInput {
             }
             _ => return,
         }
+        self.reset_caret(cx);
         cx.stop_propagation();
         cx.notify();
     }
@@ -267,6 +279,7 @@ impl TextInput {
             && let Some(index) = self.character_index_for_point(event.position, window, cx)
         {
             self.buffer.move_to(self.buffer.utf8(index), true);
+            self.reset_caret(cx);
             cx.stop_propagation();
             cx.notify();
         }
@@ -314,6 +327,7 @@ impl EntityInputHandler for TextInput {
 
     fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         self.buffer.unmark();
+        self.reset_caret(cx);
         cx.emit(InputEvent::Changed);
         cx.notify();
     }
@@ -429,6 +443,12 @@ impl EntityInputHandler for TextInput {
 
 impl Render for TextInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let caret = self
+            .caret
+            .get_or_insert_with(|| Caret::new(&self.focus, window, cx));
+        caret.update(cx, |caret, cx| {
+            caret.set_enabled(self.buffer.selection().is_empty(), window, cx);
+        });
         let colors = theme(window);
         let input = cx.entity();
         div()
@@ -472,6 +492,7 @@ impl Render for TextInput {
                         }
                         this.dragging = true;
                     }
+                    this.reset_caret(cx);
                     cx.notify();
                 }),
             )
@@ -558,7 +579,13 @@ impl Render for TextInput {
                                 px(0.)
                             };
                             let origin = point(bounds.left() - this.scroll, bounds.top());
-                            if this.focus.is_focused(window) {
+                            if this.focus.is_focused(window)
+                                && (!selected.is_empty()
+                                    || this
+                                        .caret
+                                        .as_ref()
+                                        .is_some_and(|caret| caret.read(cx).visible(window)))
+                            {
                                 let left = line.x_for_index(selected.start);
                                 let right = line.x_for_index(selected.end);
                                 window.paint_quad(fill(
@@ -687,6 +714,11 @@ impl TextInput {
             );
             let selected = self.buffer.selection();
             if self.focus.is_focused(window)
+                && (!selected.is_empty()
+                    || self
+                        .caret
+                        .as_ref()
+                        .is_some_and(|caret| caret.read(cx).visible(window)))
                 && selected.start <= range.end
                 && selected.end >= range.start
             {

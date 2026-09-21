@@ -8,6 +8,7 @@ use super::{
     EditorPane, clipboard,
     model::{EditorModel, Selection},
 };
+use crate::ui::caret::Caret;
 
 impl EditorPane {
     pub(super) fn key(
@@ -16,6 +17,7 @@ impl EditorPane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        Caret::reset_entity(&self.caret, cx);
         let key = event.keystroke.key.as_str();
         let modifiers = event.keystroke.modifiers;
         let document_boundary = (matches!(key, "home" | "end")
@@ -328,6 +330,7 @@ impl EntityInputHandler for EditorPane {
         self.model.as_ref()?.marked_range()
     }
     fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        Caret::reset_entity(&self.caret, cx);
         if let Some(model) = &mut self.model {
             model.commit_composition();
             if let Some(journal) = &self.journal {

@@ -6,7 +6,7 @@ use std::{
 use desktop_runtime::{AttachmentId, CancellationToken, DocumentSnapshot, HumanId, ServiceError};
 use futures::{StreamExt, channel::oneshot};
 use gpui::{
-    App, ClipboardItem, Context, ElementInputHandler, EventEmitter, FocusHandle, Focusable,
+    App, ClipboardItem, Context, ElementInputHandler, Entity, EventEmitter, FocusHandle, Focusable,
     ListAlignment, ListOffset, ListState, MouseButton, Pixels, Point, Window, canvas, div, list,
     prelude::*, px,
 };
@@ -24,7 +24,7 @@ use super::{
 };
 use crate::{
     contracts::{EditorEvent, EditorInit, LaneContext},
-    ui::theme::theme,
+    ui::{caret::Caret, theme::theme},
 };
 
 pub struct EditorPane {
@@ -32,6 +32,7 @@ pub struct EditorPane {
     pub init: EditorInit,
     pub(super) model: Option<EditorModel>,
     pub(super) focus: FocusHandle,
+    pub(super) caret: Entity<Caret>,
     pub(super) journal: Option<SaveJournal>,
     dirty: bool,
     pub(super) message: String,
@@ -87,6 +88,7 @@ impl EditorPane {
         })
         .detach();
         focus.focus(window);
+        let caret = Caret::new(&focus, window, cx);
         let watch_cancel = CancellationToken::new();
         let (sender, mut receiver) = futures::channel::mpsc::channel(1);
         cx.background_executor()
@@ -200,6 +202,7 @@ impl EditorPane {
             external_mention_provider: false,
             mention_cancel: None,
             focused: true,
+            caret,
             read_only: false,
             dragging: false,
             drag_position: None,
@@ -252,6 +255,7 @@ impl EditorPane {
     }
 
     pub(super) fn edited(&mut self, before: u64, result: EditResult<()>, cx: &mut Context<Self>) {
+        Caret::reset_entity(&self.caret, cx);
         if let Err(error) = result {
             self.message = error;
         } else {
@@ -1416,6 +1420,18 @@ impl Focusable for EditorPane {
 
 impl Render for EditorPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.caret.update(cx, |caret, cx| {
+            caret.set_enabled(
+                !self.read_only
+                    && self
+                        .model
+                        .as_ref()
+                        .is_some_and(|model| model.selection.is_empty())
+                    && self.link_input.is_none(),
+                window,
+                cx,
+            );
+        });
         let caret = self.model.as_ref().and_then(|model| {
             self.layouts
                 .values()
@@ -1553,6 +1569,7 @@ impl Render for EditorPane {
                 MouseButton::Left,
                 cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
                     this.focus.focus(window);
+                    Caret::reset_entity(&this.caret, cx);
                     if let Some(position) = this.hit(event.position) {
                         if event.modifiers.secondary() {
                             this.activate_at(position, cx);
