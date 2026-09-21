@@ -3,6 +3,9 @@ import {
   Search01Icon,
   PencilEdit01Icon,
   NoteEditIcon,
+  InfoIcon,
+  ArrowUp01Icon,
+  ArrowDown01Icon,
 } from "@hugeicons/core-free-icons";
 import { writeFileSync } from "node:fs";
 
@@ -16,6 +19,9 @@ for (const [name, data] of Object.entries({
   Search01Icon,
   PencilEdit01Icon,
   NoteEditIcon,
+  InfoIcon,
+  ArrowUp01Icon,
+  ArrowDown01Icon,
 })) {
   const elements = data
     .map(

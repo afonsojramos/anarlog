@@ -106,6 +106,13 @@ pub struct ProviderView {
 }
 
 impl ProviderView {
+    pub fn select_kind(&mut self, kind: ProviderKind, cx: &mut Context<Self>) {
+        if self.kind != kind && !self.has_unsaved(cx) {
+            self.kind = kind;
+            self.restore(cx);
+        }
+    }
+
     pub fn new(services: ProviderServices, cx: &mut Context<Self>) -> Self {
         let provider =
             cx.new(|cx| TextInput::new("Provider ID: anarlog, openai, deepgram, custom…", cx));

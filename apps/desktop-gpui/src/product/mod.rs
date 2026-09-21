@@ -155,6 +155,8 @@ impl ProductPane {
         self.onboarding = None;
         let (page, surface) = match route {
             ProductRoute::Settings => ("app", None),
+            ProductRoute::Transcription => ("transcription", None),
+            ProductRoute::Intelligence => ("intelligence", None),
             ProductRoute::Account => ("account", Some(Surface::Account)),
             ProductRoute::Billing => ("billing", Some(Surface::Billing)),
             ProductRoute::CloudSync => ("sync", Some(Surface::CloudSync)),
@@ -178,6 +180,10 @@ impl ProductPane {
 
     pub fn navigate_section(&mut self, section: &str, cx: &mut Context<Self>) {
         self.select_page(navigation::page(section), cx);
+    }
+
+    pub fn active_section(&self) -> &'static str {
+        self.active.id
     }
 
     fn show_surface(&mut self, surface: Option<Surface>, cx: &mut Context<Self>) {
@@ -212,6 +218,16 @@ impl ProductPane {
             }));
             self.service = Some(view);
         } else {
+            if let Some(providers) = &self.providers {
+                let kind = match self.active.id {
+                    "transcription" => Some(crate::meeting::config::ProviderKind::Stt),
+                    "intelligence" => Some(crate::meeting::config::ProviderKind::Llm),
+                    _ => None,
+                };
+                if let Some(kind) = kind {
+                    providers.update(cx, |view, cx| view.select_kind(kind, cx));
+                }
+            }
             if self.preferences.is_none() {
                 let view = cx.new(|cx| PreferencesView::new(self.context.runtime.clone(), cx));
                 self.settings_subscription = Some(cx.subscribe(&view, |_, _, error, cx| {
@@ -228,6 +244,16 @@ impl ProductPane {
     }
 
     fn select_page(&mut self, page: navigation::Page, cx: &mut Context<Self>) {
+        if self
+            .providers
+            .as_ref()
+            .is_some_and(|view| view.read(cx).has_unsaved(cx))
+            && page != self.active
+        {
+            self.notice = "Save or restore provider edits before changing pages.".into();
+            cx.notify();
+            return;
+        }
         if self
             .service
             .as_ref()

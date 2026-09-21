@@ -53,6 +53,8 @@ pub enum ProductRoute {
     Onboarding,
     Permissions,
     Settings,
+    Transcription,
+    Intelligence,
     Account,
     Billing,
     CloudSync,

@@ -1,4 +1,5 @@
 mod chrome;
+mod notifications;
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
@@ -46,6 +47,8 @@ impl anlg_storage::StorageRuntime for ProfileStorage {
 pub struct ApplicationView {
     runtime: RuntimeHandle,
     window: gpui::AnyWindowHandle,
+    notifications: notifications::Notifications,
+    preferences_task: Option<gpui::Task<()>>,
     chrome: chrome::Chrome,
     workspace: Entity<WorkspaceView>,
     editor: Option<Entity<EditorPane>>,
@@ -258,6 +261,7 @@ impl ApplicationView {
                         this.watch_cloud(cloud, cx);
                     }
                     this.native = Some(native);
+                    this.watch_preferences(cx);
                     if !warnings.is_empty() {
                         this.status(
                             &format!(
@@ -274,6 +278,8 @@ impl ApplicationView {
         .detach();
         Self {
             window: window.window_handle(),
+            notifications: notifications::Notifications::new(cx),
+            preferences_task: None,
             runtime,
             chrome: chrome::Chrome::default(),
             workspace,
@@ -861,6 +867,7 @@ impl ApplicationView {
                     if let Some(product) = &this.product {
                         product.update(cx, |view, cx| view.set_scope(identity_cloud.scope(), cx));
                     }
+                    cx.notify();
                 });
                 if identity.account_id.is_some() {
                     let client = identity_cloud.automation_client().await.ok();
@@ -1181,6 +1188,7 @@ impl ApplicationView {
         {
             return;
         }
+        let general_settings = matches!(route, ProductRoute::Settings);
         let product = cx.new(|cx| {
             ProductPane::with_services(
                 LaneContext {
@@ -1194,10 +1202,13 @@ impl ApplicationView {
                 cx,
             )
         });
-        if let Route::Settings(section) = self.workspace.read(cx).current_route() {
+        if general_settings
+            && let Route::Settings(section) = self.workspace.read(cx).current_route()
+        {
             product.update(cx, |product, cx| product.navigate_section(&section, cx));
         }
         self.product_subscriptions = vec![
+            cx.observe(&product, |_, _, cx| cx.notify()),
             cx.subscribe(&product, |this, _, event, cx| match event {
                 ProductEvent::NavigateWorkspace => this.leave_product(Route::Empty, cx),
                 ProductEvent::OpenSession(id) => this.leave_product(Route::Session(id.clone()), cx),
@@ -1338,6 +1349,7 @@ impl Render for ApplicationView {
         let _ = &self.subscriptions;
         div()
             .size_full()
+            .relative()
             .flex()
             .flex_col()
             .bg(colors.background)
@@ -1428,6 +1440,10 @@ impl Render for ApplicationView {
             .when(!self.status.is_empty(), |view| {
                 view.child(div().p_2().text_sm().child(self.status.clone()))
             })
+            .when_some(
+                self.provider_notification(window, cx),
+                |view, notification| view.child(notification),
+            )
             .when_some(self.title_menu(window, cx), |view, menu| view.child(menu))
     }
 }
