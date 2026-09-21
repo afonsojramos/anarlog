@@ -177,12 +177,13 @@ impl Render for WorkspaceView {
                 div()
                     .flex_1()
                     .min_h_0()
+                    .w_full()
                     .when_some(catalog.clone(), |view, catalog| view.child(catalog))
                     .when(catalog.is_none(), |view| {
                         view.flex()
                             .flex_col()
                             .gap_2()
-                            .child(div().px_2().child(self.search.clone()))
+                            .child(div().w_full().px_2().child(self.search.clone()))
                             .child(div().flex_1().min_h_0().child(self.library.clone()))
                             .child(
                                 div()

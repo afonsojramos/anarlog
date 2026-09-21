@@ -1542,6 +1542,7 @@ impl Render for EditorPane {
             .size_full()
             .flex()
             .flex_col()
+            .pt_2()
             .relative()
             .bg(colors.card)
             .font_family(crate::ui::theme::system_font(cx))

@@ -51,7 +51,11 @@ impl UiFonts {
 }
 
 fn resolve_family(text_system: &TextSystem, families: &[&'static str]) -> SharedString {
+    let available = text_system.all_font_names();
     for family in families {
+        if !available.iter().any(|name| name == family) {
+            continue;
+        }
         let normal = text_system.resolve_font(&font(*family));
         let mut variant = text_system
             .get_font_for_id(normal)
