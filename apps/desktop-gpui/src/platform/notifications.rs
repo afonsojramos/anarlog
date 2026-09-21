@@ -21,6 +21,91 @@ pub trait NotificationAdapter {
     fn show(&mut self, notification: &Notification) -> Result<()>;
 }
 
+pub struct NativeNotifications;
+
+impl NotificationAdapter for NativeNotifications {
+    fn show(&mut self, notification: &Notification) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            gtk::init().map_err(|error| ServiceError::Failed(error.to_string().into()))?;
+            anlg_notification_linux::show(notification);
+        }
+        #[cfg(target_os = "macos")]
+        anlg_notification_macos::show(notification);
+        #[cfg(target_os = "windows")]
+        anlg_notification_windows::show(notification);
+        Ok(())
+    }
+}
+
+impl NativeNotifications {
+    /// Install once on the native UI thread; drain actions through `Notifications::action`.
+    pub fn install_actions(send: Arc<dyn Fn(String, Action) + Send + Sync>) {
+        #[cfg(target_os = "linux")]
+        Self::install_portable_actions(send);
+        #[cfg(target_os = "windows")]
+        Self::install_portable_actions(send);
+        #[cfg(target_os = "macos")]
+        {
+            let cb = send.clone();
+            anlg_notification_macos::setup_collapsed_confirm_handler(move |key, _| {
+                cb(key, Action::Confirm)
+            });
+            let cb = send.clone();
+            anlg_notification_macos::setup_expanded_accept_handler(move |key, _| {
+                cb(key, Action::Accept)
+            });
+            let cb = send.clone();
+            anlg_notification_macos::setup_dismiss_handler(move |key, _| cb(key, Action::Dismiss));
+            let cb = send.clone();
+            anlg_notification_macos::setup_collapsed_timeout_handler(move |key, _| {
+                cb(key, Action::Timeout)
+            });
+            let cb = send.clone();
+            anlg_notification_macos::setup_option_selected_handler(move |key, index| {
+                if let Ok(index) = usize::try_from(index) {
+                    cb(key, Action::Option(index));
+                }
+            });
+            anlg_notification_macos::setup_footer_action_handler(move |key, _| {
+                send(key, Action::Footer)
+            });
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    fn install_portable_actions(send: Arc<dyn Fn(String, Action) + Send + Sync>) {
+        let cb = send.clone();
+        native_notifications::setup_notification_confirm_handler(move |key| {
+            cb(key, Action::Confirm)
+        });
+        let cb = send.clone();
+        native_notifications::setup_notification_accept_handler(move |key| cb(key, Action::Accept));
+        let cb = send.clone();
+        native_notifications::setup_notification_dismiss_handler(move |key| {
+            cb(key, Action::Dismiss)
+        });
+        let cb = send.clone();
+        native_notifications::setup_notification_timeout_handler(move |key| {
+            cb(key, Action::Timeout)
+        });
+        let cb = send.clone();
+        native_notifications::setup_notification_option_selected_handler(move |key, index| {
+            if let Ok(index) = usize::try_from(index) {
+                cb(key, Action::Option(index));
+            }
+        });
+        native_notifications::setup_notification_footer_action_handler(move |key| {
+            send(key, Action::Footer)
+        });
+    }
+}
+
+#[cfg(target_os = "linux")]
+use anlg_notification_linux as native_notifications;
+#[cfg(target_os = "windows")]
+use anlg_notification_windows as native_notifications;
+
 pub struct Notifications<A> {
     adapter: A,
     active: HashMap<Arc<str>, (Instant, Notification)>,
