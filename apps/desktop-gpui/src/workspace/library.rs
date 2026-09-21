@@ -1,11 +1,12 @@
 use std::{collections::HashSet, sync::Arc};
 
+use anlg_fs_sync_core::normalize_folder_path;
 use chrono::{DateTime, Datelike, FixedOffset, Local, NaiveDate, Utc};
 use chrono_tz::Tz;
 use desktop_runtime::{LibraryPage, SessionId};
 use gpui::{
     Context, EventEmitter, FocusHandle, ListAlignment, ListState, Render, Window, div, list,
-    prelude::*, px,
+    prelude::*, px, svg,
 };
 
 use crate::ui::theme::{monospace_font, theme};
@@ -22,11 +23,16 @@ pub struct LibraryView {
     menu_index: usize,
     use_24_hour_time: bool,
     timezone: Option<Tz>,
+    show_folder: bool,
 }
 
 enum TimelineRow {
     Heading(String),
-    Note(usize, String),
+    Note {
+        index: usize,
+        time: String,
+        folder: String,
+    },
 }
 
 #[derive(Clone)]
@@ -91,6 +97,19 @@ fn local_time(date: DateTime<Utc>, timezone: Option<Tz>) -> DateTime<FixedOffset
     match timezone {
         Some(timezone) => date.with_timezone(&timezone).fixed_offset(),
         None => date.with_timezone(&Local).fixed_offset(),
+    }
+}
+
+fn folder_label(path: &str) -> String {
+    let normalized = normalize_folder_path(path.trim()).unwrap_or_default();
+    if normalized.encode_utf16().count() > 200
+        || normalized
+            .split('/')
+            .any(|segment| segment.encode_utf16().count() > 80)
+    {
+        String::new()
+    } else {
+        normalized
     }
 }
 
@@ -185,6 +204,7 @@ impl LibraryView {
             menu_index: 0,
             use_24_hour_time: false,
             timezone: None,
+            show_folder: true,
         }
     }
 
@@ -197,6 +217,13 @@ impl LibraryView {
         if (self.use_24_hour_time, self.timezone) != (use_24_hour_time, timezone) {
             self.use_24_hour_time = use_24_hour_time;
             self.timezone = timezone;
+            self.set_page(self.page.clone(), cx);
+        }
+    }
+
+    pub fn set_show_folder(&mut self, show_folder: bool, cx: &mut Context<Self>) {
+        if self.show_folder != show_folder {
+            self.show_folder = show_folder;
             self.set_page(self.page.clone(), cx);
         }
     }
@@ -222,7 +249,16 @@ impl LibraryView {
             let time = date
                 .map(|date| timestamp(date, today, self.use_24_hour_time))
                 .unwrap_or_default();
-            rows.push(TimelineRow::Note(index, time));
+            let folder = if self.show_folder {
+                folder_label(&item.folder_path)
+            } else {
+                String::new()
+            };
+            rows.push(TimelineRow::Note {
+                index,
+                time,
+                folder,
+            });
         }
         if self.rows.is_empty() || page.offset != self.page.offset {
             self.scroll.reset(rows.len());
@@ -369,7 +405,7 @@ impl Render for LibraryView {
                         let Some(row) = this.rows.get(row) else {
                             return div().into_any_element();
                         };
-                        let (index, time) = match row {
+                        let (index, time, folder) = match row {
                             TimelineRow::Heading(title) => {
                                 return div()
                                     .h(px(32.))
@@ -379,7 +415,11 @@ impl Render for LibraryView {
                                     .child(title.clone())
                                     .into_any_element();
                             }
-                            TimelineRow::Note(index, time) => (*index, time.clone()),
+                            TimelineRow::Note {
+                                index,
+                                time,
+                                folder,
+                            } => (*index, time.clone(), folder.clone()),
                         };
                         let item = &this.page.items[index];
                         let id = item.id.clone();
@@ -387,7 +427,7 @@ impl Render for LibraryView {
                             .id(gpui::SharedString::from(item.id.0.clone()))
                             .flex_1()
                             .min_w_0()
-                            .h(px(54.))
+                            .h(px(if folder.is_empty() { 54. } else { 72. }))
                             .flex()
                             .flex_col()
                             .gap(px(2.))
@@ -448,6 +488,28 @@ impl Render for LibraryView {
                                     cx.notify();
                                 },
                             ))
+                            .when(!folder.is_empty(), |view| {
+                                view.child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .min_w_0()
+                                        .flex_shrink_0()
+                                        .h(px(16.))
+                                        .gap(px(4.))
+                                        .text_size(px(11.))
+                                        .line_height(px(16.))
+                                        .text_color(colors.muted_foreground)
+                                        .child(
+                                            svg()
+                                                .path("workspace/Folder01Icon.svg")
+                                                .size(px(12.))
+                                                .flex_shrink_0()
+                                                .text_color(colors.muted_foreground),
+                                        )
+                                        .child(div().min_w_0().truncate().child(folder)),
+                                )
+                            })
                             .child(div().text_sm().line_height(px(20.)).truncate().child(
                                 if item.title.is_empty() {
                                     "Untitled".into()
@@ -526,6 +588,23 @@ impl Render for LibraryView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sidebar_folders_follow_shipping_normalization_and_utf16_limits() {
+        for (input, expected) in [
+            ("  Work\\日本語/  ", "Work/日本語"),
+            ("   ", ""),
+            ("/Work", ""),
+            ("Work//Meetings", ""),
+            ("Work/../Meetings", ""),
+            ("./Work", ""),
+        ] {
+            assert_eq!(folder_label(input), expected);
+        }
+        assert_eq!(folder_label(&"🚀".repeat(40)), "🚀".repeat(40));
+        assert_eq!(folder_label(&"🚀".repeat(41)), "");
+        assert_eq!(folder_label(&format!("{0}/{0}/{0}", "a".repeat(70))), "");
+    }
 
     #[test]
     fn timeline_timestamps_keep_time_and_only_show_the_year_when_needed() {

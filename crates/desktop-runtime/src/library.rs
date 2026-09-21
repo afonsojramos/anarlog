@@ -1,4 +1,8 @@
-use std::{collections::VecDeque, path::Path, sync::Arc};
+use std::{
+    collections::{HashMap, VecDeque},
+    path::Path,
+    sync::Arc,
+};
 
 use anlg_db_app::ListSessions;
 use anlg_db_execute::TransactionStatement;
@@ -102,10 +106,21 @@ impl RuntimeHandle {
             .map_err(failure)?;
             let has_more = rows.len() > CACHE_ROWS as usize;
             rows.truncate(CACHE_ROWS as usize);
+            let ids = rows.iter().map(|row| &row.id).collect::<Vec<_>>();
+            let mut folders: HashMap<String, String> = sqlx::query_as::<_, (String, String)>(
+                "SELECT id, folder_path FROM sessions WHERE id IN (SELECT value FROM json_each(?)) AND deleted_at IS NULL",
+            )
+            .bind(json!(ids).to_string())
+            .fetch_all(services.db.pool())
+            .await
+            .map_err(failure)?
+            .into_iter()
+            .collect();
             let page = LibraryPage {
                 items: rows
                     .into_iter()
                     .map(|row| SessionSummary {
+                        folder_path: folders.remove(&row.id).unwrap_or_default().into(),
                         id: row.id.into(),
                         title: row.title.into(),
                         updated_at: row.updated_at.into(),
@@ -126,6 +141,7 @@ impl RuntimeHandle {
                                 + row.title.len()
                                 + row.updated_at.len()
                                 + row.created_at.len()
+                                + row.folder_path.len()
                                 + std::mem::size_of::<SessionSummary>()
                         })
                         .sum::<usize>();
@@ -244,6 +260,7 @@ async fn load_session(services: &Services, id: SessionId) -> Result<OpenSession>
             title: row.title.into(),
             updated_at: row.updated_at.into(),
             created_at: row.created_at.into(),
+            folder_path: row.folder_path.into(),
         },
         note,
     })

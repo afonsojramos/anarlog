@@ -18,6 +18,104 @@ async fn start(profile: &Profile) -> RuntimeHandle {
 }
 
 #[tokio::test]
+async fn library_folder_projection_survives_cache_slicing_and_external_moves() {
+    let directory = tempfile::tempdir().unwrap();
+    let profile = Profile {
+        database: directory.path().join("folders.sqlite"),
+    };
+    let runtime = start(&profile).await;
+    let first = runtime
+        .create_note("First".into())
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    let second = runtime
+        .create_note("Second".into())
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    let mut external = sqlx::SqliteConnection::connect_with(
+        &SqliteConnectOptions::new().filename(&profile.database),
+    )
+    .await
+    .unwrap();
+    for (session, date, folder) in [
+        (&first, "2026-09-02T00:00:00Z", "Work/日本語"),
+        (&second, "2026-09-01T00:00:00Z", "Personal"),
+    ] {
+        sqlx::query("UPDATE sessions SET folder_path=?,created_at=? WHERE id=?")
+            .bind(folder)
+            .bind(date)
+            .bind(session.summary.id.0.as_ref())
+            .execute(&mut external)
+            .await
+            .unwrap();
+    }
+    for (offset, session, folder) in [(0, &first, "Work/日本語"), (1, &second, "Personal")] {
+        let page = runtime
+            .library(
+                LibraryQuery {
+                    offset,
+                    limit: 1,
+                    ..Default::default()
+                },
+                CancellationToken::new(),
+            )
+            .unwrap()
+            .receive()
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].id, session.summary.id);
+        assert_eq!(page.items[0].folder_path.as_ref(), folder);
+        assert_eq!(page.has_more, offset == 0);
+    }
+    sqlx::query("UPDATE sessions SET folder_path=? WHERE id=?")
+        .bind("Archive/日本語")
+        .bind(first.summary.id.0.as_ref())
+        .execute(&mut external)
+        .await
+        .unwrap();
+    let page = runtime
+        .library(LibraryQuery::default(), CancellationToken::new())
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    assert_eq!(page.items[0].folder_path.as_ref(), "Archive/日本語");
+    external.close().await.unwrap();
+    runtime.shutdown().await.unwrap();
+
+    let runtime = start(&profile).await;
+    let reopened = runtime
+        .open_session(first.summary.id, CancellationToken::new())
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    assert_eq!(reopened.summary.folder_path.as_ref(), "Archive/日本語");
+    assert_eq!(reopened.summary.title, first.summary.title);
+    assert_eq!(reopened.note.unwrap().body, first.note.unwrap().body);
+    let page = runtime
+        .library(
+            LibraryQuery {
+                search: "First".into(),
+                ..Default::default()
+            },
+            CancellationToken::new(),
+        )
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].folder_path.as_ref(), "Archive/日本語");
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_notes_share_the_shipping_editors_document() {
     let directory = tempfile::tempdir().unwrap();
     let profile = Profile {

@@ -127,8 +127,13 @@ impl ApplicationView {
                                     .and_then(|setting| setting.value.as_bool())
                                     .unwrap_or(false);
                                 let timezone = choice(&snapshot, "timezone").parse().ok();
+                                let show_folder = snapshot
+                                    .get("sidebar_show_folder")
+                                    .and_then(|setting| setting.value.as_bool())
+                                    .unwrap_or(true);
                                 this.workspace.update(cx, |workspace, cx| {
-                                    workspace.set_timeline_clock(use_24_hour_time, timezone, cx)
+                                    workspace.set_timeline_clock(use_24_hour_time, timezone, cx);
+                                    workspace.set_timeline_show_folder(show_folder, cx);
                                 });
                                 this.notifications.preferences = Some(snapshot);
                             }

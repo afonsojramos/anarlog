@@ -96,6 +96,11 @@ impl Focusable for WorkspaceView {
 }
 
 impl WorkspaceView {
+    pub fn set_timeline_show_folder(&mut self, show_folder: bool, cx: &mut Context<Self>) {
+        self.library
+            .update(cx, |library, cx| library.set_show_folder(show_folder, cx));
+    }
+
     pub fn set_timeline_clock(
         &mut self,
         use_24_hour_time: bool,
