@@ -90,6 +90,12 @@ impl Snapshot {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Operation {
+    Loading,
+    Saving,
+}
+
 pub struct ProviderView {
     services: ProviderServices,
     kind: ProviderKind,
@@ -100,7 +106,7 @@ pub struct ProviderView {
     secret: Entity<TextInput>,
     dirty: bool,
     generation: u64,
-    busy: bool,
+    operation: Option<Operation>,
     status: String,
     _subscriptions: Vec<Subscription>,
 }
@@ -142,7 +148,7 @@ impl ProviderView {
             secret,
             dirty: false,
             generation: 0,
-            busy: false,
+            operation: None,
             status: String::new(),
             _subscriptions: subscriptions,
         };
@@ -152,17 +158,17 @@ impl ProviderView {
 
     pub fn has_unsaved(&self, cx: &gpui::App) -> bool {
         self.dirty
-            || self.busy
+            || self.operation == Some(Operation::Saving)
             || [&self.provider, &self.model, &self.base, &self.secret]
                 .into_iter()
                 .any(|input| input.read(cx).buffer.marked.is_some())
     }
 
     fn reload(&mut self, restore: bool, cx: &mut Context<Self>) {
-        if self.busy {
+        if self.operation.is_some() {
             return;
         }
-        self.busy = true;
+        self.operation = Some(Operation::Loading);
         let generation = self.generation;
         let reply = self.services.runtime.read(desktop_runtime::CancellationToken::new(), |services| async move {
             let rows = services.executor.execute("SELECT id,value_json FROM app_settings WHERE (id LIKE 'ai_provider:%' OR id IN ('current_stt_provider','current_stt_model','current_llm_provider','current_llm_model')) AND length(CAST(value_json AS BLOB)) <= 524288 LIMIT 256".into(), vec![]).await.map_err(failure)?;
@@ -176,7 +182,7 @@ impl ProviderView {
                 Err(error) => Err(error),
             };
             let _ = this.update(cx, |this, cx| {
-                this.busy = false;
+                this.operation = None;
                 match result {
                     Ok(snapshot) => {
                         this.snapshot = Some(snapshot);
@@ -214,7 +220,7 @@ impl ProviderView {
     }
 
     fn save(&mut self, key_only: bool, cx: &mut Context<Self>) {
-        if self.busy
+        if self.operation.is_some()
             || [&self.provider, &self.model, &self.base, &self.secret]
                 .into_iter()
                 .any(|input| input.read(cx).buffer.marked.is_some())
@@ -257,12 +263,12 @@ impl ProviderView {
                 Ok(())
             })
         };
-        self.busy = true;
+        self.operation = Some(Operation::Saving);
         let generation = self.generation;
         cx.spawn(async move |this, cx| {
             let result = match reply { Ok(reply) => reply.receive().await, Err(error) => Err(error) };
             let _ = this.update(cx, |this, cx| {
-                this.busy = false;
+                this.operation = None;
                 match result {
                     Ok(()) if key_only => {
                         if this.generation == generation {
@@ -315,7 +321,7 @@ impl Render for ProviderView {
             .child(self.provider.clone()).child(self.model.clone()).child(self.base.clone()).child(self.secret.clone())
             .child(div().text_xs().text_color(colors.muted_foreground).child("Anarlog uses account sign-in. Other providers use the system keyring. Start local models through Manage local models."))
             .child(self.status.clone())
-            .child(div().flex().gap_3().when(!self.busy, |view| view
+            .child(div().flex().gap_3().when(self.operation.is_none(), |view| view
                 .child(div().id("provider-choice").cursor_pointer().child("Save provider choice").on_click(cx.listener(|this, _, _, cx| this.save(false, cx))))
                 .child(div().id("provider-key").cursor_pointer().child("Save API key").on_click(cx.listener(|this, _, _, cx| this.save(true, cx))))
                 .child(div().id("provider-restore").cursor_pointer().child("Discard and reload").on_click(cx.listener(|this, _, _, cx| this.reload(true, cx))))))
