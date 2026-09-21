@@ -1,9 +1,10 @@
 use std::ops::Range;
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler, EventEmitter,
-    FocusHandle, Focusable, KeyDownEvent, MouseButton, Pixels, Point, ShapedLine, TextRun,
-    UTF16Selection, UnderlineStyle, Window, canvas, div, fill, point, prelude::*, px, size,
+    App, Bounds, ClipboardItem, Context, DispatchPhase, ElementInputHandler, EntityInputHandler,
+    EventEmitter, FocusHandle, Focusable, KeyDownEvent, MouseButton, MouseMoveEvent, Pixels, Point,
+    ShapedLine, TextRun, UTF16Selection, UnderlineStyle, Window, canvas, div, fill, point,
+    prelude::*, px, size,
 };
 
 use super::{
@@ -35,6 +36,7 @@ pub struct TextInput {
     secret: bool,
     inline: bool,
     lines: Vec<(Range<usize>, Bounds<Pixels>, ShapedLine)>,
+    dragging: bool,
 }
 
 impl EventEmitter<InputEvent> for TextInput {}
@@ -51,6 +53,7 @@ impl TextInput {
             secret: false,
             inline: false,
             lines: Vec::new(),
+            dragging: false,
         }
     }
 
@@ -61,6 +64,7 @@ impl TextInput {
 
     pub fn secret(mut self) -> Self {
         self.secret = true;
+        self.buffer.disable_history();
         self
     }
 
@@ -74,15 +78,14 @@ impl TextInput {
             self.changed(false, cx);
             return;
         }
-        self.buffer = TextBuffer {
-            cursor: text.len(),
-            anchor: text.len(),
-            text,
-            marked: None,
-        };
+        self.buffer = TextBuffer::new(text);
+        if self.secret {
+            self.buffer.disable_history();
+        }
         self.scroll = px(0.);
         self.layout = None;
         self.lines.clear();
+        self.dragging = false;
         cx.notify();
     }
 
@@ -100,11 +103,32 @@ impl TextInput {
             return;
         }
         let modifiers = event.keystroke.modifiers;
+        let word = if cfg!(target_os = "macos") {
+            modifiers.alt
+        } else {
+            modifiers.control
+        };
+        let line = cfg!(target_os = "macos") && modifiers.platform;
         match event.keystroke.key.as_str() {
             "enter" if self.multiline && !modifiers.secondary() => {
                 self.replace_text_in_range(None, "\n", window, cx)
             }
             "enter" => cx.emit(InputEvent::Submitted),
+            "z" if modifiers.secondary() => {
+                let changed = if modifiers.shift {
+                    self.buffer.redo()
+                } else {
+                    self.buffer.undo()
+                };
+                if changed {
+                    self.changed(true, cx);
+                }
+            }
+            "y" if modifiers.secondary() && !cfg!(target_os = "macos") => {
+                if self.buffer.redo() {
+                    self.changed(true, cx);
+                }
+            }
             "a" if modifiers.secondary() => {
                 self.buffer.anchor = 0;
                 self.buffer.cursor = self.buffer.text.len();
@@ -123,7 +147,11 @@ impl TextInput {
                 }
             }
             "left" => self.buffer.move_to(
-                if !modifiers.shift && !self.buffer.selection().is_empty() {
+                if line {
+                    self.buffer.line_start()
+                } else if word {
+                    self.buffer.previous_word()
+                } else if !modifiers.shift && !self.buffer.selection().is_empty() {
                     self.buffer.selection().start
                 } else {
                     self.buffer.previous()
@@ -131,7 +159,11 @@ impl TextInput {
                 modifiers.shift,
             ),
             "right" => self.buffer.move_to(
-                if !modifiers.shift && !self.buffer.selection().is_empty() {
+                if line {
+                    self.buffer.line_end()
+                } else if word {
+                    self.buffer.next_word()
+                } else if !modifiers.shift && !self.buffer.selection().is_empty() {
                     self.buffer.selection().end
                 } else {
                     self.buffer.next()
@@ -139,26 +171,35 @@ impl TextInput {
                 modifiers.shift,
             ),
             "home" => self.buffer.move_to(
-                if self.multiline {
-                    self.buffer.text[..self.buffer.cursor]
-                        .rfind('\n')
-                        .map_or(0, |i| i + 1)
+                if self.multiline && !modifiers.secondary() {
+                    self.buffer.line_start()
                 } else {
                     0
                 },
                 modifiers.shift,
             ),
             "end" => self.buffer.move_to(
-                if self.multiline {
-                    self.buffer.text[self.buffer.cursor..]
-                        .find('\n')
-                        .map_or(self.buffer.text.len(), |i| self.buffer.cursor + i)
+                if self.multiline && !modifiers.secondary() {
+                    self.buffer.line_end()
                 } else {
                     self.buffer.text.len()
                 },
                 modifiers.shift,
             ),
             "up" | "down" if self.multiline => {
+                if line {
+                    self.buffer.move_to(
+                        if event.keystroke.key == "up" {
+                            0
+                        } else {
+                            self.buffer.text.len()
+                        },
+                        modifiers.shift,
+                    );
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
                 let starts = std::iter::once(0)
                     .chain(self.buffer.text.match_indices('\n').map(|(i, _)| i + 1))
                     .collect::<Vec<_>>();
@@ -185,19 +226,50 @@ impl TextInput {
                     .move_to(starts[target] + offset, modifiers.shift);
             }
             "backspace" | "delete" => {
-                if self.buffer.selection().is_empty() {
-                    self.buffer.anchor = if event.keystroke.key == "backspace" {
-                        self.buffer.previous()
+                let mut range = self.buffer.selection();
+                if range.is_empty() {
+                    if event.keystroke.key == "backspace" {
+                        range.start = if line {
+                            self.buffer.line_start()
+                        } else if word {
+                            self.buffer.previous_word()
+                        } else {
+                            self.buffer.previous()
+                        };
                     } else {
-                        self.buffer.next()
-                    };
+                        range.end = if line {
+                            self.buffer.line_end()
+                        } else if word {
+                            self.buffer.next_word()
+                        } else {
+                            self.buffer.next()
+                        };
+                    }
                 }
-                self.replace_text_in_range(None, "", window, cx);
+                self.replace_text_in_range(
+                    Some(self.buffer.utf16(range.start)..self.buffer.utf16(range.end)),
+                    "",
+                    window,
+                    cx,
+                );
             }
             _ => return,
         }
         cx.stop_propagation();
         cx.notify();
+    }
+
+    fn mouse_move(&mut self, event: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if event.pressed_button != Some(MouseButton::Left) || !self.focus.is_focused(window) {
+            self.dragging = false;
+        }
+        if self.dragging
+            && let Some(index) = self.character_index_for_point(event.position, window, cx)
+        {
+            self.buffer.move_to(self.buffer.utf8(index), true);
+            cx.stop_propagation();
+            cx.notify();
+        }
     }
 }
 
@@ -241,7 +313,7 @@ impl EntityInputHandler for TextInput {
     }
 
     fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        self.buffer.marked = None;
+        self.buffer.unmark();
         cx.emit(InputEvent::Changed);
         cx.notify();
     }
@@ -337,10 +409,11 @@ impl EntityInputHandler for TextInput {
             })?;
             return Some(
                 self.buffer.utf16(
-                    range.start
+                    (range.start
                         + line
                             .closest_index_for_x(position.x - bounds.left())
-                            .min(range.len()),
+                            .min(range.len()))
+                    .min(self.buffer.text.len()),
                 ),
             );
         }
@@ -381,27 +454,46 @@ impl Render for TextInput {
                 cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
                     this.focus.focus(window);
                     cx.stop_propagation();
-                    if this.multiline {
-                        if let Some(index) =
-                            this.character_index_for_point(event.position, window, cx)
-                        {
-                            this.buffer
-                                .move_to(this.buffer.utf8(index), event.modifiers.shift);
+                    if this.buffer.marked.is_some() {
+                        return;
+                    }
+                    if let Some(index) = this.character_index_for_point(event.position, window, cx)
+                    {
+                        let index = this.buffer.utf8(index);
+                        this.buffer.move_to(index, event.modifiers.shift);
+                        if event.click_count == 2 {
+                            let word = this.buffer.word_range(index);
+                            this.buffer.anchor = word.start;
+                            this.buffer.cursor = word.end;
+                        } else if event.click_count >= 3 {
+                            this.buffer.anchor = this.buffer.line_start();
+                            this.buffer.cursor =
+                                (this.buffer.line_end() + 1).min(this.buffer.text.len());
                         }
-                    } else if let Some((bounds, line)) = &this.layout {
-                        this.buffer.move_to(
-                            line.closest_index_for_x(event.position.x - bounds.left())
-                                .min(this.buffer.text.len()),
-                            event.modifiers.shift,
-                        );
+                        this.dragging = true;
                     }
                     cx.notify();
                 }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.dragging = false),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.dragging = false),
             )
             .child(
                 canvas(
                     move |_, _, _| (),
                     move |bounds, (), window, cx| {
+                        let input_for_drag = input.clone();
+                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                            if phase == DispatchPhase::Bubble {
+                                input_for_drag
+                                    .update(cx, |this, cx| this.mouse_move(event, window, cx));
+                            }
+                        });
                         input.update(cx, |this, cx| {
                             if this.multiline {
                                 this.paint_multiline(bounds, window, cx);
