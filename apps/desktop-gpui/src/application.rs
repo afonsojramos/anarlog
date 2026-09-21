@@ -1021,11 +1021,10 @@ impl ApplicationView {
                         workspace.set_session_dirty(snapshot.session_id.clone(), dirty, cx)
                     });
                 }
-                EditorEvent::SaveFailed { session_id, error } => {
+                EditorEvent::SaveFailed { session_id, .. } => {
                     this.workspace.update(cx, |workspace, cx| {
                         workspace.set_session_dirty(session_id.clone(), true, cx)
                     });
-                    this.status(&format!("Save failed; draft retained: {error}"), cx);
                 }
                 EditorEvent::MentionHuman(id) => this.workspace.update(cx, |workspace, cx| {
                     workspace.open_route(Route::Human(id.0.clone()), false, cx)
@@ -1363,31 +1362,37 @@ impl Render for ApplicationView {
                     .when(
                         self.product.is_none() && !self.closing && !self.writers_paused,
                         |view| {
-                            view.child(div().flex_1().min_w_0().child(self.workspace.clone()))
-                                .when_some(
-                                    self.meeting.clone().filter(|_| self.meeting_open),
-                                    |view, meeting| {
-                                        view.child(
-                                            div()
-                                                .w(px(420.))
-                                                .h_full()
-                                                .flex()
-                                                .flex_col()
-                                                .child(
-                                                    div()
-                                                        .id("hide-meeting")
-                                                        .p_2()
-                                                        .cursor_pointer()
-                                                        .child("Hide transcript")
-                                                        .on_click(cx.listener(|this, _, _, cx| {
-                                                            this.meeting_open = false;
-                                                            cx.notify();
-                                                        })),
-                                                )
-                                                .child(div().flex_1().min_h_0().child(meeting)),
-                                        )
-                                    },
-                                )
+                            view.child(
+                                div()
+                                    .flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(self.workspace.clone()),
+                            )
+                            .when_some(
+                                self.meeting.clone().filter(|_| self.meeting_open),
+                                |view, meeting| {
+                                    view.child(
+                                        div()
+                                            .w(px(420.))
+                                            .h_full()
+                                            .flex()
+                                            .flex_col()
+                                            .child(
+                                                div()
+                                                    .id("hide-meeting")
+                                                    .p_2()
+                                                    .cursor_pointer()
+                                                    .child("Hide transcript")
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.meeting_open = false;
+                                                        cx.notify();
+                                                    })),
+                                            )
+                                            .child(div().flex_1().min_h_0().child(meeting)),
+                                    )
+                                },
+                            )
                         },
                     ),
             )

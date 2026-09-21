@@ -423,6 +423,7 @@ impl Render for NoteView {
                         .child(div().text_color(colors.muted_foreground).child("/"))
                         .child(
                             div()
+                                .flex()
                                 .min_w_0()
                                 .max_w(px(224.))
                                 .flex_1()
@@ -520,7 +521,7 @@ impl Render for NoteView {
                 )
             })
             .when_some(self.content.clone(), |view, content| {
-                view.child(div().flex_1().min_h_0().child(content))
+                view.child(div().flex().flex_col().flex_1().min_h_0().child(content))
             })
             .when(self.menu, |view| {
                 view.child(gpui::deferred(

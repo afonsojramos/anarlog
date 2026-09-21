@@ -1753,6 +1753,8 @@ impl Render for EditorPane {
             .child(
                 div()
                     .relative()
+                    .flex()
+                    .flex_col()
                     .flex_1()
                     .min_h_0()
                     .w_full()

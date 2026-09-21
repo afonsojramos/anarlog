@@ -490,6 +490,8 @@ impl Render for WorkspaceView {
             )
             .child(
                 div()
+                    .flex()
+                    .flex_col()
                     .flex_1()
                     .min_h_0()
                     .when_some(
