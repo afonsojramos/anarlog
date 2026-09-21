@@ -31,6 +31,7 @@ use crate::{
 
 #[derive(Clone)]
 pub enum WorkspaceAction {
+    SidebarChanged,
     OpenShared(Arc<str>),
     NewNoteWindow,
     OpenNoteWindow(SessionId),

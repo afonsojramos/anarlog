@@ -1,8 +1,8 @@
-use gpui::{Context, MouseButton, Render, Window, div, prelude::*, px, svg};
+use gpui::{Context, MouseButton, Render, Window, canvas, div, prelude::*, px, svg};
 
 use super::{
     navigation::Route,
-    shell::{Navigate, WorkspaceView},
+    shell::{Navigate, WorkspaceAction, WorkspaceView},
 };
 use crate::ui::theme::{monospace_font, system_font, theme};
 
@@ -78,14 +78,15 @@ impl WorkspaceView {
 
 impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.sidebar
-            .resize_container(f32::from(window.viewport_size().width));
         let colors = theme(window);
         let route = self
             .navigation
             .current()
             .map(|tab| tab.route.clone())
             .unwrap_or(Route::Empty);
+        let layout_route = route.clone();
+        let layout_sidebar = self.sidebar.clone();
+        let entity = cx.entity().downgrade();
         let catalog = self
             .catalogs
             .iter()
@@ -366,6 +367,40 @@ impl Render for WorkspaceView {
                 ))
             })
             .child(surface)
+            .child(
+                canvas(
+                    move |bounds, window, cx| {
+                        let width = f32::from(bounds.size.width);
+                        let mut sidebar = layout_sidebar.clone();
+                        sidebar.layout(width, &layout_route);
+                        if sidebar != layout_sidebar {
+                            window.defer(cx, move |window, cx| {
+                                let _ = entity.update(cx, |this, cx| {
+                                    let route = this.navigation.current()
+                                        .map(|tab| tab.route.clone()).unwrap_or(Route::Empty);
+                                    let old_width = this.sidebar.width();
+                                    let was_expanded = this.sidebar.expanded;
+                                    if let Some(expansion) = this.sidebar.layout(width, &route) {
+                                        let mut size = window.viewport_size();
+                                        size.width += px(expansion);
+                                        window.resize(size);
+                                    }
+                                    if was_expanded != this.sidebar.expanded {
+                                        this.resizing = false;
+                                        cx.emit(WorkspaceAction::SidebarChanged);
+                                    }
+                                    if old_width != this.sidebar.width() || was_expanded != this.sidebar.expanded {
+                                        cx.notify();
+                                    }
+                                });
+                            });
+                        }
+                    },
+                    |_, (), _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
             .when_some(self.note_operation.clone(),|view,(ids,moving)| view.child(
                 div().absolute().inset_0().occlude().bg(gpui::rgba(0x00000055)).flex().items_center().justify_center().child(
                     div().w(px(420.)).p_6().rounded(px(12.)).bg(colors.card).border_1().border_color(colors.border).flex().flex_col().gap_4()

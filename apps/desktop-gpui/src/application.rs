@@ -113,6 +113,7 @@ impl ApplicationView {
                 this.workspace_event(event, window, cx)
             }),
             cx.subscribe(&workspace, |this, _, event, cx| match event {
+                WorkspaceAction::SidebarChanged => cx.notify(),
                 WorkspaceAction::OpenShared(id) => this.open_shared(id.to_string(), false, cx),
                 WorkspaceAction::NewNoteWindow => this.open_note_window(None, cx),
                 WorkspaceAction::OpenNoteWindow(id) => this.open_note_window(Some(id.clone()), cx),

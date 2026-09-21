@@ -364,13 +364,14 @@ impl Navigation {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SidebarState {
     width: f32,
     container_width: f32,
     proportion: Option<f32>,
     pub expanded: bool,
     saved_expanded: Option<bool>,
+    note_body_width: Option<f32>,
 }
 
 impl Default for SidebarState {
@@ -381,11 +382,37 @@ impl Default for SidebarState {
             proportion: None,
             expanded: true,
             saved_expanded: None,
+            note_body_width: None,
         }
     }
 }
 
 impl SidebarState {
+    pub fn layout(&mut self, width: f32, route: &Route) -> Option<f32> {
+        self.resize_container(width);
+        if !matches!(
+            route,
+            Route::Session(_) | Route::SharedSession(_) | Route::SharedPreview(_) | Route::Empty
+        ) || !self.expanded
+        {
+            self.note_body_width = None;
+            return None;
+        }
+        let body_width = width - 4.;
+        if !body_width.is_finite() || body_width <= 0. {
+            return None;
+        }
+        match self.note_body_width.replace(body_width) {
+            None => (body_width < 700.).then_some(700. - body_width),
+            Some(previous) if body_width < previous && body_width < 700. => {
+                self.expanded = false;
+                self.note_body_width = None;
+                None
+            }
+            Some(_) => None,
+        }
+    }
+
     pub fn width(&self) -> f32 {
         if self.can_resize() { self.width } else { 200. }
     }
@@ -404,6 +431,12 @@ impl SidebarState {
     }
 
     pub fn set_route(&mut self, route: &Route) {
+        if !matches!(
+            route,
+            Route::Session(_) | Route::SharedSession(_) | Route::SharedPreview(_) | Route::Empty
+        ) {
+            self.note_body_width = None;
+        }
         if route.custom_sidebar() {
             if self.saved_expanded.is_none() {
                 self.saved_expanded = Some(self.expanded);
@@ -417,6 +450,7 @@ impl SidebarState {
     pub fn toggle(&mut self) {
         if self.saved_expanded.is_none() {
             self.expanded = !self.expanded;
+            self.note_body_width = None;
         }
     }
 
@@ -595,6 +629,69 @@ mod tests {
             }
             sidebar.toggle();
         }
+    }
+
+    #[test]
+    fn note_width_guard_collapses_only_after_shrinking_below_the_minimum() {
+        for route in [
+            note("a"),
+            Route::Empty,
+            Route::SharedSession("a".into()),
+            Route::SharedPreview("a".into()),
+        ] {
+            let mut sidebar = SidebarState::default();
+            assert_eq!(sidebar.layout(800., &route), None);
+            assert_eq!(sidebar.layout(704., &route), None);
+            assert!(sidebar.expanded);
+            assert_eq!(sidebar.layout(703., &route), None);
+            assert!(!sidebar.expanded);
+            for width in [680., 1000., 800.] {
+                assert_eq!(sidebar.layout(width, &route), None);
+                assert!(!sidebar.expanded);
+            }
+            sidebar.toggle();
+            assert_eq!(sidebar.layout(800., &route), None);
+            assert!(sidebar.expanded);
+        }
+    }
+
+    #[test]
+    fn opening_a_narrow_note_requests_expansion_without_collapsing() {
+        let mut sidebar = SidebarState::default();
+        assert_eq!(sidebar.layout(600., &note("a")), Some(104.));
+        assert!(sidebar.expanded);
+        for width in [600., 650., 704.] {
+            assert_eq!(sidebar.layout(width, &note("a")), None);
+            assert!(sidebar.expanded);
+        }
+        sidebar.toggle();
+        sidebar.layout(600., &note("a"));
+        sidebar.toggle();
+        assert_eq!(sidebar.layout(600., &note("a")), Some(104.));
+        assert!(sidebar.expanded);
+    }
+
+    #[test]
+    fn note_width_guard_ignores_other_routes_and_invalid_measurements() {
+        let mut sidebar = SidebarState::default();
+        sidebar.layout(800., &note("a"));
+        for width in [0., -1., f32::NAN, f32::INFINITY] {
+            assert_eq!(sidebar.layout(width, &note("a")), None);
+            assert!(sidebar.expanded);
+        }
+        for route in [
+            Route::Contacts,
+            Route::Changelog,
+            Route::Settings("app".into()),
+        ] {
+            sidebar.set_route(&route);
+            sidebar.layout(800., &route);
+            assert_eq!(sidebar.layout(500., &route), None);
+            assert!(sidebar.expanded);
+        }
+        sidebar.set_route(&note("a"));
+        assert_eq!(sidebar.layout(600., &note("a")), Some(104.));
+        assert!(sidebar.expanded);
     }
 
     #[test]
