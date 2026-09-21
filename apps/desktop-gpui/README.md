@@ -20,23 +20,35 @@ The default is `$HOME/.anarlog-gpui-sandbox/library.sqlite` (Windows:
 discovery or migration of the shipping application's live profile. `--profile`
 is a directory, not a database filename. Only use an isolated directory or a
 consistent SQLite backup; do not copy a live WAL database's main file alone.
-The canonical schema is prepared with `db-app`; CloudSync is disabled.
+The canonical schema is prepared with `db-app`. CloudSync starts disabled and
+requires account sign-in, encryption setup and explicit enablement.
 
 The integrated preview mounts the native workspace, TipTap JSON editor,
-transcript/audio pane, and product settings/services. The editor autosaves through
-a background journal; save conflicts retain drafts. The note header opens
-transcript/audio, share, and export surfaces. Product services without concrete
-adapters display their unavailable state. Recording is deliberately unavailable
-until a validated provider, secure credentials, and model configuration are
-connected. No credentials or provider defaults are fabricated.
+transcript/audio pane, and concrete cloud/local product services. The editor
+autosaves through a background journal; save conflicts retain drafts. The note
+header opens transcript/audio, share, and export surfaces. Recording, recovery and
+AI use the selected provider, secure credentials and running local models.
+Missing configuration produces an error; credentials are never fabricated.
+Transcription and intelligence settings expose provider/model/base-URL choices
+and a masked API-key input. Keys save separately to the system keyring; provider
+choices use an atomic CAS transaction. Local models are selected by starting
+them through the model manager.
+
+Cloud sign-in requires `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` at build
+or runtime. `VITE_API_URL` and `VITE_WEB_APP_URL` can select another deployment.
+The native sandbox uses separate keyring namespaces. Local engine executables
+and bundled CLI/skills are resolved under `ANARLOG_NATIVE_RESOURCES` (or the
+`resources` directory beside the executable); models are stored under the isolated
+profile. Argmax also requires `ARGMAX_API_KEY`.
 
 Pinned tabs are restored and saved with CAS through `app_settings.gpui_pinned_tabs`
 inside the isolated profile. Malformed persisted pin data disables pin writes.
 This does not import the shipping application's file-based pinned-tab store.
 Title/editor/product drafts gate navigation and quit. Window close, the native
-Quit control, and the application quit keyboard shortcut flush the editor, stop
-and finalize capture, and await runtime drain. OS-forced termination and native
-application-menu quit are not yet intercepted reliably.
+Quit control, native application-menu quit and the quit keyboard shortcut flush
+all note windows, stop/finalize capture, and await runtime drain. Failed saves
+retain drafts and keep windows open. OS-forced termination remains outside this
+guarantee; GPUI's generic shutdown callback has a 100 ms timeout.
 
 Published `gpui = "=0.2.2"` is used without a fork or patch. On Linux, GPUI needs
 X11 or Wayland, a working Vulkan device/driver, xkbcommon, fontconfig, and FreeType.
@@ -45,6 +57,7 @@ macOS and Windows require their native toolchains and platform validation.
 Use Ubuntu 24.04 or a matching recent PipeWire SDK: Ubuntu 22.04's 0.3.48 SPA
 headers cannot compile the repository's `libspa 0.9.2` dependency. The native
 Linux CI uses Ubuntu 24.04 and never launches a display or audio device.
+The tray also needs GTK 3 and the AppIndicator runtime/development packages.
 
 The shared lockfile also changes existing resolutions: GPUI pins macOS
 `core-foundation` to `0.10.0`; its `cbindgen` requires `toml >=0.8.8`, resolving to
@@ -57,13 +70,14 @@ builds against these shared resolutions before integration.
 ## Architecture
 
 - `main.rs` owns CLI/profile selection and the native window.
-- `application.rs` owns the pane entities, event routing, one shared capture and
-  playback owner, startup recovery, persisted pins, and the close/drain flow.
-  Real audio/storage ports are installed; missing provider/product services remain
-  explicit unavailable boundaries.
+- `application.rs`, `application_services.rs`, `native_events.rs` and
+  `note_window.rs` own service construction, pane/window routing, shared
+  capture/playback, recovery, persisted pins, menus/tray/shortcuts/deep links,
+  update barriers and the close/drain flow.
 - `ui/` provides source-derived light/dark HSL tokens, the system font policy,
   embedded existing logo and Hugeicons, focus restoration, and a bounded native
-  single-line input with UTF-16/IME entry points and clipboard operations.
+  text input with UTF-16/IME entry points and clipboard operations. Single-line
+  fields are bounded at 4096 bytes; multiline catalog fields at 128 KiB.
 - `workspace/` has separate shell, virtual list and note entities. A list refresh
   does not reparse or replace the selected document. List and note reads use
   cancellation plus monotonically increasing request generations; stale results
@@ -96,6 +110,30 @@ another connection; serializing acquisition makes refreshes wait for the writer.
 Watches also suppress identical snapshots. Increasing the native pool size needs
 a verified post-commit delivery barrier first.
 
+Library navigation caches at most eight aligned pages (456 rows each), bounded
+by an 8 MiB payload estimate. A separate read-only SQLite connection checks
+`PRAGMA data_version` before serving a page and invalidates on committed writes,
+including writes from another process. The canonical query materializes a
+bounded ID page before indexed row lookups. It still scans/sorts without a
+canonical composite expression index; no schema change is made. Run the ignored
+release fixture in `crates/desktop-runtime/tests/performance.rs` for raw cached,
+uncached and reference samples; these are not whole-application measurements.
+
+## Remaining parity and validation gates
+
+No GUI tests were authorized for this integration. Visual/focus/drag/drop/IME
+parity, native accessibility, i18n, macOS/Windows, hardware/provider/keyring
+behavior and signed packaging/update installation remain unverified. GPUI 0.2.2
+lacks the required integrated accessibility hooks, a Wayland shortcut portal and
+per-window close-to-hide support. Cloud attachment transfer/hydration, image
+resize handles and full multiline soft wrapping remain incomplete. Shared-note
+previews retain source JSON but do not hydrate published attachments. This is
+not release-ready and does not switch the shipping default.
+Several generic side-effect settings remain guarded, including autostart,
+device lock, app/dock appearance, analytics and crash reporting. Native
+localization, complete provider enrollment/model discovery, spellcheck and
+keyboard/drag-selection parity still need work.
+
 `save_document` is an explicit JSON-document API, not a lossless editor
 implementation: it verifies the root and CASes the original body, format and
 timestamp, but cannot prove that a caller retained every unknown node. The editor
@@ -106,8 +144,7 @@ must retain the dirty draft and expose reload/merge recovery.
 
 All modules are registered in `lib.rs` and mounted by `application.rs`.
 The following contracts and ownership boundaries were used by the five fresh
-implementation lanes. Explicit unavailable services are still integration
-boundaries; they do not count as feature delivery.
+implementation lanes. Their shared wiring now lives in the host modules above.
 
 ### Path ownership
 
@@ -168,9 +205,9 @@ shutdown().await -> Result<()>
 ```
 
 `submit`/`read` are worker entry points, not UI SQL APIs. Domain-specific
-typed operations belong in runtime submodules. The runtime lane should add
-bounded independent service queues for long-running audio/network work rather
-than monopolizing the foundation's single serialized DB coordinator.
+typed operations belong in runtime submodules. Independent long-running service
+work uses a 16-item queue with at most four concurrent jobs, separate from the
+serialized database coordinator.
 `register_flush` must be acknowledged before starting a durable producer.
 Cancellation is for superseded reads, never an accepted authoritative write.
 
@@ -198,8 +235,8 @@ workspace, and clones `LaneContext` into every other pane.
   creates/focuses the corresponding pane. Workspace owns session/folder
   selection, tabs, navigation history, search, contacts, calendar, templates and
   automations. It does not own document JSON or recorder internals.
-  Only `OpenEditor` is emitted by the foundation; meeting and product routes
-  become available when their workspace navigation is implemented.
+  The host handles editor, meeting, product, shared-preview and standalone-window
+  routes and forwards saved-note/capture events to automation execution.
 - Editor receives `EditorInit { session_id, document, return_focus }`. It emits
   `Dirty { session_id, dirty }`, `Saved(DocumentSnapshot)`,
   `SaveFailed { session_id, error }`, `OpenLink(Arc<str>)`,
@@ -228,9 +265,8 @@ workspace, and clones `LaneContext` into every other pane.
   accessibility foundations, and release-build instrumentation/fixtures.
   `platform::WindowRole::{Main, Settings, MeetingOverlay}` and
   `PlatformEvent::{DeepLink(String), Shortcut(String), OpenMainWindow,
-  Failed(ServiceError)}` reserve the initial native boundary. Tray, deep links,
-  shortcuts, dialogs, updater, notifications and alternate windows still need
-  implementations; shared additions must be reported to the integrator.
+  Failed(ServiceError)}` define the native boundary. Concrete adapters are
+  installed by the host; unsupported platform cases remain explicit errors.
 
 ### Assets and theme
 
@@ -274,25 +310,7 @@ pin CAS/corrupt-storage behavior.
 `pnpm check:desktop-gpui` runs the native check, tests, and Clippy. The focused
 `desktop_gpui_ci.yaml` additionally builds the binary and checks Rust formatting.
 
-This preview has not demonstrated appearance/interaction parity and makes no
-performance claim. No GUI test or recording is performed in this child handoff.
-macOS/Windows builds, native accessibility trees, screen readers, IME/CJK across
-platforms, real audio, auth/providers, i18n, tray/updater/integration behavior,
-packaging and signing remain unvalidated. The workspace's title/search input is
-separate from the rich editor and still lacks full undo, drag selection, word
-navigation and horizontal scrolling. Selected documents currently refresh only
-when reopened; the editor/runtime typed document watch must still be connected
-to the editor's remote-revision API without replacing dirty drafts.
-Shutdown flush errors currently leave a visible failure on a closed runtime;
-recovery/retry policy and OS session-end handling belong to runtime.
-
-Standalone note windows, folder/contact/template mutations, automation execution,
-provider calendar reconciliation, attachment preview, native search extraction,
-secure credential/provider/model selection, meeting AI services,
-account/CloudSync/billing adapters, and system permissions remain incomplete or
-unavailable.
-
 Equivalent release-build old/new profiling with reproducible large-library,
 large-document and streaming fixtures is required before claiming any speed,
 memory or responsiveness improvement. A successful Linux build is only a
-build-viability result.
+build-viability result. See the remaining parity and validation gates above.

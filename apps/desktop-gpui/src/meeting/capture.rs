@@ -426,8 +426,14 @@ impl CaptureService {
                                     if state.retention == Retention::Never { state.repair.clone() } else { None }
                                 };
                                 if let Some(repair) = recovery { repair.recovery.stop().await; }
-                                let result = root.call(RootMsg::StopSession, Some(Duration::from_secs(30))).await
+                                let mut result = root.call(RootMsg::StopSession, Some(Duration::from_secs(30))).await
                                     .map_err(failure).and_then(|reply| reply.success_or_else(|| failure("Capture stop timed out; finalization is still pending.")));
+                                while let Ok(event) = lifecycle.try_recv() {
+                                    if let Err(error) = handle_lifecycle(&runtime, &shared, event).await {
+                                        adapter.fail(error.clone());
+                                        result = Err(error);
+                                    }
+                                }
                                 let _ = reply.send(result);
                             }
                             Some(Command::Devices(reply)) => {

@@ -46,12 +46,30 @@ impl TextBuffer {
         text: &str,
         marked: Option<Range<usize>>,
     ) -> bool {
+        self.replace_mode(range, text, marked, false)
+    }
+
+    pub fn replace_mode(
+        &mut self,
+        range: Option<Range<usize>>,
+        text: &str,
+        marked: Option<Range<usize>>,
+        multiline: bool,
+    ) -> bool {
         let range = range
             .map(|range| self.utf8(range.start)..self.utf8(range.end))
             .or_else(|| self.marked.clone())
             .unwrap_or_else(|| self.selection());
-        let text = text.replace(['\n', '\r'], " ");
-        if self.text.len() - range.len() + text.len() > 4096 {
+        if range.start > range.end {
+            return false;
+        }
+        let text = if multiline {
+            text.replace("\r\n", "\n").replace('\r', "\n")
+        } else {
+            text.replace(['\n', '\r'], " ")
+        };
+        let limit = if multiline { 128 * 1024 } else { 4096 };
+        if self.text.len() - range.len() + text.len() > limit {
             return false;
         }
         self.text.replace_range(range.clone(), &text);
@@ -89,6 +107,23 @@ fn utf8(text: &str, offset: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multiline_preserves_unicode_newlines_and_composition() {
+        let mut buffer = TextBuffer::default();
+        assert!(buffer.replace_mode(None, "日本😀\r\nsecond\n", None, true));
+        assert_eq!(buffer.text, "日本😀\nsecond\n");
+        assert!(buffer.replace_mode(Some(0..4), "試\n験", Some(1..2), true));
+        assert_eq!(buffer.marked, Some(0..7));
+        assert_eq!(buffer.selection(), 3..4);
+        assert!(buffer.replace_mode(None, "試験", None, true));
+        assert_eq!(buffer.text, "試験\nsecond\n");
+        let before = buffer.text.clone();
+        assert!(!buffer.replace_mode(Some(Range { start: 6, end: 2 }), "x", None, true));
+        assert_eq!(buffer.text, before);
+        assert!(buffer.replace_mode(None, &"x".repeat(8000), None, true));
+        assert!(!buffer.replace_mode(None, &"x".repeat(128 * 1024), None, true));
+    }
 
     #[test]
     fn composition_ranges_are_relative_to_inserted_text() {

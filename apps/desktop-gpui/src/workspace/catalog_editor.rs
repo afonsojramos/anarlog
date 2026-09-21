@@ -418,6 +418,22 @@ impl CatalogEditor {
             for field in &group.fields {
                 let input = cx.new(|cx| {
                     let mut input = TextInput::new(field.label, cx);
+                    if matches!(
+                        field.key,
+                        "prompt"
+                            | "content"
+                            | "description"
+                            | "system_prompt"
+                            | "body"
+                            | "body_text"
+                            | "memo"
+                            | "instructions"
+                            | "sections_json"
+                            | "targets_json"
+                            | "steps"
+                    ) {
+                        input = input.multiline();
+                    }
                     input.set_text(field.value.clone(), cx);
                     input
                 });
@@ -441,6 +457,22 @@ impl CatalogEditor {
         for field in &draft.fields {
             let input = cx.new(|cx| {
                 let mut input = TextInput::new(field.label, cx);
+                if matches!(
+                    field.key,
+                    "prompt"
+                        | "content"
+                        | "description"
+                        | "system_prompt"
+                        | "body"
+                        | "body_text"
+                        | "memo"
+                        | "instructions"
+                        | "sections_json"
+                        | "targets_json"
+                        | "steps"
+                ) {
+                    input = input.multiline();
+                }
                 input.set_text(field.value.clone(), cx);
                 input
             });
@@ -618,6 +650,16 @@ impl CatalogEditor {
     }
 
     fn act(&mut self, action: EditorAction, cx: &mut Context<Self>) {
+        if self
+            .inputs
+            .iter()
+            .chain(self.group_inputs.iter().flatten())
+            .any(|input| input.read(cx).buffer.marked.is_some())
+        {
+            self.message = "Finish composing text before saving or discarding.".into();
+            cx.notify();
+            return;
+        }
         if self.busy {
             return;
         }

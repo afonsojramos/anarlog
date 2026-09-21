@@ -1,8 +1,9 @@
-use std::sync::Arc;
+use std::{collections::VecDeque, path::Path, sync::Arc};
 
 use anlg_db_app::ListSessions;
 use anlg_db_execute::TransactionStatement;
 use serde_json::json;
+use sqlx::{Connection, SqliteConnection, sqlite::SqliteConnectOptions};
 use uuid::Uuid;
 
 use crate::{
@@ -10,6 +11,61 @@ use crate::{
     OpenSession, RenameSession, Reply, Result, RuntimeHandle, SaveDocument, ServiceError, Services,
     SessionId, SessionSummary, types::failure,
 };
+
+const PAGE_STRIDE: u32 = 256;
+const CACHE_ROWS: u32 = PAGE_STRIDE + 200;
+const CACHE_BYTES: usize = 8 * 1024 * 1024;
+
+pub(crate) struct Cache {
+    observer: SqliteConnection,
+    version: i64,
+    pages: VecDeque<(Arc<str>, LibraryPage)>,
+    bytes: usize,
+}
+
+impl Cache {
+    pub(crate) async fn new(path: &Path) -> Result<Self> {
+        let observer = SqliteConnection::connect_with(
+            &SqliteConnectOptions::new().filename(path).read_only(true),
+        )
+        .await
+        .map_err(failure)?;
+        Ok(Self {
+            observer,
+            version: -1,
+            pages: VecDeque::new(),
+            bytes: 0,
+        })
+    }
+
+    async fn version(&mut self) -> Result<i64> {
+        sqlx::query_scalar("PRAGMA data_version")
+            .fetch_one(&mut self.observer)
+            .await
+            .map_err(failure)
+    }
+
+    fn clear(&mut self, version: i64) {
+        self.pages.clear();
+        self.bytes = 0;
+        self.version = version;
+    }
+}
+
+fn page_slice(page: &LibraryPage, offset: u32, limit: u32) -> LibraryPage {
+    let start = (offset - page.offset) as usize;
+    let end = (start + limit as usize).min(page.items.len());
+    LibraryPage {
+        items: page
+            .items
+            .get(start..end)
+            .unwrap_or_default()
+            .to_vec()
+            .into(),
+        offset,
+        has_more: end < page.items.len() || page.has_more,
+    }
+}
 
 impl RuntimeHandle {
     pub fn library(
@@ -19,20 +75,34 @@ impl RuntimeHandle {
     ) -> Result<Reply<LibraryPage>> {
         self.read(cancel, move |services| async move {
             let limit = query.limit.clamp(1, 200);
+            let offset = query.offset / PAGE_STRIDE * PAGE_STRIDE;
+            let mut cache = services.library.lock().await;
+            let version = cache.version().await?;
+            if version != cache.version {
+                cache.clear(version);
+            }
+            if let Some(index) = cache.pages.iter().position(|(search, page)| {
+                search.as_ref() == query.search.as_ref() && page.offset == offset
+            }) {
+                let entry = cache.pages.remove(index).expect("cache index exists");
+                let result = page_slice(&entry.1, query.offset, limit);
+                cache.pages.push_front(entry);
+                return Ok(result);
+            }
             let mut rows = anlg_db_app::list_sessions(
                 services.db.pool(),
                 ListSessions {
                     query: Some(&query.search),
                     series_id: None,
-                    limit: limit + 1,
-                    offset: query.offset,
+                    limit: CACHE_ROWS + 1,
+                    offset,
                 },
             )
             .await
             .map_err(failure)?;
-            let has_more = rows.len() > limit as usize;
-            rows.truncate(limit as usize);
-            Ok(LibraryPage {
+            let has_more = rows.len() > CACHE_ROWS as usize;
+            rows.truncate(CACHE_ROWS as usize);
+            let page = LibraryPage {
                 items: rows
                     .into_iter()
                     .map(|row| SessionSummary {
@@ -42,9 +112,32 @@ impl RuntimeHandle {
                         created_at: row.created_at.into(),
                     })
                     .collect(),
-                offset: query.offset,
+                offset,
                 has_more,
-            })
+            };
+            let result = page_slice(&page, query.offset, limit);
+            if cache.version().await? == version {
+                let bytes = query.search.len()
+                    + page
+                        .items
+                        .iter()
+                        .map(|row| {
+                            row.id.0.len()
+                                + row.title.len()
+                                + row.updated_at.len()
+                                + row.created_at.len()
+                                + std::mem::size_of::<SessionSummary>()
+                        })
+                        .sum::<usize>();
+                if cache.pages.len() >= 8 || cache.bytes.saturating_add(bytes) > CACHE_BYTES {
+                    cache.clear(version);
+                }
+                if bytes <= CACHE_BYTES {
+                    cache.bytes += bytes;
+                    cache.pages.push_front((query.search, page));
+                }
+            }
+            Ok(result)
         })
     }
 

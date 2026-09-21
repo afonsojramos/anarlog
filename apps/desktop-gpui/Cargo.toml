@@ -5,33 +5,95 @@ edition = "2024"
 publish = false
 
 [dependencies]
+anlg-agent-access = { workspace = true }
+anlg-am = { workspace = true }
+anlg-api-client = { workspace = true }
 anlg-audio = { workspace = true }
 anlg-audio-actual = { workspace = true }
 anlg-audio-utils = { workspace = true }
+anlg-calendar = { workspace = true }
+anlg-calendar-interface = { workspace = true }
+anlg-db-app = { workspace = true }
 anlg-db-execute = { workspace = true }
+anlg-db-sync = { workspace = true }
+anlg-e2ee = { workspace = true }
+anlg-export-core = { workspace = true }
+anlg-fs-sync-core = { workspace = true }
+anlg-language = { workspace = true }
 anlg-listener-core = { workspace = true }
 anlg-listener2-core = { workspace = true }
+anlg-local-llm-core = { workspace = true }
+anlg-local-model = { workspace = true }
+anlg-local-stt-core = { workspace = true }
+anlg-meeting-import = { workspace = true }
+anlg-model-downloader = { workspace = true }
 anlg-notification-interface = { workspace = true }
 anlg-storage = { workspace = true }
+anlg-supabase-auth = { workspace = true, features = ["refresh"] }
 anlg-template-app = { workspace = true }
 anlg-tiptap = { workspace = true }
+anlg-transcribe-soniqo = { workspace = true }
+anlg-transcribe-speechanalyzer = { workspace = true }
 anlg-transcript = { workspace = true }
 anyhow = { workspace = true }
+arboard = { version = "=3.6.1", features = ["wayland-data-control"] }
+base64 = { workspace = true }
+chrono = { workspace = true }
+csv = "=1.4.0"
 desktop-runtime = { path = "../../crates/desktop-runtime" }
+flate2 = "=1.1.9"
 futures = "0.3"
 global-hotkey = "=0.8.0"
 gpui = "=0.2.2"
+html5ever = "=0.38.0"
+image = { workspace = true, features = ["png"] }
+keyring = { workspace = true }
+markup5ever_rcdom = "=0.38.0"
+mime_guess = "=2.0.5"
+open = "=5.3.3"
+owhisper-client = { workspace = true }
 ractor = { workspace = true }
+regex = { workspace = true }
+reqwest = { workspace = true, features = ["json", "stream", "form"] }
 rfd = { version = "=0.16.0", default-features = false, features = ["xdg-portal", "wayland", "async-std"] }
 rodio = { workspace = true }
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
+sha2 = { workspace = true }
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "sqlite-unbundled"] }
+tar = "=0.4.46"
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros", "process"] }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tray-icon = "=0.24.2"
 unicode-segmentation = "=1.13.2"
+url = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
+zeroize = "=1.8.2"
 
 [dev-dependencies]
 anlg-audio-mock = { workspace = true }
 tempfile = { workspace = true }
+tokio-tungstenite = { workspace = true }
+wiremock = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "=0.18.2"
+anlg-notification-linux = { path = "../../crates/notification-linux", package = "notification-linux" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = { workspace = true }
+objc2 = { workspace = true }
+objc2-av-foundation = { workspace = true }
+anlg-apple-calendar = { workspace = true }
+macos-accessibility-client = "=0.0.1"
+anlg-notification-macos = { path = "../../crates/notification-macos", package = "notification-macos" }
+swift-rs = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.build-dependencies]
+swift-rs = { workspace = true, features = ["build"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+anlg-notification-windows = { path = "../../crates/notification-windows", package = "notification-windows" }

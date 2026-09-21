@@ -111,7 +111,18 @@ async fn isolated_runtime_distribution() {
     let (runtime, ready) = RuntimeHandle::start(profile).unwrap();
     ready.receive().await.unwrap();
     let warm_start_ns = started.elapsed().as_nanos();
+    let plans = runtime.submit(|services| async move {
+        let original = services.executor.execute(
+            "EXPLAIN QUERY PLAN SELECT id,title,kind,status,created_at,updated_at,started_at,ended_at,series_id FROM sessions WHERE deleted_at IS NULL ORDER BY COALESCE(NULLIF(started_at,''),created_at) DESC,created_at DESC,id DESC LIMIT 101 OFFSET 0".into(), vec![],
+        ).await.map_err(|e| ServiceError::Failed(e.to_string().into()))?;
+        let optimized = services.executor.execute(
+            "EXPLAIN QUERY PLAN WITH page AS MATERIALIZED (SELECT id,COALESCE(NULLIF(started_at,''),created_at) AS sort_at,created_at FROM sessions WHERE deleted_at IS NULL ORDER BY sort_at DESC,created_at DESC,id DESC LIMIT 101 OFFSET 0) SELECT s.id,s.title,s.kind,s.status,s.created_at,s.updated_at,s.started_at,s.ended_at,s.series_id FROM page CROSS JOIN sessions s ON s.id=page.id ORDER BY page.sort_at DESC,page.created_at DESC,page.id DESC".into(), vec![],
+        ).await.map_err(|e| ServiceError::Failed(e.to_string().into()))?;
+        Ok(json!({"original": original, "optimized": optimized}))
+    }).unwrap().receive().await.unwrap();
     let mut library_ns = Vec::new();
+    let mut original_ns = Vec::new();
+    let mut uncached_ns = Vec::new();
     for index in 0..30 {
         let started = Instant::now();
         let result = runtime
@@ -129,6 +140,50 @@ async fn isolated_runtime_distribution() {
             .unwrap();
         assert!(!result.items.is_empty());
         library_ns.push(started.elapsed().as_nanos());
+        let started = Instant::now();
+        let original = runtime.read(CancellationToken::new(), move |services| async move {
+            sqlx::query_as::<_, anlg_db_app::SessionListItem>(
+                "SELECT id,title,kind,status,created_at,updated_at,started_at,ended_at,series_id FROM sessions WHERE deleted_at IS NULL ORDER BY COALESCE(NULLIF(started_at,''),created_at) DESC,created_at DESC,id DESC LIMIT 101 OFFSET ?",
+            ).bind((index * 31 % count) as i64).fetch_all(services.db.pool()).await
+                .map_err(|e| ServiceError::Failed(e.to_string().into()))
+        }).unwrap().receive().await.unwrap();
+        original_ns.push(started.elapsed().as_nanos());
+        let started = Instant::now();
+        let uncached = runtime
+            .read(CancellationToken::new(), move |services| async move {
+                anlg_db_app::list_sessions(
+                    services.db.pool(),
+                    anlg_db_app::ListSessions {
+                        query: None,
+                        series_id: None,
+                        limit: 101,
+                        offset: (index * 31 % count) as u32,
+                    },
+                )
+                .await
+                .map_err(|e| ServiceError::Failed(e.to_string().into()))
+            })
+            .unwrap()
+            .receive()
+            .await
+            .unwrap();
+        uncached_ns.push(started.elapsed().as_nanos());
+        assert_eq!(
+            uncached.iter().map(|row| &row.id).collect::<Vec<_>>(),
+            original.iter().map(|row| &row.id).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            result
+                .items
+                .iter()
+                .map(|item| item.id.0.as_ref())
+                .collect::<Vec<_>>(),
+            original
+                .iter()
+                .take(100)
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>()
+        );
     }
     let id = format!("fixture-{SEED}-00000000");
     let note = runtime
@@ -177,11 +232,12 @@ async fn isolated_runtime_distribution() {
                 "other_document_text_bytes": 256,
                 "logical_content_hash": fixture_hash, "hash_scope": "ordered session input parameters and exact document JSON",
                 "schema": schema, "timestamp": TIMESTAMP},
-            "config": {"queue_capacity": 64, "service_capacity": 16, "watch_cap": 32, "pool_size": desktop_runtime::DATABASE_POOL_SIZE, "tokio_workers": 2, "page_size":100},
+            "config": {"queue_capacity": 64, "service_capacity": 16, "service_concurrency":4, "watch_cap": 32, "pool_size": desktop_runtime::DATABASE_POOL_SIZE, "cache_observer_connections":1, "cache_pages":8, "cache_bytes":8388608, "tokio_workers": 2, "page_size":100},
             "fresh_start_ns":fresh_start_ns, "warm_start_ns":warm_start_ns,
             "library_ns":library_ns, "save_ns":save_ns, "enqueue_to_snapshot_ns":delivery_ns,
+            "original_library_ns":original_ns, "uncached_library_ns":uncached_ns, "query_plans":plans,
             "shutdown_ns":started.elapsed().as_nanos(), "runtime":runtime.metrics(),
-            "limitations":"Warm OS cache; no cache reset; no GUI/provider/audio; no old/new comparison; FNV is not cryptographic; document construction/serialization precedes enqueue timer"
+            "limitations":"Warm OS cache; no cache reset; no GUI/provider/audio; paired cached runtime, original SQL, uncached page SQL on identical data in that order; runtime samples mix cache misses and hits; FNV is not cryptographic; document construction/serialization precedes enqueue timer"
         })
     );
 }

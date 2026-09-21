@@ -42,6 +42,7 @@ pub enum MeetingIntent {
 
 #[derive(Clone, Debug)]
 pub enum MeetingEvent {
+    NoteEnhanced(SessionId),
     Recording { session_id: SessionId, active: bool },
     OpenSession(SessionId),
     Failed(ServiceError),

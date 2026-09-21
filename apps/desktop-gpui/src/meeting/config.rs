@@ -184,8 +184,9 @@ impl ProviderServices {
             api_key: String::new(),
             self_human_id: None,
         };
-        let local =
-            matches!(kind, ProviderKind::Stt) && is_local(&connection.provider, &connection.model);
+        let local = matches!(kind, ProviderKind::Stt)
+            && is_local(&connection.provider, &connection.model)
+            || matches!(kind, ProviderKind::Llm) && connection.provider == "local";
         if local {
             let file = if connection.provider == "local_file" || connection.model == "local-file" {
                 let path = preferences.text("local_stt_model_path");
@@ -204,6 +205,9 @@ impl ProviderServices {
             .await?;
             if connection.base_url.is_empty() {
                 return Err(failure("The local model did not return a ready endpoint."));
+            }
+            if matches!(kind, ProviderKind::Llm) {
+                connection.provider = "custom".into();
             }
             return Ok(connection);
         }

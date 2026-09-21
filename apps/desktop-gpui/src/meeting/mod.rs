@@ -81,6 +81,7 @@ pub struct MeetingPane {
     devices: Option<capture::Devices>,
     microphone: String,
     _subscription: Subscription,
+    _ai_subscription: Option<Subscription>,
     _poll: Task<()>,
 }
 
@@ -119,6 +120,13 @@ impl MeetingPane {
                 }
             }
         });
+        let ai_subscription = ai.as_ref().map(|ai| {
+            cx.subscribe(ai, |this, _, event, cx| {
+                let ai_view::AiEvent::SummarySaved(document) = event;
+                cx.emit(MeetingEvent::NoteEnhanced(document.session_id.clone()));
+                this.reload(cx);
+            })
+        });
         let mut pane = Self {
             context,
             intent: intent.clone(),
@@ -139,6 +147,7 @@ impl MeetingPane {
             devices: None,
             microphone: "Microphone for next recording".into(),
             _subscription: subscription,
+            _ai_subscription: ai_subscription,
             _poll: poll,
         };
         pane.reload(cx);

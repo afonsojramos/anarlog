@@ -82,6 +82,15 @@ impl LocalSettingsView {
         self.gate.next(self.scope.clone());
     }
 
+    pub fn change_scope(&mut self, scope: Scope, cx: &mut Context<Self>) {
+        self.gate.next(scope.clone());
+        self.scope = scope;
+        self.panel = None;
+        self.fields.clear();
+        self.confirmation = None;
+        self.reload(cx);
+    }
+
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         if self.gate.busy() {
             return;

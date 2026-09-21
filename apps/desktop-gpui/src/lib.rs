@@ -1,7 +1,10 @@
 pub mod application;
+mod application_services;
 pub mod contracts;
 pub mod editor;
 pub mod meeting;
+pub mod native_events;
+mod note_window;
 pub mod platform;
 pub mod product;
 pub mod runtime_bridge;

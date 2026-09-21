@@ -39,7 +39,7 @@ pub struct ModelService {
     downloader: ModelDownloadManager<LocalModel>,
     runtime: Arc<DownloadRuntime>,
     resources: EngineResources,
-    running: tokio::sync::Mutex<Option<RunningModel>>,
+    running: tokio::sync::Mutex<[Option<RunningModel>; 2]>,
 }
 
 struct RunningModel {
@@ -81,7 +81,7 @@ impl ModelService {
             downloader: ModelDownloadManager::new(runtime.clone()),
             runtime,
             resources,
-            running: tokio::sync::Mutex::new(None),
+            running: tokio::sync::Mutex::new([None, None]),
         }
     }
 
@@ -147,6 +147,7 @@ impl ModelService {
                 .map_err(failure)?,
         };
         let mut running = self.running.lock().await;
+        let running = &mut running[model_slot(&model)];
         if let Some(current) = running.as_mut()
             && let Some(child) = current.child.as_mut()
             && child.try_wait().map_err(failure)?.is_some()
@@ -217,10 +218,7 @@ impl ModelService {
     }
 
     pub async fn delete(&self, model: LocalModel) -> Result<()> {
-        if self
-            .running
-            .lock()
-            .await
+        if self.running.lock().await[model_slot(&model)]
             .as_ref()
             .is_some_and(|r| r.model == model)
         {
@@ -244,6 +242,7 @@ impl ModelService {
             return Err(failure("Download the model before starting it"));
         }
         let mut running = self.running.lock().await;
+        let running = &mut running[model_slot(&model)];
         if let Some(current) = running.as_ref() {
             if current.model == model {
                 return Ok(current.url.clone());
@@ -363,6 +362,11 @@ impl ModelService {
             }
         };
         if cancel.is_cancelled() {
+            if let Some(native) = native {
+                tokio::task::spawn_blocking(move || native.stop())
+                    .await
+                    .map_err(failure)??;
+            }
             return Err(ServiceError::Cancelled);
         }
         *running = Some(RunningModel {
@@ -376,29 +380,49 @@ impl ModelService {
 
     pub async fn stop(&self) -> Result<()> {
         let mut running = self.running.lock().await;
-        if let Some(current) = running.as_mut()
-            && let Some(child) = current.child.as_mut()
-            && child.try_wait().map_err(failure)?.is_none()
-        {
-            child.kill().await.map_err(failure)?;
-            child.wait().await.map_err(failure)?;
+        let mut errors = Vec::new();
+        for current in running.iter_mut() {
+            if let Err(error) = stop_running(current).await {
+                errors.push(error.to_string());
+            }
         }
-        if let Some(native) = running.as_mut().and_then(|current| current.native.take()) {
-            tokio::task::spawn_blocking(move || native.stop())
-                .await
-                .map_err(failure)??;
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(failure(errors.join("; ")))
         }
-        *running = None;
-        Ok(())
+    }
+
+    pub async fn stop_kind(&self, model: &LocalModel) -> Result<()> {
+        stop_running(&mut self.running.lock().await[model_slot(model)]).await
     }
 
     pub async fn take_native_session(&self) -> Option<NativeEngine> {
-        self.running
-            .lock()
-            .await
+        self.running.lock().await[0]
             .as_mut()
             .and_then(|running| running.native.take())
     }
+}
+
+fn model_slot(model: &LocalModel) -> usize {
+    usize::from(matches!(model, LocalModel::GgufLlm(_)))
+}
+
+async fn stop_running(running: &mut Option<RunningModel>) -> Result<()> {
+    if let Some(current) = running.as_mut()
+        && let Some(child) = current.child.as_mut()
+        && child.try_wait().map_err(failure)?.is_none()
+    {
+        child.kill().await.map_err(failure)?;
+        child.wait().await.map_err(failure)?;
+    }
+    if let Some(native) = running.as_mut().and_then(|current| current.native.take()) {
+        tokio::task::spawn_blocking(move || native.stop())
+            .await
+            .map_err(failure)??;
+    }
+    *running = None;
+    Ok(())
 }
 
 fn download_status(

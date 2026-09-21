@@ -5479,34 +5479,86 @@ dependencies = [
 name = "desktop-gpui"
 version = "0.1.0"
 dependencies = [
+ "agent-access",
+ "am",
  "anyhow",
+ "api-client",
+ "apple-calendar",
+ "arboard",
  "audio",
  "audio-actual",
  "audio-mock",
  "audio-utils",
+ "base64 0.22.1",
+ "block2",
+ "calendar",
+ "calendar-interface",
+ "chrono",
+ "csv",
+ "db-app",
  "db-execute",
+ "db-sync",
  "desktop-runtime",
+ "e2ee",
+ "export-core",
+ "flate2",
+ "fs-sync-core",
  "futures",
  "global-hotkey",
  "gpui",
+ "gtk",
+ "html5ever 0.38.0",
+ "image",
+ "keyring",
+ "language",
  "listener-core",
  "listener2-core",
+ "local-llm-core",
+ "local-model",
+ "local-stt-core",
+ "macos-accessibility-client",
+ "markup5ever_rcdom",
+ "meeting-import",
+ "mime_guess",
+ "model-downloader",
  "notification-interface",
+ "notification-linux",
+ "notification-macos",
+ "notification-windows",
+ "objc2",
+ "objc2-av-foundation",
+ "open",
+ "owhisper-client",
  "ractor",
+ "regex",
+ "reqwest 0.13.2",
  "rfd",
  "rodio",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
  "storage",
+ "supabase-auth",
+ "swift-rs 1.0.7 (git+https://github.com/Brendonovich/swift-rs?rev=41a1605)",
+ "tar",
  "tempfile",
  "template-app",
  "tiptap",
  "tokio",
+ "tokio-tungstenite 0.29.0",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "transcribe-soniqo",
+ "transcribe-speechanalyzer",
  "transcript",
+ "tray-icon",
  "unicode-segmentation",
+ "url",
  "uuid",
+ "wiremock",
+ "zeroize",
 ]
 
 [[package]]
@@ -5521,6 +5573,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_qs",
+ "sqlx",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -10760,6 +10813,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "libxdo"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00333b8756a3d28e78def82067a377de7fa61b24909000aeaa2b446a948d14db"
+dependencies = [
+ "libxdo-sys",
+]
+
+[[package]]
+name = "libxdo-sys"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db23b9e7e2b7831bbd8aac0bbeeeb7b68cbebc162b227e7052e8e55829a09212"
+dependencies = [
+ "libc",
+ "x11",
+]
+
+[[package]]
 name = "linear"
 version = "0.1.0"
 dependencies = [
@@ -11710,6 +11782,7 @@ dependencies = [
  "dpi",
  "gtk",
  "keyboard-types",
+ "libxdo",
  "objc2",
  "objc2-app-kit",
  "objc2-core-foundation",

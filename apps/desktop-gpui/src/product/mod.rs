@@ -1,9 +1,13 @@
+pub mod cloud;
+pub mod local;
 mod navigation;
 mod onboarding;
 mod preferences_view;
+mod providers;
 mod service_view;
 pub mod services;
 pub mod settings;
+mod surface_view;
 
 use std::sync::Arc;
 
@@ -21,8 +25,8 @@ use crate::{
 
 use onboarding::{Onboarding, Step};
 use preferences_view::PreferencesView;
-use service_view::ServiceView;
 use services::{ProductServices, Scope, Surface, UnavailableServices};
+use surface_view::SurfaceView;
 
 #[derive(Clone, Debug)]
 pub struct OpenWorkspaceSection(pub &'static str);
@@ -31,10 +35,12 @@ pub struct ProductPane {
     pub context: LaneContext,
     pub route: ProductRoute,
     services: Arc<dyn ProductServices>,
+    cloud: Option<cloud::CloudServices>,
     scope: Scope,
     search: Entity<TextInput>,
     preferences: Option<Entity<PreferencesView>>,
-    service: Option<Entity<ServiceView>>,
+    providers: Option<Entity<providers::ProviderView>>,
+    service: Option<Entity<SurfaceView>>,
     active: navigation::Page,
     onboarding: Option<Onboarding>,
     notice: String,
@@ -55,6 +61,7 @@ impl ProductPane {
             context,
             route,
             Arc::new(UnavailableServices),
+            None,
             Scope::default(),
             window,
             cx,
@@ -65,6 +72,7 @@ impl ProductPane {
         context: LaneContext,
         route: ProductRoute,
         services: Arc<dyn ProductServices>,
+        cloud: Option<cloud::CloudServices>,
         scope: Scope,
         _: &mut Window,
         cx: &mut Context<Self>,
@@ -75,13 +83,19 @@ impl ProductPane {
                 cx.notify();
             }
         });
+        let providers = cx
+            .try_global::<crate::meeting::config::ProviderServices>()
+            .cloned()
+            .map(|services| cx.new(|cx| providers::ProviderView::new(services, cx)));
         let mut this = Self {
             context,
             route: route.clone(),
             services,
+            cloud,
             scope,
             search,
             preferences: None,
+            providers,
             service: None,
             active: navigation::page("app"),
             onboarding: None,
@@ -111,13 +125,17 @@ impl ProductPane {
 
     pub fn can_close(&mut self, cx: &mut Context<Self>) -> bool {
         if self
-            .preferences
+            .providers
             .as_ref()
             .is_some_and(|view| view.read(cx).has_unsaved(cx))
             || self
+                .preferences
+                .as_ref()
+                .is_some_and(|view| view.read(cx).has_unsaved(cx))
+            || self
                 .service
                 .as_ref()
-                .is_some_and(|view| view.read(cx).has_unsaved())
+                .is_some_and(|view| view.read(cx).has_unsaved(cx))
         {
             self.notice =
                 "Save or restore your edits and wait for pending work before leaving.".into();
@@ -163,7 +181,7 @@ impl ProductPane {
 
     fn show_surface(&mut self, surface: Option<Surface>, cx: &mut Context<Self>) {
         if let Some(previous) = self.service.take() {
-            previous.update(cx, |view, _| view.suspend());
+            previous.update(cx, |view, cx| view.suspend(cx));
         }
         self.service_subscription = None;
         self.scope_subscription = None;
@@ -171,8 +189,15 @@ impl ProductPane {
             if let Some(preferences) = &self.preferences {
                 preferences.update(cx, |view, _| view.suspend());
             }
-            let view = cx
-                .new(|cx| ServiceView::new(self.services.clone(), surface, self.scope.clone(), cx));
+            let view = cx.new(|cx| {
+                SurfaceView::new(
+                    self.services.clone(),
+                    self.cloud.clone(),
+                    surface,
+                    self.scope.clone(),
+                    cx,
+                )
+            });
             self.service_subscription =
                 Some(cx.subscribe(&view, |_, _, event: &ProductEvent, cx| {
                     cx.emit(event.clone())
@@ -205,7 +230,7 @@ impl ProductPane {
         if self
             .service
             .as_ref()
-            .is_some_and(|view| view.read(cx).has_unsaved())
+            .is_some_and(|view| view.read(cx).has_unsaved(cx))
         {
             self.notice =
                 "Finish the current operation or restore form edits before changing pages.".into();
@@ -220,12 +245,9 @@ impl ProductPane {
             "imports" => Some(Surface::Imports),
             "permissions" => Some(Surface::Permissions),
             "developers" => Some(Surface::Developers),
-            "folders" | "calendar" | "contacts" | "templates" | "automations" | "insights" => {
+            "calendar" => Some(Surface::Calendar),
+            "folders" | "contacts" | "templates" | "automations" | "insights" => {
                 cx.emit(OpenWorkspaceSection(page.id));
-                self.notice = format!(
-                    "{} is handled by the workspace. The host must connect OpenWorkspaceSection.",
-                    page.label
-                );
                 cx.notify();
                 return;
             }
@@ -242,7 +264,7 @@ impl ProductPane {
         if self
             .service
             .as_ref()
-            .is_some_and(|view| view.read(cx).has_unsaved())
+            .is_some_and(|view| view.read(cx).has_unsaved(cx))
         {
             self.notice = "Wait for the current operation and save or restore form edits.".into();
             cx.notify();
@@ -251,7 +273,7 @@ impl ProductPane {
         let ready = self
             .service
             .as_ref()
-            .is_some_and(|view| view.read(cx).permissions_ready());
+            .is_some_and(|view| view.read(cx).permissions_ready(cx));
         if if back {
             flow.back()
         } else {
@@ -381,7 +403,10 @@ impl Render for ProductPane {
                     && !onboarding
                     && self.service.is_none(),
                 |view| {
-                    view.child(
+                    view.when_some(self.providers.clone(), |view, providers| {
+                        view.child(providers)
+                    })
+                    .child(
                         div()
                             .id("local-models")
                             .cursor_pointer()

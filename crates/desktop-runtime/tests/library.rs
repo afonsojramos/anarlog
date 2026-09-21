@@ -8,12 +8,88 @@ use desktop_runtime::{
     RuntimeHandle, SaveDocument, ServiceError,
 };
 use serde_json::json;
+use sqlx::{Connection, sqlite::SqliteConnectOptions};
 use tokio::sync::oneshot;
 
 async fn start(profile: &Profile) -> RuntimeHandle {
     let (runtime, ready) = RuntimeHandle::start(profile.clone()).unwrap();
     ready.receive().await.unwrap();
     runtime
+}
+
+#[tokio::test]
+async fn library_cache_observes_other_connections_and_rollbacks() {
+    let directory = tempfile::tempdir().unwrap();
+    let profile = Profile {
+        database: directory.path().join("cache.sqlite"),
+    };
+    let runtime = start(&profile).await;
+    let note = runtime
+        .create_note("Before".into())
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    let read = || {
+        runtime
+            .library(LibraryQuery::default(), CancellationToken::new())
+            .unwrap()
+    };
+    assert_eq!(
+        read().receive().await.unwrap().items[0].title.as_ref(),
+        "Before"
+    );
+    let mut other = sqlx::SqliteConnection::connect_with(
+        &SqliteConnectOptions::new().filename(&profile.database),
+    )
+    .await
+    .unwrap();
+    sqlx::query("BEGIN").execute(&mut other).await.unwrap();
+    sqlx::query("UPDATE sessions SET title='Uncommitted' WHERE id=?")
+        .bind(note.summary.id.0.as_ref())
+        .execute(&mut other)
+        .await
+        .unwrap();
+    assert_eq!(
+        read().receive().await.unwrap().items[0].title.as_ref(),
+        "Before"
+    );
+    sqlx::query("ROLLBACK").execute(&mut other).await.unwrap();
+    assert_eq!(
+        read().receive().await.unwrap().items[0].title.as_ref(),
+        "Before"
+    );
+    sqlx::query("UPDATE sessions SET title='External 日本語' WHERE id=?")
+        .bind(note.summary.id.0.as_ref())
+        .execute(&mut other)
+        .await
+        .unwrap();
+    assert_eq!(
+        read().receive().await.unwrap().items[0].title.as_ref(),
+        "External 日本語"
+    );
+    runtime
+        .create_note("Second".into())
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    assert_eq!(read().receive().await.unwrap().items.len(), 2);
+    let page = runtime
+        .library(
+            LibraryQuery {
+                offset: 200,
+                ..LibraryQuery::default()
+            },
+            CancellationToken::new(),
+        )
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    assert!(page.items.is_empty() && !page.has_more);
+    other.close().await.unwrap();
+    runtime.shutdown().await.unwrap();
 }
 
 #[tokio::test]

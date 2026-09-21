@@ -45,6 +45,56 @@ pub struct CalendarService {
 }
 
 impl CalendarService {
+    pub async fn reconcile(
+        &self,
+        runtime: &RuntimeHandle,
+        callback: desktop_runtime::deeplink::IntegrationCallback,
+        cancel: CancellationToken,
+    ) -> Result<()> {
+        if callback.status != "success" {
+            return Err(failure("Calendar connection was not completed"));
+        }
+        let (provider, name) = match callback.integration_id.as_str() {
+            "google-calendar" => (CalendarProviderType::Google, "google"),
+            "outlook" => (CalendarProviderType::Outlook, "outlook"),
+            _ => return Ok(()),
+        };
+        if let Some(connection) = callback.disconnected_connection_id {
+            runtime.submit(move |services| async move {
+                services.executor.execute_transaction(vec![
+                    DbStatement { sql: "UPDATE events SET deleted_at=strftime('%Y-%m-%dT%H:%M:%SZ','now'),updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE calendar_id IN (SELECT id FROM calendars WHERE provider=? AND connection_id=?) AND deleted_at IS NULL".into(), params:vec![json!(name),json!(connection)], expected_rows_affected:None },
+                    DbStatement { sql: "UPDATE calendars SET enabled=0,deleted_at=strftime('%Y-%m-%dT%H:%M:%SZ','now'),updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE provider=? AND connection_id=?".into(), params:vec![json!(name),json!(connection)], expected_rows_affected:None },
+                ]).await.map_err(failure)?;
+                Ok(())
+            })?.receive().await?;
+        } else {
+            for connection in self
+                .connections(cancel.clone())
+                .await?
+                .into_iter()
+                .filter(|entry| entry.provider == provider)
+                .flat_map(|entry| entry.connection_ids)
+            {
+                for calendar in self
+                    .discover(runtime, provider, connection, cancel.clone())
+                    .await?
+                {
+                    if calendar["enabled"].as_bool() == Some(true) {
+                        self.refresh(
+                            runtime,
+                            calendar["id"]
+                                .as_str()
+                                .ok_or(ServiceError::Conflict)?
+                                .into(),
+                            cancel.clone(),
+                        )
+                        .await?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
     pub fn new(api_base: Arc<str>, auth: Arc<dyn CalendarAuth>) -> Self {
         Self {
             api_base,

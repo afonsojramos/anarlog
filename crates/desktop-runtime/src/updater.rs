@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use updater_core::{UpdateChecker, UpdateConfig};
+use updater_core::UpdateChecker;
+pub use updater_core::UpdateConfig;
 
 use crate::{CancellationToken, Reply, Result, RuntimeHandle, ServiceError, types::failure};
 

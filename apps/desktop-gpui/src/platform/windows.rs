@@ -1,3 +1,13 @@
+static RESTART: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn request_restart() {
+    RESTART.store(true, std::sync::atomic::Ordering::Release);
+}
+
+pub fn restart_requested() -> bool {
+    RESTART.load(std::sync::atomic::Ordering::Acquire)
+}
+
 use desktop_runtime::{Result, ServiceError, SessionId};
 use gpui::{
     App, Bounds, Pixels, TitlebarOptions, Window, WindowBounds, WindowDecorations, WindowKind,

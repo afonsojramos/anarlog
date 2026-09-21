@@ -7,11 +7,6 @@ use crate::{
 
 pub const MAX_SESSION_LIST_LIMIT: u32 = 500;
 
-const SESSION_LIST_COLUMNS: &str = "
-    SELECT id, title, kind, status, created_at, updated_at, started_at, ended_at, series_id
-    FROM sessions
-";
-
 const SESSION_COLUMNS: &str = "
     SELECT id, workspace_id, owner_user_id, title, kind, status, created_at, updated_at,
            started_at, ended_at, timezone, language, event_id, external_event_id,
@@ -71,7 +66,11 @@ pub async fn list_sessions(
     pool: &SqlitePool,
     input: ListSessions<'_>,
 ) -> Result<Vec<SessionListItem>, sqlx::Error> {
-    let mut query = QueryBuilder::<Sqlite>::new(SESSION_LIST_COLUMNS);
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "WITH page AS MATERIALIZED (
+            SELECT id, COALESCE(NULLIF(started_at, ''), created_at) AS sort_at, created_at
+            FROM sessions",
+    );
     query.push(" WHERE deleted_at IS NULL");
 
     if let Some(search) = input.query.map(str::trim).filter(|query| !query.is_empty()) {
@@ -94,6 +93,12 @@ pub async fn list_sessions(
     query.push_bind(i64::from(input.limit.min(MAX_SESSION_LIST_LIMIT)));
     query.push(" OFFSET ");
     query.push_bind(i64::from(input.offset));
+    query.push(
+        ") SELECT s.id, s.title, s.kind, s.status, s.created_at, s.updated_at,
+                  s.started_at, s.ended_at, s.series_id
+           FROM page CROSS JOIN sessions AS s ON s.id = page.id
+           ORDER BY page.sort_at DESC, page.created_at DESC, page.id DESC",
+    );
 
     query
         .build_query_as::<SessionListItem>()
@@ -439,6 +444,60 @@ mod tests {
         assert_eq!(first[0].id, "alpha-new");
         assert_eq!(second[0].id, "alpha-old");
         assert_eq!(by_id[0].id, "alpha-old");
+    }
+
+    #[tokio::test]
+    async fn paged_projection_matches_full_query_for_ties_and_search() {
+        let db = test_db().await;
+        for index in 0..81 {
+            let id = format!("note-{index:03}");
+            insert_session(
+                db.pool(),
+                &id,
+                if index % 2 == 0 {
+                    "日本語 Alpha"
+                } else {
+                    "Beta"
+                },
+                "2026-01-01",
+                "",
+            )
+            .await;
+            sqlx::query("UPDATE sessions SET started_at=?, deleted_at=? WHERE id=?")
+                .bind(if index % 3 == 0 {
+                    "2025-12-01"
+                } else if index % 3 == 1 {
+                    ""
+                } else {
+                    "2026-02-01"
+                })
+                .bind((index % 7 == 0).then_some("2026-03-01"))
+                .bind(&id)
+                .execute(db.pool())
+                .await
+                .unwrap();
+        }
+        for term in ["", "日本語", "ALPHA", "note-07", "%"] {
+            for offset in [0, 1, 13, 69, 100] {
+                let reference = sqlx::query_as::<_, SessionListItem>(
+                    "SELECT id,title,kind,status,created_at,updated_at,started_at,ended_at,series_id FROM sessions
+                     WHERE deleted_at IS NULL AND (instr(lower(title),lower(?))>0 OR instr(lower(id),lower(?))>0)
+                     ORDER BY COALESCE(NULLIF(started_at,''),created_at) DESC,created_at DESC,id DESC LIMIT 11 OFFSET ?",
+                ).bind(term).bind(term).bind(offset).fetch_all(db.pool()).await.unwrap();
+                let actual = list_sessions(
+                    db.pool(),
+                    ListSessions {
+                        query: Some(term),
+                        series_id: None,
+                        limit: 11,
+                        offset: offset as u32,
+                    },
+                )
+                .await
+                .unwrap();
+                assert_eq!(actual, reference, "term={term}, offset={offset}");
+            }
+        }
     }
 
     #[tokio::test]

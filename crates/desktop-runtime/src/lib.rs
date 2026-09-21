@@ -59,6 +59,7 @@ pub struct Services {
     watch_slots: Arc<Semaphore>,
     watches: Arc<watch::WatchRegistry>,
     metrics: Arc<metrics::Metrics>,
+    library: Arc<tokio::sync::Mutex<library::Cache>>,
 }
 
 type Work = Box<dyn FnOnce(Services) -> BoxFuture<'static, ()> + Send>;
@@ -130,6 +131,9 @@ impl RuntimeHandle {
                                 executor: DbExecutor::new(db.clone()),
                                 watches: Arc::new(watch::WatchRegistry::new(db.clone())),
                                 metrics: worker_metrics,
+                                library: Arc::new(tokio::sync::Mutex::new(
+                                    library::Cache::new(&profile.database).await?,
+                                )),
                                 db,
                                 watch_slots: Arc::new(Semaphore::new(MAX_WATCHES)),
                                 shutdown_requested,

@@ -25,6 +25,89 @@ use crate::product::services::{Action, Mutation, ProductServices, RequestGate, S
 const ACCOUNT: &str = "180dc97e-633a-4766-9184-799f89db530b";
 const SHARE: &str = "73d1e15a-9117-4260-8c78-5081a0c5012e";
 
+#[tokio::test]
+async fn shared_note_host_uses_account_rpc_and_anonymous_handoff_contracts() {
+    let server = MockServer::start().await;
+    let directory = tempfile::tempdir().unwrap();
+    let (runtime, ready) = RuntimeHandle::start(Profile {
+        database: directory.path().join("shared.sqlite"),
+    })
+    .unwrap();
+    ready.receive().await.unwrap();
+    let cloud = fixture_cloud(&runtime, &server, Arc::new(MemoryStore::default())).await;
+    let body = json!({"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"日本語 🧑🏽‍💻"}]}]});
+    Mock::given(method("POST"))
+        .and(path("/rest/v1/rpc/read_my_session_share_snapshot_v2"))
+        .and(body_json(json!({"p_share_id":SHARE})))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!([{"share_id":SHARE,"title":"Shared","body_json":body}])),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    cloud
+        .read_shared(
+            SHARE.into(),
+            false,
+            desktop_runtime::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    Mock::given(method("POST"))
+        .and(path("/shared-notes/handoffs/claim"))
+        .and(body_partial_json(json!({"request_id":SHARE})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(snapshot(1, body)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    cloud
+        .read_shared(
+            SHARE.into(),
+            true,
+            desktop_runtime::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let cancelled = desktop_runtime::CancellationToken::new();
+    cancelled.cancel();
+    assert!(matches!(
+        cloud.read_shared(SHARE.into(), true, cancelled).await,
+        Err(ServiceError::Cancelled)
+    ));
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn calendar_disconnect_requires_confirmed_authenticated_api_response() {
+    let server = MockServer::start().await;
+    let directory = tempfile::tempdir().unwrap();
+    let (runtime, ready) = RuntimeHandle::start(Profile {
+        database: directory.path().join("calendar.sqlite"),
+    })
+    .unwrap();
+    ready.receive().await.unwrap();
+    let cloud = fixture_cloud(&runtime, &server, Arc::new(MemoryStore::default())).await;
+    Mock::given(method("DELETE"))
+        .and(path("/nango/connections"))
+        .and(body_json(
+            json!({"integration_id":"google-calendar","connection_id":"fixture"}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status":"ok"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    crate::product::local::calendar::CalendarAuth::disconnect(
+        &cloud,
+        anlg_calendar::CalendarProviderType::Google,
+        "fixture".into(),
+        desktop_runtime::CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    runtime.shutdown().await.unwrap();
+}
+
 #[derive(Default)]
 struct FixtureHost;
 

@@ -537,18 +537,28 @@ impl LocalServices {
                     Action::CancelDownload => self.models.cancel(model).await?,
                     Action::DeleteModel => self.models.delete(model).await?,
                     Action::StartModel => {
-                        self.host.stop_model().await?;
-                        self.models.stop().await?;
+                        if !matches!(model, anlg_local_model::LocalModel::GgufLlm(_)) {
+                            self.host.stop_model().await?;
+                        }
+                        self.models.stop_kind(&model).await?;
                         let endpoint = self.models.start(model.clone(), request.cancel).await?;
-                        let native = self.models.take_native_session().await;
-                        if let Err(error) = self.host.use_model(model, endpoint, native).await {
-                            self.models.stop().await?;
+                        let native = if matches!(model, anlg_local_model::LocalModel::GgufLlm(_)) {
+                            None
+                        } else {
+                            self.models.take_native_session().await
+                        };
+                        if let Err(error) =
+                            self.host.use_model(model.clone(), endpoint, native).await
+                        {
+                            self.models.stop_kind(&model).await?;
                             return Err(error);
                         }
                     }
                     Action::StopModel => {
-                        self.host.stop_model().await?;
-                        self.models.stop().await?;
+                        if !matches!(model, anlg_local_model::LocalModel::GgufLlm(_)) {
+                            self.host.stop_model().await?;
+                        }
+                        self.models.stop_kind(&model).await?;
                     }
                     _ => return Err(ServiceError::Conflict),
                 }

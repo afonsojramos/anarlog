@@ -1,6 +1,10 @@
 use std::{collections::BTreeMap, env, fs, path::PathBuf};
 
 fn main() {
+    #[cfg(target_os = "macos")]
+    swift_rs::SwiftLinker::new("14.2")
+        .with_package("local-llm", "../../plugins/local-llm/swift-lib")
+        .link();
     let source = "../../packages/design-system/src/tokens.css";
     println!("cargo:rerun-if-changed={source}");
     let css = fs::read_to_string(source).expect("design system tokens");

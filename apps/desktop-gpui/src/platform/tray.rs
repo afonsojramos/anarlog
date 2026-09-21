@@ -12,7 +12,7 @@ pub enum TrayAction {
     Quit,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrayState {
     pub recording: bool,
     pub update_ready: bool,

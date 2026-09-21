@@ -1,8 +1,12 @@
 use std::path::PathBuf;
 
-use desktop_gpui::{application::ApplicationView, ui::assets::Assets};
+use desktop_gpui::{application::ApplicationView, workspace::assets::Assets};
+use desktop_gpui::{
+    native_events::NativeEvents,
+    platform::{tray::TrayAdapter, windows::WindowIdentity},
+};
 use desktop_runtime::Profile;
-use gpui::{AppContext, Application, Bounds, WindowBounds, WindowOptions, px, size};
+use gpui::{AppContext, Application};
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -31,26 +35,35 @@ fn main() -> anyhow::Result<()> {
         .join(".anarlog-gpui-sandbox"),
     };
     anyhow::ensure!(args.next().is_none(), "Unexpected extra arguments");
+    let pointer = profile.with_extension("storage.json");
+    let profile = if pointer.exists() {
+        let path: PathBuf = serde_json::from_slice(&std::fs::read(&pointer)?)?;
+        anyhow::ensure!(
+            path.is_absolute() && path.is_dir(),
+            "Stored native profile location is not available"
+        );
+        path
+    } else {
+        profile
+    };
     let (runtime, ready) = desktop_gpui::runtime_bridge::start(Profile {
         database: profile.join("library.sqlite"),
     })?;
-    Application::new().with_assets(Assets).run(move |cx| {
+    let application = Application::new().with_assets(Assets);
+    let events = NativeEvents::install(&application);
+    application.run(move |cx| {
+        let (mut handles, errors) = events.attach(cx);
+        for error in errors {
+            tracing::warn!("{error}");
+        }
         let result = cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                    None,
-                    size(px(1100.), px(760.)),
-                    cx,
-                ))),
-                titlebar: Some(gpui::TitlebarOptions {
-                    title: Some("Anarlog — Native local library".into()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
+            WindowIdentity::Main
+                .options(None, cx)
+                .expect("valid default window"),
             move |window, cx| {
-                let root =
-                    cx.new(|cx| ApplicationView::new(runtime.clone(), ready, profile, window, cx));
+                let root = cx.new(|cx| {
+                    ApplicationView::new(runtime.clone(), ready, profile, pointer, window, cx)
+                });
                 let root_weak = root.downgrade();
                 window.on_window_should_close(cx, move |_, cx| {
                     let _ = root_weak.update(cx, |root, cx| root.request_quit(cx));
@@ -59,11 +72,48 @@ fn main() -> anyhow::Result<()> {
                 root
             },
         );
-        if let Err(error) = result {
-            tracing::error!(%error, "native window could not open");
-            cx.quit();
+        match result {
+            Ok(main) => {
+                cx.spawn(async move |cx| {
+                    let mut previous = None;
+                    loop {
+                        gpui::Timer::after(std::time::Duration::from_millis(100)).await;
+                        let done = cx
+                            .update(|cx| {
+                                let Ok(state) = main.update(cx, |view, _, cx| {
+                                    view.native_tick(cx);
+                                    view.tray_state()
+                                }) else {
+                                    return true;
+                                };
+                                if previous.as_ref() != Some(&state)
+                                    && let Some(tray) = &mut handles.tray
+                                {
+                                    let _ = tray.update(&state);
+                                }
+                                previous = Some(state.clone());
+                                events.poll(&handles, &state, main, cx);
+                                false
+                            })
+                            .unwrap_or(true);
+                        if done {
+                            break;
+                        }
+                    }
+                })
+                .detach();
+            }
+            Err(error) => {
+                tracing::error!(%error, "native window could not open");
+                cx.quit();
+            }
         }
         cx.activate(true);
     });
+    if desktop_gpui::platform::windows::restart_requested() {
+        std::process::Command::new(std::env::current_exe()?)
+            .args(std::env::args_os().skip(1))
+            .spawn()?;
+    }
     Ok(())
 }

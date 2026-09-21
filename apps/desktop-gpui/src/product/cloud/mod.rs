@@ -2,8 +2,10 @@
 
 pub mod auth;
 pub mod host;
+mod integration;
 mod management;
 mod panels;
+pub mod shared_view;
 pub use management::ManagementCommand;
 mod review;
 mod sharing;

@@ -393,6 +393,10 @@ impl WorkspaceView {
             .unwrap_or(Route::Empty)
     }
 
+    pub fn open_native_route(&mut self, route: Route, cx: &mut Context<Self>) {
+        self.navigate(Navigate::Open(route, false), cx);
+    }
+
     pub fn set_editor_content(
         &mut self,
         session_id: &SessionId,
@@ -915,7 +919,7 @@ impl WorkspaceView {
         .detach();
     }
 
-    pub(super) fn create(&mut self, listen: bool, cx: &mut Context<Self>) {
+    pub fn create(&mut self, listen: bool, cx: &mut Context<Self>) {
         if !self.ready || !self.can_navigate(cx) {
             return;
         }
