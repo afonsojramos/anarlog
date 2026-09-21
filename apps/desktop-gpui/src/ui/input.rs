@@ -18,6 +18,13 @@ pub enum InputEvent {
     Rejected,
 }
 
+fn horizontal_scroll(scroll: Pixels, cursor: Pixels, text_width: Pixels, width: Pixels) -> Pixels {
+    scroll
+        .min(cursor)
+        .max(cursor - width)
+        .clamp(px(0.), (text_width - width).max(px(0.)))
+}
+
 pub struct TextInput {
     pub buffer: TextBuffer,
     focus: FocusHandle,
@@ -73,6 +80,9 @@ impl TextInput {
             text,
             marked: None,
         };
+        self.scroll = px(0.);
+        self.layout = None;
+        self.lines.clear();
         cx.notify();
     }
 
@@ -450,11 +460,11 @@ impl Render for TextInput {
                             let selected = this.buffer.selection();
                             let cursor_x = line.x_for_index(this.buffer.cursor);
                             let available = (bounds.size.width - px(2.)).max(px(1.));
-                            this.scroll = this
-                                .scroll
-                                .min(cursor_x)
-                                .max(cursor_x - available)
-                                .max(px(0.));
+                            this.scroll = if this.focus.is_focused(window) {
+                                horizontal_scroll(this.scroll, cursor_x, line.width, available)
+                            } else {
+                                px(0.)
+                            };
                             let origin = point(bounds.left() - this.scroll, bounds.top());
                             if this.focus.is_focused(window) {
                                 let left = line.x_for_index(selected.start);
@@ -617,6 +627,43 @@ impl TextInput {
             &self.focus,
             ElementInputHandler::new(bounds, cx.entity()),
             cx,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn horizontal_scroll_resets_after_text_shrinks_or_input_widens() {
+        assert_eq!(
+            horizontal_scroll(px(800.), px(57.), px(57.), px(226.)),
+            px(0.)
+        );
+        assert_eq!(
+            horizontal_scroll(px(800.), px(1024.), px(1024.), px(1200.)),
+            px(0.)
+        );
+        assert_eq!(
+            horizontal_scroll(px(800.), px(0.), px(0.), px(226.)),
+            px(0.)
+        );
+    }
+
+    #[test]
+    fn horizontal_scroll_keeps_caret_visible_within_text_extent() {
+        assert_eq!(
+            horizontal_scroll(px(0.), px(1024.), px(1024.), px(226.)),
+            px(798.)
+        );
+        assert_eq!(
+            horizontal_scroll(px(798.), px(0.), px(1024.), px(226.)),
+            px(0.)
+        );
+        assert_eq!(
+            horizontal_scroll(px(100.), px(200.), px(1024.), px(226.)),
+            px(100.)
         );
     }
 }
