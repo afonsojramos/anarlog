@@ -177,7 +177,7 @@ async fn isolated_runtime_distribution() {
                 "other_document_text_bytes": 256,
                 "logical_content_hash": fixture_hash, "hash_scope": "ordered session input parameters and exact document JSON",
                 "schema": schema, "timestamp": TIMESTAMP},
-            "config": {"queue_capacity": 64, "service_capacity": 16, "watch_cap": 32, "pool_size": 4, "tokio_workers": 2, "page_size":100},
+            "config": {"queue_capacity": 64, "service_capacity": 16, "watch_cap": 32, "pool_size": desktop_runtime::DATABASE_POOL_SIZE, "tokio_workers": 2, "page_size":100},
             "fresh_start_ns":fresh_start_ns, "warm_start_ns":warm_start_ns,
             "library_ns":library_ns, "save_ns":save_ns, "enqueue_to_snapshot_ns":delivery_ns,
             "shutdown_ns":started.elapsed().as_nanos(), "runtime":runtime.metrics(),

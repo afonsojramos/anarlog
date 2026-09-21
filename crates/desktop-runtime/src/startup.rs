@@ -80,7 +80,7 @@ pub(crate) async fn open(profile: &Profile) -> Result<Arc<Db>> {
             cloudsync_enabled: false,
             journal_mode_wal: true,
             foreign_keys: true,
-            max_connections: Some(4),
+            max_connections: Some(crate::DATABASE_POOL_SIZE),
         })
         .await
         {

@@ -96,16 +96,20 @@ impl QueryEventSink for Sink {
                 .send_modify(|snapshot| snapshot.sequence += 1);
             return Err("Watch snapshot exceeds row bound".into());
         }
-        self.metrics.snapshot_count.fetch_add(1, Ordering::Relaxed);
-        self.metrics
-            .snapshot_rows
-            .fetch_add(rows.len() as u64, Ordering::Relaxed);
-        self.metrics
-            .snapshot_bytes
-            .fetch_add(size.0 as u64, Ordering::Relaxed);
-        self.snapshots.send_modify(|snapshot| {
+        self.snapshots.send_if_modified(|snapshot| {
+            if snapshot.sequence > 0 && snapshot.rows.as_ref() == rows.as_slice() {
+                return false;
+            }
+            self.metrics.snapshot_count.fetch_add(1, Ordering::Relaxed);
+            self.metrics
+                .snapshot_rows
+                .fetch_add(rows.len() as u64, Ordering::Relaxed);
+            self.metrics
+                .snapshot_bytes
+                .fetch_add(size.0 as u64, Ordering::Relaxed);
             snapshot.sequence += 1;
             snapshot.rows = rows.into();
+            true
         });
         Ok(())
     }
@@ -238,5 +242,42 @@ impl RuntimeHandle {
                 slot: Some(slot),
             })
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repeated_empty_refresh_does_not_overtake_terminal_error_notification() {
+        let (snapshots, mut receiver) = watch::channel(WatchSnapshot {
+            sequence: 0,
+            rows: Arc::from([]),
+        });
+        let (errors, _errors) = mpsc::channel(8);
+        let sink = Sink {
+            snapshots,
+            errors,
+            terminal_error: Arc::new(Mutex::new(None)),
+            metrics: Arc::new(crate::metrics::Metrics::default()),
+        };
+        sink.send_result(vec![]).unwrap();
+        assert_eq!(receiver.borrow_and_update().sequence, 1);
+        sink.send_result(vec![]).unwrap();
+        assert!(!receiver.has_changed().unwrap());
+        assert_eq!(sink.metrics.snapshot_count.load(Ordering::Relaxed), 1);
+        assert!(
+            sink.send_result(vec![serde_json::json!({
+                "title": "x".repeat(MAX_DOCUMENT_BYTES)
+            })])
+            .is_err()
+        );
+        assert!(receiver.has_changed().unwrap());
+        assert!(matches!(
+            *sink.terminal_error.lock().unwrap(),
+            Some(ServiceError::Unsupported(_))
+        ));
+        assert!(receiver.borrow().rows.is_empty());
     }
 }

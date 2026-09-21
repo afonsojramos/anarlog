@@ -90,6 +90,12 @@ builds against these shared resolutions before integration.
   termination and GPUI's time-limited application-quit path cannot guarantee it.
 
 `DocumentSnapshot.body` preserves exact stored bytes and unknown fields.
+The isolated native runtime uses one pooled SQLite connection. SQLite's commit
+hook can notify a reactive reader before a large WAL write becomes visible to
+another connection; serializing acquisition makes refreshes wait for the writer.
+Watches also suppress identical snapshots. Increasing the native pool size needs
+a verified post-commit delivery barrier first.
+
 `save_document` is an explicit JSON-document API, not a lossless editor
 implementation: it verifies the root and CASes the original body, format and
 timestamp, but cannot prove that a caller retained every unknown node. The editor

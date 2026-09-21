@@ -31,6 +31,7 @@ pub use types::*;
 pub use watch::{DocumentWatch, MAX_WATCH_ROWS, QueryWatch, WatchSnapshot};
 
 pub const QUEUE_CAPACITY: usize = 64;
+pub const DATABASE_POOL_SIZE: u32 = 1;
 pub const SERVICE_CAPACITY: usize = 16;
 pub const MAX_WATCHES: usize = 32;
 pub const MAX_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
