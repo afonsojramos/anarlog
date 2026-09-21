@@ -422,6 +422,10 @@ impl Render for LibraryView {
                             .border_1()
                             .border_color(colors.border)
                             .shadow_lg()
+                            .occlude()
+                            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation();
+                            })
                             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                                 this.menu = None;
                                 cx.notify();
@@ -452,7 +456,8 @@ impl Render for LibraryView {
                                         .hover(|style| style.bg(colors.accent))
                                         .child(label)
                                         .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.menu_action(index, cx)
+                                            cx.stop_propagation();
+                                            this.menu_action(index, cx);
                                         }))
                                 }),
                             ),
