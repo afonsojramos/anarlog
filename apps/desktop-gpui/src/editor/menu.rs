@@ -7,10 +7,12 @@ pub enum BlockCommand {
     Quote,
     Code,
     Divider,
+    TaskList,
+    Table,
 }
 
 impl BlockCommand {
-    pub const ALL: [(Self, &'static str); 9] = [
+    pub const ALL: [(Self, &'static str); 11] = [
         (Self::Paragraph, "Text"),
         (Self::Heading(1), "Heading 1"),
         (Self::Heading(2), "Heading 2"),
@@ -20,7 +22,41 @@ impl BlockCommand {
         (Self::Quote, "Quote"),
         (Self::Code, "Code Block"),
         (Self::Divider, "Divider"),
+        (Self::TaskList, "Task List"),
+        (Self::Table, "Table"),
     ];
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Paragraph => "Plain text",
+            Self::Heading(1) => "Large heading",
+            Self::Heading(2) => "Medium heading",
+            Self::Heading(_) => "Small heading",
+            Self::BulletList => "Unordered list",
+            Self::OrderedList => "Ordered list",
+            Self::TaskList => "Track a task",
+            Self::Quote => "Capture a quote",
+            Self::Code => "Monospace code",
+            Self::Divider => "Horizontal rule",
+            Self::Table => "Three-column grid",
+        }
+    }
+
+    fn keywords(self) -> &'static str {
+        match self {
+            Self::Paragraph => "text paragraph plain",
+            Self::Heading(1) => "heading h1 title large",
+            Self::Heading(2) => "heading h2 subtitle medium",
+            Self::Heading(_) => "heading h3 small",
+            Self::BulletList => "bullet list unordered ul",
+            Self::OrderedList => "numbered list ordered ol",
+            Self::TaskList => "task todo checkbox checklist",
+            Self::Quote => "quote blockquote",
+            Self::Code => "code pre codeblock",
+            Self::Divider => "divider rule horizontal hr",
+            Self::Table => "table grid",
+        }
+    }
 }
 
 pub struct SlashMenu {
@@ -34,7 +70,9 @@ impl SlashMenu {
         let query = self.query.to_ascii_lowercase();
         BlockCommand::ALL
             .into_iter()
-            .filter(|(_, label)| label.to_ascii_lowercase().contains(&query))
+            .filter(|(command, label)| {
+                label.to_ascii_lowercase().contains(&query) || command.keywords().contains(&query)
+            })
             .collect()
     }
 

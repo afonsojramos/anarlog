@@ -7,7 +7,7 @@ use super::{
     document::{
         Document, EditResult, Node, NodeRef, concat_inline, inline_text, split_inline, utf8,
     },
-    sequence::Sequence,
+    sequence::{Measured, Sequence},
 };
 
 const HISTORY_BYTES: usize = 8 * 1024 * 1024;
@@ -151,8 +151,8 @@ impl EditorModel {
         action: impl FnOnce(&mut Self) -> EditResult<()>,
     ) -> EditResult<()> {
         self.ensure_editable()?;
-        if self.composing() || self.batch_cost.is_some() {
-            return Err("Finish composition before a structural transaction".into());
+        if self.batch_cost.is_some() {
+            return action(self);
         }
         let before = self.checkpoint();
         let revision = self.revision;
@@ -168,7 +168,11 @@ impl EditorModel {
             self.last_mapping = mapping;
             self.stored_marks = marks;
         } else if revision != self.revision {
-            self.push_history(before, cost);
+            if let Some(composition) = &mut self.composition {
+                composition.bytes += cost;
+            } else {
+                self.push_history(before, cost);
+            }
         }
         result
     }
@@ -213,6 +217,7 @@ impl EditorModel {
             return Err("Invalid replacement range".into());
         }
         if range.start == 0 && range.end == self.document.units() {
+            super::transform::removable(&self.document.root)?;
             let fields = Arc::new(Map::from_iter([("type".into(), json!("text"))]));
             let paragraph = Node::fresh(
                 "paragraph",
@@ -234,6 +239,50 @@ impl EditorModel {
         }
         let from = self.document.resolve(range.start)?;
         let to = self.document.resolve(range.end)?;
+        super::transform::removable_inline(
+            &from.node.children,
+            from.offset..if from.path == to.path {
+                to.offset
+            } else {
+                from.node.children.units()
+            },
+        )?;
+        if from.path != to.path {
+            super::transform::removable_inline(&to.node.children, 0..to.offset)?;
+        }
+        if from.path != to.path {
+            let from_cell = from.path.iter().enumerate().find_map(|(index, _)| {
+                self.document
+                    .node(&from.path[..=index])
+                    .filter(|node| matches!(node.kind(), "tableCell" | "tableHeader"))
+                    .map(|_| &from.path[..=index])
+            });
+            let to_cell = to.path.iter().enumerate().find_map(|(index, _)| {
+                self.document
+                    .node(&to.path[..=index])
+                    .filter(|node| matches!(node.kind(), "tableCell" | "tableHeader"))
+                    .map(|_| &to.path[..=index])
+            });
+            if from_cell != to_cell && (from_cell.is_some() || to_cell.is_some()) {
+                let blocks = super::transform::selected_blocks(&self.document, range.clone())?;
+                return self.transaction(|model| {
+                    for block in blocks.iter().rev() {
+                        let start = range.start.max(block.start);
+                        let end = range.end.min(block.start + block.node.children.units());
+                        model.replace(
+                            start..end,
+                            if block.node.id == from.node.id {
+                                text
+                            } else {
+                                ""
+                            },
+                        )?;
+                    }
+                    model.selection = Selection::caret(range.start + text.encode_utf16().count());
+                    Ok(())
+                });
+            }
+        }
         let (left, _) = split_inline(&from.node.children, from.offset)?;
         let (_, right) = split_inline(&to.node.children, to.offset)?;
         let fields = self.insertion_fields(&from.node, from.offset);
@@ -248,32 +297,8 @@ impl EditorModel {
             self.document
                 .replace_node(&from.path, from.node.with_children(children));
         } else {
-            let parent_path = &from.path[..from.path.len() - 1];
-            if parent_path != &to.path[..to.path.len() - 1] {
-                return Err("Cross-container replacement is unavailable; selection and original content retained".into());
-            }
-            let start = *from.path.last().expect("textblock path");
-            let end = *to.path.last().expect("textblock path");
-            let parent = self.document.node(parent_path).expect("resolved parent");
-            for i in start..=end {
-                if !parent
-                    .children
-                    .get(i)
-                    .is_some_and(|node| node.is_textblock())
-                {
-                    return Err(
-                        "Replacement across an embedded block is unavailable; original retained"
-                            .into(),
-                    );
-                }
-            }
-            self.document.replace_node(
-                parent_path,
-                parent.with_children(parent.children.splice(
-                    start..end + 1,
-                    &Sequence::one(from.node.with_children(children)),
-                )),
-            );
+            self.document.root =
+                super::transform::replace_across(&self.document, &from, &to, children)?;
         }
         let inserted = text.encode_utf16().count();
         self.selection = Selection::caret(range.start + inserted);
@@ -336,12 +361,17 @@ impl EditorModel {
     }
 
     pub fn insert_slice(&mut self, fragment: Document, open: bool) -> EditResult<()> {
+        self.transaction(|model| model.insert_slice_inner(fragment, open))
+    }
+
+    fn insert_slice_inner(&mut self, fragment: Document, open: bool) -> EditResult<()> {
         self.ensure_editable()?;
         if self.composing() {
             return Err("Finish composition before pasting rich content".into());
         }
         let range = self.selection.range();
         if range.start == 0 && range.end == self.document.units() {
+            super::transform::removable(&self.document.root)?;
             let before = self.checkpoint();
             let cost = fragment.original.len() + range.len() * 4 + 4096;
             self.document.root = self
@@ -352,11 +382,15 @@ impl EditorModel {
             self.record(before, cost);
             return Ok(());
         }
-        let from = self.document.resolve(range.start)?;
-        let to = self.document.resolve(range.end)?;
+        let mut from = self.document.resolve(range.start)?;
+        let mut to = self.document.resolve(range.end)?;
         if from.path != to.path {
-            return Err("Rich paste across blocks needs an explicit block selection".into());
+            self.replace(range, "")?;
+            from = self.document.resolve(self.selection.head)?;
+            to = self.document.resolve(self.selection.head)?;
         }
+        let range = self.selection.range();
+        super::transform::removable_inline(&from.node.children, from.offset..to.offset)?;
         let first = fragment
             .root
             .children
@@ -368,7 +402,14 @@ impl EditorModel {
             .get(fragment.root.children.len() - 1)
             .expect("first");
         if from.node.kind() == "codeBlock" {
-            return Err("Use plain-text paste inside code blocks".into());
+            super::transform::removable(&fragment.root)?;
+            let blocks = super::transform::selected_blocks(&fragment, 0..fragment.units())?;
+            let text = blocks
+                .iter()
+                .map(|block| inline_text(&block.node.children))
+                .collect::<Vec<_>>()
+                .join("\n");
+            return self.replace(range, &text);
         }
         let (left, _) = split_inline(&from.node.children, from.offset)?;
         let (_, right) = split_inline(&from.node.children, to.offset)?;
@@ -386,9 +427,6 @@ impl EditorModel {
             let path = &from.path[..from.path.len() - 1];
             let index = *from.path.last().expect("textblock");
             let parent = self.document.node(path).expect("parent");
-            if parent.kind() != "doc" {
-                return Err("Block paste in nested containers is unavailable".into());
-            }
             let mut inserted = fragment.root.children.clone();
             if open && first.is_textblock() && last.is_textblock() {
                 inserted = inserted.splice(
@@ -537,6 +575,10 @@ impl EditorModel {
     }
 
     pub fn toggle_mark(&mut self, kind: &str) -> EditResult<()> {
+        self.apply_mark(kind, None)
+    }
+
+    fn apply_mark(&mut self, kind: &str, enable: Option<bool>) -> EditResult<()> {
         self.ensure_editable()?;
         let range = self.selection.range();
         let from = self.document.resolve(range.start)?;
@@ -580,7 +622,35 @@ impl EditorModel {
             return Ok(());
         }
         if from.path != to.path {
-            return Err("Formatting across text blocks is not available yet".into());
+            let blocks = super::transform::selected_blocks(&self.document, range.clone())?;
+            let mut all_marked = true;
+            for block in &blocks {
+                let end = range
+                    .end
+                    .saturating_sub(block.start)
+                    .min(block.node.children.units());
+                let start = range.start.saturating_sub(block.start);
+                let selected = split_inline(&split_inline(&block.node.children, end)?.0, start)?.1;
+                selected.visit(&mut |node| {
+                    if node.text.is_some() && block.node.kind() != "codeBlock" {
+                        all_marked &= node.marks().iter().any(|mark| mark["type"] == kind);
+                    }
+                });
+            }
+            return self.transaction(|model| {
+                let selection = model.selection;
+                for block in blocks {
+                    model.selection = Selection {
+                        anchor: range.start.max(block.start),
+                        head: range.end.min(block.start + block.node.children.units()),
+                    };
+                    if !model.selection.is_empty() && block.node.kind() != "codeBlock" {
+                        model.apply_mark(kind, Some(enable.unwrap_or(!all_marked)))?;
+                    }
+                }
+                model.selection = selection;
+                Ok(())
+            });
         }
         let (through, right) = split_inline(&from.node.children, to.offset)?;
         let (left, selected) = split_inline(&through, from.offset)?;
@@ -598,7 +668,7 @@ impl EditorModel {
             }
             let mut fields = (*node.fields).clone();
             let mut marks = node.marks().to_vec();
-            toggle_marks(&mut marks, kind, Some(!all_marked));
+            toggle_marks(&mut marks, kind, Some(enable.unwrap_or(!all_marked)));
             if marks.is_empty() {
                 fields.remove("marks");
             } else {
@@ -620,23 +690,46 @@ impl EditorModel {
 
     pub fn set_link(&mut self, href: &str) -> EditResult<()> {
         self.ensure_editable()?;
-        if !super::clipboard::openable_link(href) {
+        if !href.is_empty() && !super::clipboard::openable_link(href) {
             return Err("Links must use HTTP or HTTPS".into());
         }
         let range = self.selection.range();
         let from = self.document.resolve(range.start)?;
         let to = self.document.resolve(range.end)?;
-        if from.path != to.path || range.is_empty() || from.node.kind() == "codeBlock" {
+        if from.path != to.path {
+            let blocks = super::transform::selected_blocks(&self.document, range.clone())?;
+            return self.transaction(|model| {
+                let selection = model.selection;
+                for block in blocks {
+                    model.selection = Selection {
+                        anchor: range.start.max(block.start),
+                        head: range.end.min(block.start + block.node.children.units()),
+                    };
+                    if !model.selection.is_empty() && block.node.kind() != "codeBlock" {
+                        model.set_link(href)?;
+                    }
+                }
+                model.selection = selection;
+                Ok(())
+            });
+        }
+        if range.is_empty() || from.node.kind() == "codeBlock" {
             return Err("Select link text inside one non-code block".into());
         }
         let (through, right) = split_inline(&from.node.children, to.offset)?;
         let (left, selected) = split_inline(&through, from.offset)?;
         let mut linked = Vec::new();
         selected.visit(&mut |node| {
+            if node.text.is_none() {
+                linked.push(node.clone());
+                return;
+            }
             let mut fields = (*node.fields).clone();
             let mut marks = node.marks().to_vec();
             marks.retain(|mark| mark["type"] != "link");
-            marks.push(json!({"type":"link","attrs":{"href":href,"target":null}}));
+            if !href.is_empty() {
+                marks.push(json!({"type":"link","attrs":{"href":href,"target":null}}));
+            }
             fields.insert("marks".into(), marks.into());
             linked.push(node.with_fields(fields));
         });
@@ -653,16 +746,35 @@ impl EditorModel {
     }
 
     pub fn insert_inline_atom(&mut self, kind: &str, attrs: Map<String, Value>) -> EditResult<()> {
+        self.transaction(|model| model.insert_inline_atom_inner(kind, attrs))
+    }
+
+    fn insert_inline_atom_inner(
+        &mut self,
+        kind: &str,
+        attrs: Map<String, Value>,
+    ) -> EditResult<()> {
         self.ensure_editable()?;
-        if !matches!(kind, "mention-@" | "appLink") {
+        if !matches!(kind, "mention-@" | "appLink" | "hardBreak") {
             return Err("Unsupported inline atom".into());
         }
         let range = self.selection.range();
-        let from = self.document.resolve(range.start)?;
-        let to = self.document.resolve(range.end)?;
-        if from.path != to.path || from.node.kind() == "codeBlock" {
-            return Err("Choose one non-code block for this item".into());
+        let mut from = self.document.resolve(range.start)?;
+        let mut to = self.document.resolve(range.end)?;
+        if from.node.kind() == "codeBlock" {
+            return if kind == "hardBreak" {
+                self.replace(range, "\n")
+            } else {
+                Err("Inline mentions cannot be inserted in code".into())
+            };
         }
+        if from.path != to.path {
+            self.replace(range, "")?;
+            from = self.document.resolve(self.selection.head)?;
+            to = self.document.resolve(self.selection.head)?;
+        }
+        let range = self.selection.range();
+        super::transform::removable_inline(&from.node.children, from.offset..to.offset)?;
         let (left, _) = split_inline(&from.node.children, from.offset)?;
         let (_, right) = split_inline(&from.node.children, to.offset)?;
         let node = Node::fresh(kind, Sequence::default());
@@ -686,6 +798,10 @@ impl EditorModel {
     }
 
     pub fn insert_block_atom(&mut self, kind: &str, attrs: Map<String, Value>) -> EditResult<()> {
+        self.transaction(|model| model.insert_block_atom_inner(kind, attrs))
+    }
+
+    fn insert_block_atom_inner(&mut self, kind: &str, attrs: Map<String, Value>) -> EditResult<()> {
         self.ensure_editable()?;
         if !matches!(kind, "horizontalRule" | "image" | "fileAttachment") {
             return Err("Unsupported block atom".into());
@@ -704,10 +820,10 @@ impl EditorModel {
         {
             return Err("Attachment must have a catalogued attachment ID".into());
         }
-        let resolved = self.document.resolve(self.selection.head)?;
         if !self.selection.is_empty() {
-            return Err("Collapse the selection before inserting a block".into());
+            self.replace(self.selection.range(), "")?;
         }
+        let resolved = self.document.resolve(self.selection.head)?;
         let node = Node::fresh(kind, Sequence::default());
         let mut fields = (*node.fields).clone();
         fields.insert("attrs".into(), attrs.into());
@@ -715,8 +831,13 @@ impl EditorModel {
         let path = &resolved.path[..resolved.path.len() - 1];
         let index = *resolved.path.last().expect("textblock");
         let parent = self.document.node(path).expect("parent");
-        if !matches!(parent.kind(), "doc" | "blockquote") {
-            return Err("Insert block attachments outside lists and tables".into());
+        if !matches!(
+            parent.kind(),
+            "doc" | "blockquote" | "listItem" | "taskItem" | "tableCell" | "tableHeader"
+        ) {
+            return Err(
+                "Future container cannot accept block attachments; original retained".into(),
+            );
         }
         let before = self.checkpoint();
         let inserted = Sequence::from_items([
@@ -743,26 +864,121 @@ impl EditorModel {
             attrs.insert("level".into(), json!(level.clamp(1, 6)));
             fields.insert("attrs".into(), attrs.into());
         }
-        if kind == "codeBlock" {
-            let mut has_marks_or_atoms = false;
+        let children = if kind == "codeBlock" {
+            let mut invalid = false;
+            let mut children = Vec::new();
             resolved.node.children.visit(&mut |child| {
-                has_marks_or_atoms |= child.text.is_none() || !child.marks().is_empty()
+                if child.kind() == "hardBreak" {
+                    let mut fields = (*child.fields).clone();
+                    fields.insert("type".into(), json!("text"));
+                    children.push(Node::text_node("\n", Arc::new(fields)));
+                } else if child.text.is_some()
+                    && child.marks().iter().all(|mark| {
+                        matches!(
+                            mark["type"].as_str(),
+                            Some(
+                                "bold"
+                                    | "italic"
+                                    | "underline"
+                                    | "strike"
+                                    | "code"
+                                    | "highlight"
+                                    | "link"
+                            )
+                        )
+                    })
+                {
+                    let mut fields = (*child.fields).clone();
+                    fields.remove("marks");
+                    children.push(child.with_fields(fields));
+                } else {
+                    invalid = true;
+                }
             });
-            if has_marks_or_atoms {
-                return Err("Remove marks and embedded content before converting to code".into());
+            if invalid {
+                return Err("Code conversion would remove embedded content or future marks; original retained".into());
             }
-        }
+            Sequence::from_items(children)
+        } else {
+            resolved.node.children.clone()
+        };
         let before = self.checkpoint();
-        self.document
-            .replace_node(&resolved.path, resolved.node.with_fields(fields));
+        self.document.replace_node(
+            &resolved.path,
+            resolved.node.with_fields(fields).with_children(children),
+        );
         self.record(before, 4096);
         Ok(())
     }
 
+    pub fn remove_block_atom(&mut self, position: usize, id: u64) -> EditResult<()> {
+        self.ensure_editable()?;
+        let mut node = self.document.root.clone();
+        let mut offset = position;
+        let mut path = Vec::new();
+        loop {
+            if !node.known() {
+                return Err("Future attachment container retained unchanged".into());
+            }
+            let (index, inner, child) = node
+                .children
+                .locate(offset)
+                .ok_or("Attachment no longer exists")?;
+            path.push(index);
+            if inner == 0 && child.id == id {
+                node = child.clone();
+                break;
+            }
+            offset = inner
+                .checked_sub(1)
+                .ok_or("Attachment moved; retry removal")?;
+            node = child.clone();
+        }
+        if !matches!(node.kind(), "image" | "fileAttachment" | "horizontalRule") {
+            return Err("Only attachment or divider nodes can be removed here".into());
+        }
+        let next = super::transform::adjacent_block(&self.document, &path, true)
+            .map(|next| next - node.units())
+            .or_else(|| super::transform::adjacent_block(&self.document, &path, false));
+        let index = path.pop().expect("atom path");
+        let parent = self
+            .document
+            .node(&path)
+            .ok_or("Missing attachment parent")?;
+        let empty = parent.children.len() == 1 || next.is_none();
+        let replacement = if empty {
+            Sequence::one(Node::fresh("paragraph", Sequence::default()))
+        } else {
+            Sequence::default()
+        };
+        let target = if empty {
+            position + 1
+        } else {
+            next.ok_or("No editable block remains")?
+        };
+        let inserted = replacement.units();
+        let before = self.checkpoint();
+        self.document.replace_node(
+            &path,
+            parent.with_children(parent.children.splice(index..index + 1, &replacement)),
+        );
+        self.selection = Selection::caret(target);
+        self.last_mapping = Some(Mapping {
+            old: position..position + node.units(),
+            inserted,
+        });
+        self.record(before, 8192);
+        Ok(())
+    }
+
     pub fn split_block(&mut self) -> EditResult<()> {
+        self.transaction(Self::split_block_inner)
+    }
+
+    fn split_block_inner(&mut self) -> EditResult<()> {
         self.ensure_editable()?;
         if !self.selection.is_empty() {
-            return Err("Split with a selection is unavailable; delete the selection first".into());
+            self.replace(self.selection.range(), "")?;
         }
         let resolved = self.document.resolve(self.selection.head)?;
         if resolved.node.kind() == "codeBlock" {
@@ -800,55 +1016,22 @@ impl EditorModel {
         let path = &resolved.path[..resolved.path.len() - 1];
         let index = *resolved.path.last().expect("textblock");
         let parent = self.document.node(path).expect("parent");
-        if parent.kind() == "taskItem" {
-            return Err(
-                "Task splitting requires an allocated task-item identity from the task service"
-                    .into(),
-            );
-        }
-        if parent.kind() == "listItem" {
-            if index != 0 || path.is_empty() {
-                return Err("Split requires the first paragraph of a list item".into());
-            }
+        if matches!(parent.kind(), "listItem" | "taskItem") && index == 0 {
             let list_path = &path[..path.len() - 1];
             let item_index = *path.last().expect("list item");
             let list = self.document.node(list_path).expect("list");
             if resolved.node.children.len() == 0 {
-                if list_path.len() != 1
-                    || item_index + 1 != list.children.len()
-                    || parent.children.len() != 1
-                {
-                    return Err(
-                        "Exiting a nonterminal or nested empty list item is unavailable".into(),
-                    );
-                }
-                let before = self.checkpoint();
-                let list_index = list_path[0];
-                let kept = list.children.split(item_index).0;
-                let replacement = if kept.len() == 0 {
-                    Sequence::one(resolved.node.clone())
-                } else {
-                    Sequence::from_items([list.with_children(kept), resolved.node.clone()])
-                };
-                let position = self.document.root.children.prefix(list_index)
-                    + replacement.prefix(replacement.len() - 1)
-                    + 1;
-                self.document.root = self.document.root.with_children(
-                    self.document
-                        .root
-                        .children
-                        .splice(list_index..list_index + 1, &replacement),
-                );
-                self.selection = Selection::caret(position);
-                self.record(before, 8192);
-                return Ok(());
+                return self.indent_list(true);
             }
             let before = self.checkpoint();
             let left_item = parent.with_children(Sequence::one(resolved.node.with_children(left)));
-            let right_item = Node::fresh(
-                "listItem",
-                Sequence::one(Node::fresh("paragraph", right)).concat(&parent.children.split(1).1),
-            );
+            let content =
+                Sequence::one(Node::fresh("paragraph", right)).concat(&parent.children.split(1).1);
+            let right_item = if parent.kind() == "taskItem" {
+                fresh_task(content)
+            } else {
+                Node::fresh("listItem", content)
+            };
             self.document.replace_node(
                 list_path,
                 list.with_children(list.children.splice(
@@ -883,17 +1066,18 @@ impl EditorModel {
         let resolved = self.document.resolve(self.selection.head)?;
         let (replacement, depth) = match kind {
             "blockquote" => (Node::fresh(kind, Sequence::one(resolved.node.clone())), 1),
-            "bulletList" | "orderedList" => {
+            "bulletList" | "orderedList" | "taskList" => {
                 if resolved.node.kind() != "paragraph" {
                     return Err("Lists require a paragraph".into());
                 }
                 (
                     Node::fresh(
                         kind,
-                        Sequence::one(Node::fresh(
-                            "listItem",
-                            Sequence::one(resolved.node.clone()),
-                        )),
+                        Sequence::one(if kind == "taskList" {
+                            fresh_task(Sequence::one(resolved.node.clone()))
+                        } else {
+                            Node::fresh("listItem", Sequence::one(resolved.node.clone()))
+                        }),
                     ),
                     2,
                 )
@@ -918,8 +1102,10 @@ impl EditorModel {
         let list_path = &item_path[..item_path.len() - 1];
         let item = self.document.node(item_path).expect("item");
         let list = self.document.node(list_path).expect("list");
-        if item.kind() != "listItem" || !matches!(list.kind(), "bulletList" | "orderedList") {
-            return Err("Only standard list items support native indentation currently".into());
+        if !matches!(item.kind(), "listItem" | "taskItem")
+            || !matches!(list.kind(), "bulletList" | "orderedList" | "taskList")
+        {
+            return Err("Selection is not in a list item".into());
         }
         let item_index = *item_path.last().expect("item");
         let before = self.checkpoint();
@@ -970,19 +1156,55 @@ impl EditorModel {
                 ),
             );
         } else {
-            if list_path.len() < 3 || item_index + 1 != list.children.len() {
-                return Err("Outdent currently requires the last item of a nested list".into());
+            if list_path.len() < 3 {
+                let container_path = &list_path[..list_path.len() - 1];
+                let list_index = *list_path.last().expect("list");
+                let container = self.document.node(container_path).expect("container");
+                let (leading, rest) = list.children.split(item_index);
+                let trailing = rest.split(1).1;
+                let mut replacement = Sequence::default();
+                if leading.len() > 0 {
+                    replacement = replacement.concat(&Sequence::one(list.with_children(leading)));
+                }
+                let position = self.document.position_at_path(list_path).expect("list")
+                    + replacement.units()
+                    + paragraph_offset
+                    - 1;
+                replacement = replacement.concat(&item.children);
+                if trailing.len() > 0 {
+                    replacement = replacement.concat(&Sequence::one(list.with_children(trailing)));
+                }
+                self.document.replace_node(
+                    container_path,
+                    container.with_children(
+                        container
+                            .children
+                            .splice(list_index..list_index + 1, &replacement),
+                    ),
+                );
+                self.selection = Selection::caret(position);
+                self.record(before, 16384);
+                return Ok(());
             }
             let parent_item_path = &list_path[..list_path.len() - 1];
             let outer_path = &parent_item_path[..parent_item_path.len() - 1];
             let parent_item = self.document.node(parent_item_path).expect("parent item");
             let outer = self.document.node(outer_path).expect("outer list");
-            if parent_item.kind() != "listItem" {
+            if !matches!(parent_item.kind(), "listItem" | "taskItem") {
                 return Err("Cannot outdent across this container".into());
             }
             let nested_index = *list_path.last().expect("nested list");
             let parent_index = *parent_item_path.last().expect("parent item");
             let kept = list.children.split(item_index).0;
+            let trailing = list.children.split(item_index + 1).1;
+            let item = if trailing.len() > 0 {
+                item.with_children(
+                    item.children
+                        .concat(&Sequence::one(list.with_children(trailing))),
+                )
+            } else {
+                item
+            };
             let nested = if kept.len() == 0 {
                 Sequence::default()
             } else {
@@ -1105,12 +1327,9 @@ impl EditorModel {
         if (forward && resolved.offset == resolved.node.children.units())
             || (!forward && resolved.offset == 0)
         {
-            let candidate = if forward {
-                self.selection.head + 2
-            } else {
-                self.selection.head.saturating_sub(2)
-            };
-            if self.document.resolve(candidate).is_ok() {
+            if let Some(candidate) =
+                super::transform::adjacent_block(&self.document, &resolved.path, forward)
+            {
                 position = candidate;
             } else {
                 return Ok(());
@@ -1126,12 +1345,282 @@ impl EditorModel {
         Ok(())
     }
 
+    pub fn move_word(&mut self, forward: bool, extend: bool) -> EditResult<()> {
+        let resolved = self.document.resolve(self.selection.head)?;
+        let mut start = resolved.offset.saturating_sub(4096);
+        let mut end = (resolved.offset + 4096).min(resolved.node.children.units());
+        let through = loop {
+            match split_inline(&resolved.node.children, end) {
+                Ok((through, _)) => break through,
+                Err(_) => end -= 1,
+            }
+        };
+        let slice = loop {
+            match split_inline(&through, start) {
+                Ok((_, slice)) => break slice,
+                Err(_) => start += 1,
+            }
+        };
+        let text = inline_text(&slice);
+        let cursor = resolved.offset - start;
+        let mut boundaries = vec![0];
+        for (byte, word) in text.unicode_word_indices() {
+            let position = text[..byte].encode_utf16().count();
+            boundaries.push(if forward {
+                position + word.encode_utf16().count()
+            } else {
+                position
+            });
+        }
+        boundaries.push(text.encode_utf16().count());
+        let target = if forward {
+            boundaries.into_iter().find(|position| *position > cursor)
+        } else {
+            boundaries
+                .into_iter()
+                .rev()
+                .find(|position| *position < cursor)
+        };
+        if let Some(target) = target {
+            self.selection.head = resolved.start + start + target;
+            if !extend {
+                self.selection.anchor = self.selection.head;
+            }
+            self.stored_marks = None;
+            Ok(())
+        } else {
+            self.move_grapheme(forward, extend)
+        }
+    }
+
+    pub fn insert_table(&mut self) -> EditResult<()> {
+        let cell = || {
+            Node::fresh(
+                "tableCell",
+                Sequence::one(Node::fresh("paragraph", Sequence::default())),
+            )
+        };
+        let row = || Node::fresh("tableRow", Sequence::from_items([cell(), cell(), cell()]));
+        let table = Node::fresh("table", Sequence::from_items([row(), row(), row()]));
+        let mut fragment = self.document.clone();
+        fragment.root = Node::fresh("doc", Sequence::one(table));
+        self.insert_slice(fragment, false)
+    }
+
+    pub fn move_vertical_blocks(
+        &mut self,
+        forward: bool,
+        count: usize,
+        extend: bool,
+    ) -> EditResult<()> {
+        let mut resolved = self.document.resolve(self.selection.head)?;
+        let column = resolved.offset;
+        for _ in 0..count.clamp(1, 200) {
+            let Some(position) =
+                super::transform::adjacent_block(&self.document, &resolved.path, forward)
+            else {
+                break;
+            };
+            resolved = self.document.resolve(position)?;
+        }
+        let mut offset = column.min(resolved.node.children.units());
+        if split_inline(&resolved.node.children, offset).is_err() {
+            offset = offset.saturating_sub(1);
+        }
+        let position = resolved.start + offset;
+        self.select(Selection {
+            anchor: if extend {
+                self.selection.anchor
+            } else {
+                position
+            },
+            head: position,
+        });
+        Ok(())
+    }
+
+    pub fn table_move(&mut self, forward: bool) -> EditResult<()> {
+        self.transaction(|model| model.table_move_inner(forward))
+    }
+
+    fn table_move_inner(&mut self, forward: bool) -> EditResult<()> {
+        let resolved = self.document.resolve(self.selection.head)?;
+        let cell_depth = (0..resolved.path.len())
+            .find(|index| {
+                self.document
+                    .node(&resolved.path[..=*index])
+                    .is_some_and(|node| matches!(node.kind(), "tableCell" | "tableHeader"))
+            })
+            .ok_or("Selection is not in a table")?;
+        let row_path = &resolved.path[..cell_depth];
+        let table_path = &row_path[..row_path.len() - 1];
+        let table = self.document.node(table_path).expect("table");
+        let row_index = *row_path.last().expect("row");
+        let cell_index = resolved.path[cell_depth];
+        let row = self.document.node(row_path).expect("row");
+        let next = if forward {
+            if cell_index + 1 < row.children.len() {
+                (row_index, cell_index + 1)
+            } else if let Some(next) = (row_index + 1..table.children.len()).find(|index| {
+                table
+                    .children
+                    .get(*index)
+                    .is_some_and(|row| row.children.len() > 0)
+            }) {
+                (next, 0)
+            } else {
+                self.table_add_row_after(Some(table.children.len() - 1))?;
+                (table.children.len(), 0)
+            }
+        } else if cell_index > 0 {
+            (row_index, cell_index - 1)
+        } else if let Some(previous) = (0..row_index).rev().find(|index| {
+            table
+                .children
+                .get(*index)
+                .is_some_and(|row| row.children.len() > 0)
+        }) {
+            (
+                previous,
+                table.children.get(previous).expect("row").children.len() - 1,
+            )
+        } else {
+            return Ok(());
+        };
+        let mut path = table_path.to_vec();
+        path.extend([next.0, next.1, 0]);
+        let position = self
+            .document
+            .position_at_path(&path)
+            .ok_or("Table cell has no paragraph")?
+            + 1;
+        self.select(Selection::caret(position));
+        Ok(())
+    }
+
+    pub fn table_add_row(&mut self) -> EditResult<()> {
+        self.table_add_row_after(None)
+    }
+
+    fn table_add_row_after(&mut self, after: Option<usize>) -> EditResult<()> {
+        self.ensure_editable()?;
+        let resolved = self.document.resolve(self.selection.head)?;
+        let depth = (0..resolved.path.len())
+            .find(|index| {
+                self.document
+                    .node(&resolved.path[..=*index])
+                    .is_some_and(|node| node.kind() == "table")
+            })
+            .ok_or("Selection is not in a table")?;
+        let path = &resolved.path[..=depth];
+        let table = self.document.node(path).expect("table");
+        let row_index = after.unwrap_or(resolved.path[depth + 1]);
+        let mut occupied = Vec::new();
+        let mut rows = table.children.clone();
+        for index in 0..=row_index {
+            let row = rows.get(index).ok_or("Missing table row")?;
+            let mut children = row.children.clone();
+            let mut column = 0;
+            for cell_index in 0..row.children.len() {
+                let cell = row.children.get(cell_index).expect("cell");
+                while occupied.get(column).is_some_and(|end| *end > index) {
+                    column += 1;
+                }
+                let colspan = cell
+                    .attr("colspan")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(1)
+                    .clamp(1, 1000) as usize;
+                let rowspan = cell
+                    .attr("rowspan")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(1)
+                    .clamp(1, 1000) as usize;
+                occupied.resize(occupied.len().max(column + colspan), 0);
+                occupied[column..column + colspan].fill(index + rowspan);
+                column += colspan;
+                if index + rowspan > row_index + 1 {
+                    let mut fields = (*cell.fields).clone();
+                    let mut attrs = cell.attrs().cloned().unwrap_or_default();
+                    attrs.insert("rowspan".into(), json!(rowspan + 1));
+                    fields.insert("attrs".into(), attrs.into());
+                    children = children.splice(
+                        cell_index..cell_index + 1,
+                        &Sequence::one(cell.with_fields(fields)),
+                    );
+                }
+            }
+            rows = rows.splice(
+                index..index + 1,
+                &Sequence::one(row.with_children(children)),
+            );
+        }
+        let cells = occupied
+            .iter()
+            .filter(|end| **end <= row_index + 1)
+            .map(|_| {
+                Node::fresh(
+                    "tableCell",
+                    Sequence::one(Node::fresh("paragraph", Sequence::default())),
+                )
+            })
+            .collect::<Vec<_>>();
+        let before = self.checkpoint();
+        self.document.replace_node(
+            path,
+            table.with_children(rows.splice(
+                row_index + 1..row_index + 1,
+                &Sequence::one(Node::fresh("tableRow", Sequence::from_items(cells))),
+            )),
+        );
+        self.record(before, 8192);
+        Ok(())
+    }
+
+    pub fn toggle_task(&mut self, position: usize) -> EditResult<()> {
+        let resolved = self.document.resolve(position)?;
+        for depth in (1..resolved.path.len()).rev() {
+            let path = &resolved.path[..depth];
+            if let Some(node) = self.document.node(path)
+                && node.kind() == "taskItem"
+            {
+                let checked = node.task_done();
+                return self.update_node_attrs(
+                    path,
+                    Map::from_iter([
+                        ("checked".into(), json!(!checked)),
+                        (
+                            "status".into(),
+                            json!(if checked { "todo" } else { "done" }),
+                        ),
+                    ]),
+                );
+            }
+        }
+        Err("Selection is not in a task".into())
+    }
+
     pub fn delete(&mut self, forward: bool) -> EditResult<()> {
         if self.selection.is_empty() {
             self.move_grapheme(forward, true)?;
         }
         self.replace(self.selection.range(), "")
     }
+}
+
+fn fresh_task(content: Sequence<NodeRef>) -> NodeRef {
+    let node = Node::fresh("taskItem", content);
+    let mut fields = (*node.fields).clone();
+    fields.insert(
+        "attrs".into(),
+        json!({
+            "taskId": uuid::Uuid::new_v4().to_string(),
+            "taskItemId": uuid::Uuid::new_v4().to_string(),
+            "status": "todo",
+            "checked": false
+        }),
+    );
+    node.with_fields(fields)
 }
 
 fn toggle_marks(marks: &mut Vec<Value>, kind: &str, enabled: Option<bool>) {

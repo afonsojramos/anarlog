@@ -29,19 +29,7 @@ pub fn copy(document: &Document, selection: Selection) -> EditResult<CopyPayload
         let (_, selected) = split_inline(&through, from.offset)?;
         blocks.push(from.node.with_children(selected));
     } else {
-        if from.path.len() != 1 || to.path.len() != 1 {
-            return Err("Copy across nested containers is not available yet".into());
-        }
-        for index in from.path[0]..=to.path[0] {
-            let node = document.root.children.get(index).expect("resolved node");
-            if index == from.path[0] {
-                blocks.push(node.with_children(split_inline(&node.children, from.offset)?.1));
-            } else if index == to.path[0] {
-                blocks.push(node.with_children(split_inline(&node.children, to.offset)?.0));
-            } else {
-                blocks.push(node.clone());
-            }
-        }
+        super::transform::copy_range(document, range)?.visit(&mut |node| blocks.push(node.clone()));
     }
     payload(blocks, 1)
 }
@@ -62,6 +50,9 @@ fn payload(blocks: Vec<NodeRef>, open: u8) -> EditResult<CopyPayload> {
 }
 
 pub fn parse_slice(metadata: &str) -> EditResult<(Document, bool)> {
+    if metadata.trim_start().starts_with('<') {
+        return super::html::parse(metadata);
+    }
     if metadata.len() > super::document::MAX_BYTES {
         return Err("Clipboard slice exceeds 16 MiB".into());
     }

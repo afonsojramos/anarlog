@@ -118,6 +118,14 @@ pub struct Node {
 }
 
 impl Measured for NodeRef {
+    fn render_blocks(&self) -> usize {
+        if self.projects_children() {
+            self.children.render_blocks()
+        } else {
+            1
+        }
+    }
+
     fn units(&self) -> usize {
         if let Some(text) = &self.text {
             text.units()
@@ -132,6 +140,10 @@ impl Measured for NodeRef {
 }
 
 impl Node {
+    pub fn projects_children(&self) -> bool {
+        self.known() && !self.is_textblock() && self.kind() != "table" && self.children.len() > 0
+    }
+
     pub fn kind(&self) -> &str {
         self.fields
             .get("type")
@@ -145,6 +157,20 @@ impl Node {
 
     pub fn attr(&self, key: &str) -> Option<&Value> {
         self.attrs()?.get(key)
+    }
+
+    pub fn task_done(&self) -> bool {
+        if let Some(done) = self.attr("status").and_then(Value::as_bool) {
+            return done;
+        }
+        match self.attr("status").and_then(Value::as_str) {
+            Some("done") => true,
+            Some("todo" | "in_progress") => false,
+            _ => self
+                .attr("checked")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        }
     }
 
     pub fn marks(&self) -> &[Value] {

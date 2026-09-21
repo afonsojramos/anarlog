@@ -9,11 +9,56 @@ use serde_json::Value;
 
 use super::{
     EditorPane,
-    document::{NodeRef, utf8},
+    document::{Document, NodeRef, utf8},
     model::Selection,
     sequence::Measured,
 };
 use crate::ui::theme::theme;
+
+pub fn block_target(
+    document: &Document,
+    mut index: usize,
+) -> Option<(NodeRef, usize, usize, String)> {
+    let mut node = document.root.clone();
+    let mut start = 0;
+    let mut depth = 0;
+    let mut marker = String::new();
+    while node.projects_children() {
+        let (child_index, remaining, child) = node.children.locate_render(index)?;
+        marker = match node.kind() {
+            "orderedList" => format!(
+                "{}.",
+                node.attr("start").and_then(Value::as_u64).unwrap_or(1) + child_index as u64
+            ),
+            "bulletList" => "•".into(),
+            "taskItem" => if node.task_done() { "[x]" } else { "[ ]" }.into(),
+            _ if child_index == 0 => marker,
+            _ => String::new(),
+        };
+        depth += usize::from(matches!(
+            node.kind(),
+            "blockquote" | "bulletList" | "orderedList" | "taskList"
+        ));
+        start += usize::from(node.kind() != "doc") + node.children.prefix(child_index);
+        node = child.clone();
+        index = remaining;
+    }
+    Some((node, start, depth, marker))
+}
+
+pub fn block_index(document: &Document, position: usize) -> Option<usize> {
+    let resolved = document.resolve(position).ok()?;
+    let mut node = document.root.clone();
+    let mut index = 0;
+    for child_index in resolved.path {
+        if !node.projects_children() {
+            break;
+        }
+        index += node.children.render_prefix(child_index);
+        node = node.children.get(child_index)?.clone();
+    }
+    Some(index)
+}
 
 #[derive(Clone)]
 pub struct Span {
@@ -83,10 +128,30 @@ impl Row {
 pub struct ProjectedBlock {
     pub source: NodeRef,
     pub rows: Vec<Arc<Row>>,
+    pub grid: Option<Grid>,
+}
+
+pub struct Grid {
+    pub columns: u16,
+    pub cells: Vec<GridCell>,
+}
+
+pub struct GridCell {
+    pub row: i16,
+    pub column: i16,
+    pub colspan: u16,
+    pub rowspan: u16,
+    pub header: bool,
+    pub rows: Range<usize>,
 }
 
 impl ProjectedBlock {
+    #[cfg(test)]
     pub fn build(source: NodeRef) -> Self {
+        Self::with_context(source, 0, String::new())
+    }
+
+    pub fn with_context(source: NodeRef, depth: usize, marker: String) -> Self {
         fn visit(
             node: &NodeRef,
             start: usize,
@@ -165,18 +230,6 @@ impl ProjectedBlock {
                     marker,
                 }));
             } else {
-                if node.kind() == "table" {
-                    rows.push(Arc::new(Row {
-                        id: node.id,
-                        start,
-                        text: "Table (linear reading view; grid editing unavailable)".into(),
-                        spans: Vec::new(),
-                        kind: "table-label".into(),
-                        level: 0,
-                        depth,
-                        marker: String::new(),
-                    }));
-                }
                 for index in 0..node.children.len() {
                     let child = node.children.get(index).expect("child");
                     let marker = match node.kind() {
@@ -186,11 +239,7 @@ impl ProjectedBlock {
                         ),
                         "bulletList" => "•".into(),
                         "taskItem" => {
-                            if node
-                                .attr("checked")
-                                .and_then(Value::as_bool)
-                                .unwrap_or(false)
-                            {
+                            if node.task_done() {
                                 "[x]".into()
                             } else {
                                 "[ ]".into()
@@ -205,12 +254,7 @@ impl ProjectedBlock {
                         depth
                             + usize::from(matches!(
                                 node.kind(),
-                                "blockquote"
-                                    | "bulletList"
-                                    | "orderedList"
-                                    | "taskList"
-                                    | "tableCell"
-                                    | "tableHeader"
+                                "blockquote" | "bulletList" | "orderedList" | "taskList"
                             )),
                         marker,
                         rows,
@@ -219,8 +263,56 @@ impl ProjectedBlock {
             }
         }
         let mut rows = Vec::new();
-        visit(&source, 0, 0, String::new(), &mut rows);
-        Self { source, rows }
+        visit(&source, 0, depth, marker, &mut rows);
+        let grid = if source.kind() == "table" {
+            let mut cells = Vec::new();
+            let mut occupied = std::collections::HashMap::new();
+            let mut columns = 0;
+            for ri in 0..source.children.len() {
+                let row = source.children.get(ri).expect("row");
+                let mut column = 0;
+                for ci in 0..row.children.len() {
+                    while occupied.get(&column).is_some_and(|until| *until > ri) {
+                        column += 1;
+                    }
+                    let cell = row.children.get(ci).expect("cell");
+                    let colspan = cell
+                        .attr("colspan")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(1)
+                        .clamp(1, 1000) as u16;
+                    let rowspan = cell
+                        .attr("rowspan")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(1)
+                        .clamp(1, 1000) as u16;
+                    let start = 2 + source.children.prefix(ri) + row.children.prefix(ci);
+                    let end = start + cell.units();
+                    let first = rows.partition_point(|row| row.start < start);
+                    let last = rows.partition_point(|row| row.start < end);
+                    cells.push(GridCell {
+                        row: ri as i16 + 1,
+                        column: column as i16 + 1,
+                        colspan,
+                        rowspan,
+                        header: cell.kind() == "tableHeader",
+                        rows: first..last,
+                    });
+                    for index in column..column + usize::from(colspan) {
+                        occupied.insert(index, ri + usize::from(rowspan));
+                    }
+                    column += usize::from(colspan);
+                    columns = columns.max(column);
+                }
+            }
+            Some(Grid {
+                columns: columns as u16,
+                cells,
+            })
+        } else {
+            None
+        };
+        Self { source, rows, grid }
     }
 }
 
@@ -256,12 +348,20 @@ pub fn render_row(
     row: Arc<Row>,
     block_start: usize,
     current: bool,
+    in_cell: bool,
     window: &mut Window,
     cx: &mut Context<EditorPane>,
 ) -> gpui::AnyElement {
     let colors = theme(window);
     let mut base = window.text_style().to_run(0);
     base.color = colors.foreground;
+    if row.marker == "[x]" {
+        base.color.a *= 0.5;
+        base.strikethrough = Some(StrikethroughStyle {
+            thickness: px(1.),
+            color: None,
+        });
+    }
     let mut runs = Vec::new();
     for span in &row.spans {
         let mut run = TextRun {
@@ -297,7 +397,11 @@ pub fn render_row(
             run.font.family = "monospace".into();
         }
         if row.kind == "heading" {
-            run.font.weight = FontWeight::BOLD;
+            run.font.weight = if row.level == 1 {
+                FontWeight::BOLD
+            } else {
+                FontWeight::SEMIBOLD
+            };
         }
         runs.push(run);
     }
@@ -326,21 +430,63 @@ pub fn render_row(
             2 => 18.,
             _ => 16.,
         }
+    } else if row.kind == "codeBlock" {
+        14.
     } else {
         16.
+    };
+    let line_height = if row.kind == "heading" {
+        match row.level {
+            1 => 28.,
+            2 => 26.,
+            _ => 24.,
+        }
+    } else if row.kind == "codeBlock" {
+        20.
+    } else {
+        24.
     };
     div()
         .relative()
         .w_full()
-        .min_h(px(font_size * 1.5))
-        .py(px(2.))
-        .pl(px(12. + row.depth as f32 * 20.))
-        .pr(px(12.))
+        .min_h(px(line_height))
+        .py(px(font_size * 0.125))
+        .pl(px(if in_cell {
+            0.
+        } else {
+            12. + row.depth as f32 * 20.
+        }))
+        .pr(px(if in_cell { 0. } else { 12. }))
         .text_size(px(font_size))
-        .line_height(px(font_size * 1.5))
-        .when(row.kind == "codeBlock", |div| div.bg(colors.muted))
+        .line_height(px(line_height))
+        .when(row.kind == "codeBlock", |div| {
+            div.bg(colors.muted).my_2().py_4().rounded_md()
+        })
         .when(!row.marker.is_empty(), |div| {
-            div.child(div_marker(row.marker.clone()))
+            let marker = row.marker.clone();
+            if matches!(marker.as_str(), "[ ]" | "[x]") {
+                div.child(
+                    gpui::div()
+                        .id(("task", row.id))
+                        .absolute()
+                        .left_0()
+                        .cursor_pointer()
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                if let Some(model) = &mut this.model {
+                                    let before = model.revision;
+                                    let result = model.toggle_task(block_start + row.start);
+                                    this.edited(before, result, cx);
+                                }
+                                cx.stop_propagation();
+                            }),
+                        )
+                        .child(if marker == "[x]" { "☑" } else { "☐" }),
+                )
+            } else {
+                div.child(div_marker(marker))
+            }
         })
         .child(text)
         .child(
