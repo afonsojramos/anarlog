@@ -12,6 +12,7 @@ use crate::{QueryEvent, Result, TransactionStatement};
 mod e2ee_sync;
 mod open;
 mod recovery;
+mod renderer;
 mod replica_sync;
 mod sync_result;
 mod witness_watch;
@@ -55,25 +56,28 @@ fn focus_nudge_due(last: Option<std::time::Instant>, now: std::time::Instant) ->
 }
 
 #[derive(Clone)]
-pub struct QueryEventChannel(Channel<QueryEvent>);
+pub struct QueryEventChannel {
+    channel: Channel<QueryEvent>,
+    session: std::sync::Arc<renderer::RendererSession>,
+}
 
 impl QueryEventChannel {
+    #[cfg(test)]
     pub fn new(channel: Channel<QueryEvent>) -> Self {
-        Self(channel)
+        Self {
+            channel,
+            session: Default::default(),
+        }
     }
 }
 
 impl QueryEventSink for QueryEventChannel {
     fn send_result(&self, rows: Vec<serde_json::Value>) -> std::result::Result<(), String> {
-        self.0
-            .send(QueryEvent::Result(rows))
-            .map_err(|error| error.to_string())
+        self.session.send(&self.channel, QueryEvent::Result(rows))
     }
 
     fn send_error(&self, error: String) -> std::result::Result<(), String> {
-        self.0
-            .send(QueryEvent::Error(error))
-            .map_err(|error| error.to_string())
+        self.session.send(&self.channel, QueryEvent::Error(error))
     }
 }
 
@@ -140,6 +144,7 @@ pub struct PluginDbRuntime {
     synced_write_barrier: tokio::sync::RwLock<()>,
     executor: DbExecutor,
     live_query_runtime: LiveQueryRuntime<QueryEventChannel>,
+    renderer_subscriptions: renderer::RendererSubscriptions,
     e2ee_sync_hook: std::sync::Arc<E2eeSyncHook>,
     scheduled_cloudsync_full_resync: std::sync::Arc<std::sync::Mutex<CloudsyncFullResyncSchedule>>,
     cloudsync_full_resync_task: tokio::sync::Mutex<Option<CloudsyncFullResyncTask>>,
@@ -229,6 +234,7 @@ impl PluginDbRuntime {
             synced_write_barrier: tokio::sync::RwLock::new(()),
             executor: DbExecutor::new(std::sync::Arc::clone(&db)),
             live_query_runtime: LiveQueryRuntime::new(db),
+            renderer_subscriptions: Default::default(),
             e2ee_sync_hook,
             _witness_watch: witness_watch,
             scheduled_cloudsync_full_resync: Default::default(),
@@ -643,11 +649,34 @@ impl PluginDbRuntime {
         sink: QueryEventChannel,
     ) -> Result<SubscriptionRegistration> {
         self.ensure_app_schema().await?;
-        Ok(self.live_query_runtime.subscribe(sql, params, sink).await?)
+        let session = sink.session.clone();
+        let registration = self.live_query_runtime.subscribe(sql, params, sink).await?;
+        if !session.register(&registration.id) {
+            let _ = self.live_query_runtime.unsubscribe(&registration.id).await;
+            return Err(std::io::Error::other("live query renderer has closed").into());
+        }
+        Ok(registration)
     }
 
     pub async fn unsubscribe(&self, subscription_id: &str) -> anlg_db_reactive::Result<()> {
-        self.live_query_runtime.unsubscribe(subscription_id).await
+        let result = self.live_query_runtime.unsubscribe(subscription_id).await;
+        self.renderer_subscriptions.remove(subscription_id);
+        result
+    }
+
+    pub(crate) fn query_channel(
+        &self,
+        label: &str,
+        channel: Channel<QueryEvent>,
+    ) -> QueryEventChannel {
+        QueryEventChannel {
+            channel,
+            session: self.renderer_subscriptions.session(label),
+        }
+    }
+
+    pub(crate) fn close_webview_subscriptions(&self, label: &str) -> Vec<String> {
+        self.renderer_subscriptions.close(label)
     }
 
     pub async fn configure_cloudsync(&self, config_json: String) -> Result<()> {

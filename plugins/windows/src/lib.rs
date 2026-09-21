@@ -317,9 +317,6 @@ pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
 }
 
 pub fn extend_builder(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
-    #[cfg(target_os = "macos")]
-    let builder = builder.on_web_content_process_terminate(AppWindow::recover_terminated_webview);
-
     #[cfg(all(target_os = "macos", feature = "macos-private-api"))]
     {
         builder.plugin(tauri_nspanel::init())

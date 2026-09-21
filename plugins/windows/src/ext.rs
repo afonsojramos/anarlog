@@ -101,7 +101,7 @@ impl AppWindow {
     }
 
     #[cfg(target_os = "macos")]
-    pub(crate) fn recover_terminated_webview(webview: &tauri::Webview<tauri::Wry>) {
+    pub fn recover_terminated_webview(webview: &tauri::Webview<tauri::Wry>) {
         let app = webview.app_handle();
         let label = webview.label();
         let is_visible = webview_is_visible(app, label);

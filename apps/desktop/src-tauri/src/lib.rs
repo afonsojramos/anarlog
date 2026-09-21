@@ -244,6 +244,14 @@ pub fn main() {
         .manage(db.clone())
         .manage(crash_reporting_state);
 
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.on_web_content_process_terminate(|webview| {
+            tauri_plugin_db::close_webview_subscriptions(webview.app_handle(), webview.label());
+            AppWindow::recover_terminated_webview(webview);
+        });
+    }
+
     // https://docs.crabnebula.dev/plugins/tauri-e2e-tests/#macos-support
     #[cfg(all(target_os = "macos", feature = "automation"))]
     {

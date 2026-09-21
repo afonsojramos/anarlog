@@ -500,18 +500,15 @@ pub(crate) async fn import_e2ee_device_enrollment<R: tauri::Runtime>(
 
 #[tauri::command]
 #[specta::specta]
-pub(crate) async fn subscribe(
+pub(crate) async fn subscribe<R: tauri::Runtime>(
+    webview: tauri::Webview<R>,
     state: tauri::State<'_, ManagedState>,
     sql: String,
     params: Vec<serde_json::Value>,
     on_event: Channel<QueryEvent>,
 ) -> Result<anlg_db_reactive::SubscriptionRegistration, String> {
     state
-        .subscribe(
-            sql,
-            params,
-            crate::runtime::QueryEventChannel::new(on_event),
-        )
+        .subscribe(sql, params, state.query_channel(webview.label(), on_event))
         .await
         .map_err(|error| error.to_string())
 }
