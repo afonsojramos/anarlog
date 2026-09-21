@@ -300,6 +300,28 @@ async fn imports_are_atomic_conflict_preserving_and_keep_opaque_documents() {
 }
 
 #[test]
+fn transcript_only_imports_provide_editable_empty_memos() {
+    for (extension, content) in [
+        ("srt", "1\n00:00:01,000 --> 00:00:02,500\nAda: Hello\n\n"),
+        ("vtt", "WEBVTT\n\n00:00:01.000 --> 00:00:02.500\nHello\n\n"),
+        ("txt", "Hello"),
+        ("json", r#"{"transcript":"Hello"}"#),
+        ("md", ""),
+    ] {
+        let meeting = data::parse(extension, "Imported", content)
+            .unwrap()
+            .remove(0);
+        let body = meeting.documents[0]["body"].as_str().unwrap();
+        let document = crate::editor::document::Document::parse(body.into()).unwrap();
+        let mut editor = crate::editor::model::EditorModel::new(document);
+        editor.replace(editor.selection.range(), "Memo 😀").unwrap();
+        let saved = editor.document.serialize_for_save().unwrap();
+        assert!(saved.contains("Memo 😀"));
+        crate::editor::document::Document::parse(saved).unwrap();
+    }
+}
+
+#[test]
 fn source_formats_preserve_unicode_speakers_timing_and_original_fields() {
     for extension in ["srt", "vtt"] {
         let text = if extension == "srt" {

@@ -524,21 +524,34 @@ impl Document {
     }
 
     pub fn first_caret(&self) -> usize {
-        fn first(node: &NodeRef, start: usize) -> Option<usize> {
+        self.edge_caret(false)
+    }
+
+    pub fn edge_caret(&self, end: bool) -> usize {
+        fn edge(node: &NodeRef, start: usize, end: bool) -> Option<usize> {
             if node.is_textblock() {
-                return Some(start);
+                return Some(start + if end { node.children.units() } else { 0 });
             }
-            for index in 0..node.children.len() {
-                if let Some(position) = first(
+            if !node.known() || node.is_atom() {
+                return None;
+            }
+            for offset in 0..node.children.len() {
+                let index = if end {
+                    node.children.len() - 1 - offset
+                } else {
+                    offset
+                };
+                if let Some(position) = edge(
                     node.children.get(index)?,
                     start + node.children.prefix(index) + 1,
+                    end,
                 ) {
                     return Some(position);
                 }
             }
             None
         }
-        first(&self.root, 0).unwrap_or(0)
+        edge(&self.root, 0, end).unwrap_or(0)
     }
 }
 

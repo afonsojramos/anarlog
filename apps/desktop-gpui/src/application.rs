@@ -938,6 +938,17 @@ impl ApplicationView {
         cx: &mut Context<Self>,
     ) {
         match event {
+            WorkspaceEvent::SessionsDeleted(ids) => {
+                if self
+                    .editor
+                    .as_ref()
+                    .is_some_and(|editor| ids.contains(&editor.read(cx).init.session_id))
+                {
+                    self.editor_subscriptions.clear();
+                    self.editor = None;
+                }
+                cx.notify();
+            }
             WorkspaceEvent::OpenEditor {
                 session_id,
                 document,

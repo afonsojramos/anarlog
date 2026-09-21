@@ -555,18 +555,23 @@ impl Render for MeetingPane {
             .flex()
             .flex_col()
             .size_full()
+            .min_w_0()
             .text_color(colors.foreground)
             .bg(colors.background)
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .w_full()
                     .gap_3()
                     .p_3()
                     .border_b_1()
                     .border_color(colors.border)
                     .child(
                         div()
-                            .flex_1()
+                            .w_full()
+                            .min_w_0()
                             .child(SharedString::from(self.status.clone())),
                     )
                     .when(self.phase != Phase::Finalizing, |view| {
@@ -603,7 +608,7 @@ impl Render for MeetingPane {
                         } else { this.failed(ServiceError::Unsupported("Meeting AI provider and context services have not been installed.".into()), cx); }
                     })))
                     .when(!running && self.phase != Phase::Finalizing, |view| {
-                        view.child(div().id("microphone").cursor_pointer().child(self.microphone.clone()).on_click(cx.listener(|this, _, _, cx| this.devices(cx))))
+                        view.child(div().id("microphone").max_w_full().truncate().cursor_pointer().child(self.microphone.clone()).on_click(cx.listener(|this, _, _, cx| this.devices(cx))))
                     })
                     .when(!self.ai_open && !running && self.phase != Phase::Finalizing, |view| {
                         view.child(

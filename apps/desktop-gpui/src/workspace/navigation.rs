@@ -261,6 +261,25 @@ impl Navigation {
         true
     }
 
+    pub fn remove_sessions(&mut self, ids: &[SessionId]) {
+        let slots = self
+            .tabs
+            .iter()
+            .filter_map(|tab| {
+                matches!(&tab.route, Route::Session(id) if ids.contains(id)).then_some(tab.slot)
+            })
+            .collect::<Vec<_>>();
+        for slot in slots {
+            self.close(slot);
+        }
+        for id in ids {
+            self.invalidate(&Route::Session(id.clone()));
+        }
+        if self.tabs.is_empty() {
+            self.open(Route::Empty, true, false);
+        }
+    }
+
     pub fn restore_target(&self) -> Option<Route> {
         self.closed.back().cloned()
     }
@@ -483,6 +502,23 @@ mod tests {
         assert!(nav.tabs[1..].iter().all(|tab| !tab.pinned));
         assert_eq!(nav.active, Some(b));
         assert_eq!(nav.current().unwrap().route, Route::Empty);
+    }
+
+    #[test]
+    fn deleting_active_sessions_selects_survivor_and_purges_navigation_history() {
+        let mut nav = Navigation::default();
+        let surviving = nav.open(note("deleted"), true, false);
+        nav.open(note("survivor"), false, false);
+        let removed = nav.open(note("deleted"), true, false);
+        nav.pin(removed, true);
+        nav.remove_sessions(&[SessionId("deleted".into())]);
+        assert_eq!(nav.active, Some(surviving));
+        assert_eq!(nav.current().unwrap().route, note("survivor"));
+        assert_eq!(nav.history_target(false), None);
+        assert_eq!(nav.restore_target(), None);
+        nav.remove_sessions(&[SessionId("survivor".into())]);
+        assert_eq!(nav.current().unwrap().route, Route::Empty);
+        assert_eq!(nav.restore_target(), None);
     }
 
     #[test]

@@ -422,11 +422,15 @@ fn parse_cancellable(
 
 fn from_markdown(title: &str, content: &str) -> Result<CanonicalMeeting> {
     let id = Uuid::new_v4().to_string();
+    let mut body = anlg_tiptap::md_to_tiptap_json(content).map_err(failure)?;
+    if body["content"].as_array().is_some_and(Vec::is_empty) {
+        body["content"] = json!([{"type": "paragraph"}]);
+    }
     Ok(CanonicalMeeting {
         version: 1,
         session: json!({"id":id,"title":title,"kind":"meeting"}),
         documents: vec![
-            json!({"id":Uuid::new_v4().to_string(),"session_id":id,"body_format":"prosemirror_json","body":anlg_tiptap::md_to_tiptap_json(content).map_err(failure)?.to_string()}),
+            json!({"id":Uuid::new_v4().to_string(),"session_id":id,"body_format":"prosemirror_json","body":body.to_string()}),
         ],
         transcripts: vec![],
         participants: vec![],

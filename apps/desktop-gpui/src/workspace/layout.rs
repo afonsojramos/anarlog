@@ -4,7 +4,7 @@ use super::{
     navigation::{Route, SlotId},
     shell::{Navigate, WorkspaceView},
 };
-use crate::ui::theme::{SYSTEM_FONT, theme};
+use crate::ui::theme::{system_font, theme};
 
 struct Hint(&'static str);
 
@@ -527,7 +527,7 @@ impl Render for WorkspaceView {
             .pl(px(4.))
             .gap(px(4.))
             .overflow_hidden()
-            .font_family(SYSTEM_FONT)
+            .font_family(system_font(window))
             .text_color(colors.foreground)
             .bg(colors.background)
             .track_focus(&self.focus)
@@ -559,13 +559,13 @@ impl Render for WorkspaceView {
             })
             .child(surface)
             .when_some(self.note_operation.clone(),|view,(ids,moving)| view.child(
-                div().absolute().inset_0().bg(gpui::rgba(0x00000055)).flex().items_center().justify_center().child(
+                div().absolute().inset_0().occlude().bg(gpui::rgba(0x00000055)).flex().items_center().justify_center().child(
                     div().w(px(420.)).p_6().rounded(px(12.)).bg(colors.card).border_1().border_color(colors.border).flex().flex_col().gap_4()
                         .child(div().text_lg().child(format!("{} {} notes?",if moving {"Move"} else {"Delete"},ids.len())))
                         .when(moving,|view| view.child(self.move_target.clone()))
                         .when(!moving,|view| view.child(div().text_sm().child("The selected notes and their related records will be removed from the library.")))
                         .child(div().flex().justify_end().gap_3()
-                            .child(div().id("cancel-note-operation").cursor_pointer().px_3().py_2().child("Cancel").on_click(cx.listener(|this,_,_,cx| { if !this.mutation_busy { this.note_operation=None; cx.notify(); } })))
+                            .child(div().id("cancel-note-operation").cursor_pointer().px_3().py_2().child("Cancel").on_click(cx.listener(|this,_,_,cx| this.close_note_operation(cx))))
                             .child(div().id("confirm-note-operation").cursor_pointer().px_3().py_2().rounded(px(6.)).bg(colors.accent).child(if self.mutation_busy {"Saving…"} else if moving {"Move notes"} else {"Delete notes"}).on_click(cx.listener(|this,_,_,cx| this.submit_note_operation(cx))))
                         )
                 )
@@ -575,6 +575,7 @@ impl Render for WorkspaceView {
                     div()
                         .absolute()
                         .inset_0()
+                        .occlude()
                         .flex()
                         .items_center()
                         .justify_center()

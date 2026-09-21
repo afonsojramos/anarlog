@@ -361,6 +361,7 @@ impl Render for TextInput {
                 MouseButton::Left,
                 cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
                     this.focus.focus(window);
+                    cx.stop_propagation();
                     if this.multiline {
                         if let Some(index) =
                             this.character_index_for_point(event.position, window, cx)

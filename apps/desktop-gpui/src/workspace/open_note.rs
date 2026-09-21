@@ -96,6 +96,22 @@ impl NoteView {
         self.loading = false;
     }
 
+    pub fn remove_sessions(&mut self, ids: &[SessionId], cx: &mut Context<Self>) {
+        if self
+            .current
+            .as_ref()
+            .is_some_and(|session| ids.contains(&session.summary.id))
+        {
+            self.cancel_open();
+            self.current = None;
+            self.content = None;
+            self.message.clear();
+            self.title
+                .update(cx, |title, cx| title.set_text(String::new(), cx));
+            cx.notify();
+        }
+    }
+
     fn restore_title(&mut self, cx: &mut Context<Self>) {
         if self.busy {
             return;

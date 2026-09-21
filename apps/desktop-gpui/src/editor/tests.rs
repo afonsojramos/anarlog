@@ -14,6 +14,40 @@ use super::{
 };
 
 #[test]
+fn document_boundary_navigation_reaches_nested_unicode_text_and_extends_selection() {
+    let mut editor = fixture(json!({"type":"doc","content":[
+        {"type":"horizontalRule"},
+        {"type":"paragraph","content":[{"type":"text","text":"first"}]},
+        {"type":"bulletList","content":[{"type":"listItem","content":[
+            {"type":"paragraph","content":[{"type":"text","text":"last 😀"}]}
+        ]}]},
+        {"type":"horizontalRule"}
+    ]}));
+    let start = caret_at(&editor, &[1], 0);
+    let end = caret_at(&editor, &[2, 0, 0], 7);
+    editor.select(Selection::caret(start + 2));
+    editor.move_document_boundary(true, true);
+    assert_eq!(
+        editor.selection,
+        Selection {
+            anchor: start + 2,
+            head: end
+        }
+    );
+    assert_eq!(
+        editor.document.resolve(end).unwrap().node.kind(),
+        "paragraph"
+    );
+    editor.move_document_boundary(false, false);
+    assert_eq!(editor.selection, Selection::caret(start));
+    editor.move_document_boundary(true, false);
+    editor.replace(editor.selection.range(), "!").unwrap();
+    assert!(editor.document.serialize().unwrap().contains("last 😀!"));
+    editor.undo().unwrap();
+    assert_eq!(editor.selection, Selection::caret(end));
+}
+
+#[test]
 fn virtual_projection_indexes_nested_lists_without_projecting_siblings() {
     let raw = json!({"type":"doc","content":[{"type":"orderedList","attrs":{"start":3},"content":
         (0..10_000).map(|index| json!({"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":format!("row {index} 😀")}]}]})).collect::<Vec<_>>()

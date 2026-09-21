@@ -19,7 +19,7 @@ use crate::{
     contracts::{LaneContext, ProductEvent, ProductRoute},
     ui::{
         input::{InputEvent, TextInput},
-        theme::{SYSTEM_FONT, theme},
+        theme::{system_font, theme},
     },
 };
 
@@ -477,7 +477,7 @@ impl Render for ProductPane {
             .flex_col()
             .bg(colors.background)
             .text_color(colors.foreground)
-            .font_family(SYSTEM_FONT)
+            .font_family(system_font(window))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                 if event.keystroke.key == "escape" {
                     this.search

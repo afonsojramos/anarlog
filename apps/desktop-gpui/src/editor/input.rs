@@ -18,10 +18,13 @@ impl EditorPane {
     ) {
         let key = event.keystroke.key.as_str();
         let modifiers = event.keystroke.modifiers;
+        let document_boundary = (matches!(key, "home" | "end")
+            && (modifiers.control || modifiers.platform))
+            || (cfg!(target_os = "macos") && modifiers.platform && matches!(key, "up" | "down"));
         let key = if cfg!(target_os = "macos") && modifiers.platform {
             match key {
-                "left" => "home",
-                "right" => "end",
+                "left" | "up" => "home",
+                "right" | "down" => "end",
                 key => key,
             }
         } else {
@@ -211,6 +214,10 @@ impl EditorPane {
                 {
                     self.message = error;
                 }
+                Ok(())
+            }
+            "home" | "end" if document_boundary => {
+                model.move_document_boundary(key == "end", modifiers.shift);
                 Ok(())
             }
             "home" | "end" => model

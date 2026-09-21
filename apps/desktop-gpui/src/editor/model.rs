@@ -198,6 +198,14 @@ impl EditorModel {
         self.stored_marks = None;
     }
 
+    pub fn move_document_boundary(&mut self, end: bool, extend: bool) {
+        let head = self.document.edge_caret(end);
+        self.select(Selection {
+            anchor: if extend { self.selection.anchor } else { head },
+            head,
+        });
+    }
+
     pub fn marked_range(&self) -> Option<Range<usize>> {
         self.composition
             .as_ref()

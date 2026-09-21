@@ -89,6 +89,9 @@ pub struct WorkspaceView {
 impl EventEmitter<WorkspaceEvent> for WorkspaceView {}
 impl EventEmitter<WorkspaceAction> for WorkspaceView {}
 
+struct NoteOperationChanged;
+impl EventEmitter<NoteOperationChanged> for WorkspaceView {}
+
 impl Focusable for WorkspaceView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
@@ -174,6 +177,22 @@ impl WorkspaceView {
         let open_subscription = cx.subscribe(&library, |this, _, event: &OpenNote, cx| {
             this.handle_note(event, cx)
         });
+        let operation_subscription = cx.subscribe_in(
+            &cx.entity(),
+            window,
+            |this, _, _: &NoteOperationChanged, window, cx| {
+                if let Some((_, moving)) = &this.note_operation {
+                    this.return_focus = window.focused(cx);
+                    if *moving {
+                        cx.focus_view(&this.move_target, window);
+                    } else {
+                        this.focus.focus(window);
+                    }
+                } else if let Some(focus) = this.return_focus.take() {
+                    focus.focus(window);
+                }
+            },
+        );
         let forward_subscription = cx.subscribe(&note, |_, _, event: &WorkspaceEvent, cx| {
             cx.emit(event.clone())
         });
@@ -277,6 +296,7 @@ impl WorkspaceView {
             mutation_busy: false,
             automation_client: None,
             subscriptions: vec![
+                operation_subscription,
                 search_subscription,
                 open_subscription,
                 forward_subscription,
@@ -302,6 +322,9 @@ impl WorkspaceView {
                 }
             }
             OpenNote::Delete(ids) | OpenNote::Move(ids) => {
+                if self.note_operation.is_some() {
+                    return;
+                }
                 if !self.can_navigate(cx) || ids.iter().any(|id| self.recording.contains(id)) {
                     self.set_status(
                         "Save edits and stop selected recordings before changing these notes."
@@ -311,6 +334,9 @@ impl WorkspaceView {
                     return;
                 }
                 self.note_operation = Some((ids.clone(), matches!(event, OpenNote::Move(_))));
+                self.move_target
+                    .update(cx, |input, cx| input.set_text(String::new(), cx));
+                cx.emit(NoteOperationChanged);
                 cx.notify();
             }
             OpenNote::Pin(ids) => {
@@ -338,6 +364,14 @@ impl WorkspaceView {
         }
     }
 
+    pub(super) fn close_note_operation(&mut self, cx: &mut Context<Self>) {
+        if !self.mutation_busy {
+            self.note_operation = None;
+            cx.emit(NoteOperationChanged);
+            cx.notify();
+        }
+    }
+
     pub(super) fn submit_note_operation(&mut self, cx: &mut Context<Self>) {
         if self.mutation_busy {
             return;
@@ -359,31 +393,61 @@ impl WorkspaceView {
         let reply = super::notes::dispatch(&self.runtime, command);
         self.mutation_busy = true;
         cx.notify();
-        cx.spawn(async move |this,cx| {
-            let result=match reply {Ok(reply)=>reply.receive().await,Err(error)=>Err(error)};
-            let _=this.update(cx,|this,cx| {
-                this.mutation_busy=false;
+        cx.spawn(async move |this, cx| {
+            let result = match reply {
+                Ok(reply) => reply.receive().await,
+                Err(error) => Err(error),
+            };
+            let _ = this.update(cx, |this, cx| {
+                this.mutation_busy = false;
                 match result {
-                    Ok(())=>{
-                        this.note_operation=None;
+                    Ok(()) => {
+                        this.close_note_operation(cx);
                         if !moving {
-                            let slots=this.navigation.tabs.iter().filter(|tab| matches!(&tab.route,Route::Session(id) if ids.contains(id))).map(|tab| tab.slot).collect::<Vec<_>>();
-                            for slot in slots { this.navigation.close(slot); }
+                            let previous = this.current_route();
+                            this.navigation.remove_sessions(&ids);
+                            this.note
+                                .update(cx, |note, cx| note.remove_sessions(&ids, cx));
+                            for id in ids.iter() {
+                                this.titles.remove(id);
+                                this.title_order.retain(|cached| cached != id);
+                                this.dirty.remove(id);
+                            }
+                            cx.emit(WorkspaceEvent::SessionsDeleted(ids.clone()));
+                            if this.current_route() != previous
+                                && let Route::Session(id) = this.current_route()
+                            {
+                                this.note.update(cx, |note, cx| note.open(id, cx));
+                            }
+                            if this.pin_persistence {
+                                cx.emit(WorkspaceAction::PinnedChanged(
+                                    this.navigation
+                                        .tabs
+                                        .iter()
+                                        .filter(|tab| tab.pinned && tab.route.persistent_pin())
+                                        .map(|tab| tab.route.clone())
+                                        .collect(),
+                                ));
+                            }
                             this.sync_route(cx);
                         }
-                        this.library.update(cx,|library,cx| library.clear_selection(cx));
-                        for (catalog,view) in &this.catalogs {
-                            if *catalog==Catalog::Folders {
-                                view.update(cx,|view,cx| view.refresh_folder_notes(cx));
+                        this.library
+                            .update(cx, |library, cx| library.clear_selection(cx));
+                        for (catalog, view) in &this.catalogs {
+                            if *catalog == Catalog::Folders {
+                                view.update(cx, |view, cx| view.refresh_folder_notes(cx));
                             }
                         }
                         this.reload(cx);
                     }
-                    Err(error)=>this.set_status(format!("Could not complete note operation: {error}"),cx),
+                    Err(error) => {
+                        this.set_status(format!("Could not complete note operation: {error}"), cx)
+                    }
                 }
                 cx.notify();
             });
-        }).detach();
+        })
+        .detach();
     }
 
     pub fn current_route(&self) -> Route {
@@ -970,9 +1034,7 @@ impl WorkspaceView {
         if self.note_operation.is_some() {
             match event.keystroke.key.as_str() {
                 "escape" if !self.mutation_busy => {
-                    self.note_operation = None;
-                    self.focus.focus(window);
-                    cx.notify();
+                    self.close_note_operation(cx);
                 }
                 "enter" => self.submit_note_operation(cx),
                 _ => return,

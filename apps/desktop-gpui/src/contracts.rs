@@ -72,6 +72,7 @@ pub enum ProductEvent {
 
 #[derive(Clone, Debug)]
 pub enum WorkspaceEvent {
+    SessionsDeleted(Arc<[SessionId]>),
     OpenEditor {
         session_id: SessionId,
         document: DocumentSnapshot,
