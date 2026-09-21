@@ -23,7 +23,9 @@ resource_id!(AttachmentId);
 
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum ServiceError {
-    #[error("The work queue is full. Retry after pending work completes.")]
+    #[error(
+        "The runtime is starting or its work queue is full. Wait for readiness or pending work."
+    )]
     Busy,
     #[error("The runtime is closed.")]
     Closed,
@@ -66,6 +68,34 @@ impl Generation {
     pub fn advance(&mut self) -> Self {
         self.0 = self.0.checked_add(1).expect("request generation exhausted");
         *self
+    }
+}
+
+#[derive(Default)]
+pub struct RequestGate {
+    generation: Generation,
+    cancellation: crate::CancellationToken,
+}
+
+impl RequestGate {
+    pub fn begin(&mut self) -> (Generation, crate::CancellationToken) {
+        self.cancellation.cancel();
+        self.cancellation = crate::CancellationToken::new();
+        (self.generation.advance(), self.cancellation.clone())
+    }
+
+    pub fn is_current(&self, generation: Generation) -> bool {
+        self.generation == generation && !self.cancellation.is_cancelled()
+    }
+
+    pub fn cancel(&self) {
+        self.cancellation.cancel();
+    }
+}
+
+impl Drop for RequestGate {
+    fn drop(&mut self) {
+        self.cancel();
     }
 }
 

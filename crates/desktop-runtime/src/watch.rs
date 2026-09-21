@@ -1,10 +1,71 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashSet,
+    io,
+    sync::{Arc, Mutex, atomic::Ordering},
+};
 
+use anlg_db_core::Db;
 use anlg_db_reactive::{LiveQueryRuntime, QueryEventSink, SubscriptionRegistration};
 use serde_json::Value;
 use tokio::sync::{OwnedSemaphorePermit, mpsc, watch};
 
-use crate::{Reply, Result, RuntimeHandle, ServiceError, types::failure};
+use crate::{
+    DocumentSnapshot, MAX_DOCUMENT_BYTES, Reply, Result, RuntimeHandle, ServiceError, SessionId,
+    types::failure,
+};
+
+pub const MAX_WATCH_ROWS: usize = 1000;
+
+struct SizeBound(usize);
+
+impl io::Write for SizeBound {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0 += bytes.len();
+        if self.0 > MAX_DOCUMENT_BYTES {
+            return Err(io::Error::other("Watch exceeds 16 MiB"));
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+pub(crate) struct WatchRegistry {
+    runtime: LiveQueryRuntime<Sink>,
+    ids: tokio::sync::Mutex<HashSet<String>>,
+    executor: tokio::runtime::Handle,
+}
+
+impl WatchRegistry {
+    pub(crate) fn new(db: Arc<Db>) -> Self {
+        Self {
+            runtime: LiveQueryRuntime::new(db),
+            ids: tokio::sync::Mutex::new(HashSet::new()),
+            executor: tokio::runtime::Handle::current(),
+        }
+    }
+
+    async fn unsubscribe(&self, id: &str) -> Result<()> {
+        let mut ids = self.ids.lock().await;
+        if ids.contains(id) {
+            // A failed sink may already have removed the subscription.
+            if self.runtime.dependency_analysis(id).await.is_some() {
+                self.runtime.unsubscribe(id).await.map_err(failure)?;
+            }
+            ids.remove(id);
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn close(&self) {
+        let mut ids = self.ids.lock().await;
+        for id in ids.drain() {
+            let _ = self.runtime.unsubscribe(&id).await;
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct WatchSnapshot {
@@ -17,10 +78,31 @@ struct Sink {
     snapshots: watch::Sender<WatchSnapshot>,
     errors: mpsc::Sender<ServiceError>,
     terminal_error: Arc<Mutex<Option<ServiceError>>>,
+    metrics: Arc<crate::metrics::Metrics>,
 }
 
 impl QueryEventSink for Sink {
     fn send_result(&self, rows: Vec<Value>) -> std::result::Result<(), String> {
+        if self.snapshots.receiver_count() == 0 {
+            return Err("Watch receiver closed".into());
+        }
+        let mut size = SizeBound(0);
+        if rows.len() > MAX_WATCH_ROWS || serde_json::to_writer(&mut size, &rows).is_err() {
+            let error = ServiceError::Unsupported(
+                "Watch exceeds 1000 rows or 16 MiB; paginate the query".into(),
+            );
+            *self.terminal_error.lock().map_err(|e| e.to_string())? = Some(error);
+            self.snapshots
+                .send_modify(|snapshot| snapshot.sequence += 1);
+            return Err("Watch snapshot exceeds row bound".into());
+        }
+        self.metrics.snapshot_count.fetch_add(1, Ordering::Relaxed);
+        self.metrics
+            .snapshot_rows
+            .fetch_add(rows.len() as u64, Ordering::Relaxed);
+        self.metrics
+            .snapshot_bytes
+            .fetch_add(size.0 as u64, Ordering::Relaxed);
         self.snapshots.send_modify(|snapshot| {
             snapshot.sequence += 1;
             snapshot.rows = rows.into();
@@ -47,8 +129,8 @@ pub struct QueryWatch {
     pub snapshots: watch::Receiver<WatchSnapshot>,
     pub errors: mpsc::Receiver<ServiceError>,
     terminal_error: Arc<Mutex<Option<ServiceError>>>,
-    runtime: Arc<LiveQueryRuntime<Sink>>,
-    _slot: OwnedSemaphorePermit,
+    registry: Arc<WatchRegistry>,
+    slot: Option<OwnedSemaphorePermit>,
 }
 
 impl QueryWatch {
@@ -59,15 +141,57 @@ impl QueryWatch {
             .and_then(|error| error.clone())
     }
 
-    pub async fn unsubscribe(self) -> Result<()> {
-        self.runtime
-            .unsubscribe(&self.registration.id)
-            .await
+    pub async fn unsubscribe(mut self) -> Result<()> {
+        self.registry.unsubscribe(&self.registration.id).await?;
+        self.slot.take();
+        Ok(())
+    }
+}
+
+impl Drop for QueryWatch {
+    fn drop(&mut self) {
+        let registry = self.registry.clone();
+        let id = self.registration.id.clone();
+        let slot = self.slot.take();
+        self.registry.executor.spawn(async move {
+            let _ = registry.unsubscribe(&id).await;
+            drop(slot);
+        });
+    }
+}
+
+pub struct DocumentWatch(pub QueryWatch);
+
+impl DocumentWatch {
+    /// Call on a background executor; decoding can copy a large document.
+    pub fn snapshot(&self) -> Result<Option<DocumentSnapshot>> {
+        if let Some(error) = self.0.terminal_error() {
+            return Err(error);
+        }
+        self.0
+            .snapshots
+            .borrow()
+            .rows
+            .first()
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
             .map_err(failure)
+    }
+
+    pub async fn unsubscribe(self) -> Result<()> {
+        self.0.unsubscribe().await
     }
 }
 
 impl RuntimeHandle {
+    pub fn watch_document(&self, id: SessionId) -> Result<Reply<QueryWatch>> {
+        self.watch_query(
+            "SELECT id, session_id, body_format, body, updated_at FROM session_documents WHERE session_id = ? AND kind = 'note' AND deleted_at IS NULL ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END, created_at, id LIMIT 1".into(),
+            vec![serde_json::json!(id), serde_json::json!(id)],
+        )
+    }
+
     pub fn watch_library(&self) -> Result<Reply<QueryWatch>> {
         self.watch_query(
             "SELECT id, title, updated_at FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC, id DESC LIMIT 1".into(),
@@ -75,6 +199,8 @@ impl RuntimeHandle {
         )
     }
 
+    /// Observes pooled writes. Close and re-register after an external writer or sync restore;
+    /// SQLite pool hooks do not observe arbitrary writes from another process.
     pub fn watch_query(&self, sql: String, params: Vec<Value>) -> Result<Reply<QueryWatch>> {
         self.submit(move |services| async move {
             let slot = services
@@ -87,8 +213,9 @@ impl RuntimeHandle {
             });
             let (errors, error_receiver) = mpsc::channel(8);
             let terminal_error = Arc::new(Mutex::new(None));
-            let runtime = Arc::new(LiveQueryRuntime::new(services.db));
-            let registration = runtime
+            let registry = services.watches;
+            let registration = registry
+                .runtime
                 .subscribe(
                     sql,
                     params,
@@ -96,17 +223,19 @@ impl RuntimeHandle {
                         snapshots,
                         errors,
                         terminal_error: terminal_error.clone(),
+                        metrics: services.metrics,
                     },
                 )
                 .await
                 .map_err(failure)?;
+            registry.ids.lock().await.insert(registration.id.clone());
             Ok(QueryWatch {
                 registration,
                 snapshots: receiver,
                 errors: error_receiver,
                 terminal_error,
-                runtime,
-                _slot: slot,
+                registry,
+                slot: Some(slot),
             })
         })
     }

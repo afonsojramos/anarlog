@@ -1,5 +1,13 @@
 use desktop_runtime::ServiceError;
 
+pub mod accessibility;
+pub mod deeplinks;
+pub mod dialogs;
+pub mod notifications;
+pub mod shortcuts;
+pub mod tray;
+pub mod windows;
+
 #[derive(Clone, Debug)]
 pub enum PlatformEvent {
     DeepLink(String),
