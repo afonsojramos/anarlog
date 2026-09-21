@@ -246,17 +246,6 @@ impl ApplicationView {
                                     this.notifications.expanded = !this.notifications.expanded;
                                     cx.notify();
                                 }))
-                                .on_key_down(cx.listener(
-                                    |this, event: &gpui::KeyDownEvent, _, cx| {
-                                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                        {
-                                            this.notifications.expanded =
-                                                !this.notifications.expanded;
-                                            cx.stop_propagation();
-                                            cx.notify();
-                                        }
-                                    },
-                                ))
                                 .focus(|style| style.bg(colors.accent))
                                 .child(
                                     svg()
@@ -294,17 +283,7 @@ impl ApplicationView {
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.notifications.expanded = true;
                                     this.open_product(notice.route(), window, cx);
-                                }))
-                                .on_key_down(cx.listener(
-                                    move |this, event: &gpui::KeyDownEvent, window, cx| {
-                                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                        {
-                                            this.notifications.expanded = true;
-                                            this.open_product(notice.route(), window, cx);
-                                            cx.stop_propagation();
-                                        }
-                                    },
-                                )),
+                                })),
                         ),
                     )
                 }),
