@@ -509,14 +509,21 @@ impl ChatSession {
         previous: Option<String>,
     ) -> Result<()> {
         let group = self.group.clone();
+        let session = self.session.clone();
         let message = message.clone();
         let user = user.cloned();
         self.services.runtime.submit(move |services| async move {
-            let rows = services.executor.execute("SELECT owner_user_id, workspace_id FROM chat_groups WHERE id = ? AND deleted_at IS NULL".into(), vec![json!(group)]).await.map_err(failure)?;
+            let mut rows = services.executor.execute("SELECT owner_user_id, workspace_id FROM chat_groups WHERE id = ? AND deleted_at IS NULL".into(), vec![json!(group)]).await.map_err(failure)?;
+            let mut statements = Vec::new();
+            if rows.is_empty() && group == session.0 {
+                rows = services.executor.execute("SELECT owner_user_id, workspace_id FROM sessions WHERE id = ? AND deleted_at IS NULL AND locked = 0".into(), vec![json!(session)]).await.map_err(failure)?;
+                statements.push(statement(
+                    "INSERT OR IGNORE INTO chat_groups (id, owner_user_id, workspace_id, title) SELECT id, owner_user_id, workspace_id, title FROM sessions WHERE id = ? AND deleted_at IS NULL AND locked = 0",
+                    vec![json!(session)], Some(1)));
+            }
             let row = rows.first().ok_or(ServiceError::Conflict)?;
             let owner = string(row, "owner_user_id")?;
             let workspace = string(row, "workspace_id")?;
-            let mut statements = Vec::new();
             for message in user.iter().chain(std::iter::once(&message)) {
                 let content = message.parts.iter().filter_map(|part| match part { Part::Text { text } => Some(text.as_str()), _ => None }).collect::<String>();
                 let role = match message.role { Role::User => "user", Role::Assistant => "assistant", Role::System => return Err(ServiceError::Conflict) };

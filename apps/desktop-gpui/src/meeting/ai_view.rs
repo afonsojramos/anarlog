@@ -18,8 +18,13 @@ pub struct AiContext {
     pub summary: Option<(DocumentSnapshot, SummaryContext)>,
 }
 
+pub enum ContextPurpose {
+    Preview,
+    Summarize,
+}
+
 pub type ContextResolver =
-    Arc<dyn Fn(SessionId) -> BoxFuture<'static, Result<AiContext>> + Send + Sync>;
+    Arc<dyn Fn(SessionId, ContextPurpose) -> BoxFuture<'static, Result<AiContext>> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct AiViewServices {
@@ -106,10 +111,10 @@ impl AiPane {
     }
 
     fn load(&mut self, cx: &mut Context<Self>) {
-        let request = self
-            .services
-            .ai
-            .enqueue((self.services.context)(self.session.clone()));
+        let request = self.services.ai.enqueue((self.services.context)(
+            self.session.clone(),
+            ContextPurpose::Preview,
+        ));
         cx.spawn(async move |this, cx| {
             let result = match request {
                 Ok(reply) => reply.await.map_err(failure).and_then(|result| result),
@@ -281,7 +286,7 @@ impl AiPane {
         let observer = self.observer();
         let cancellation = self.cancellation.clone();
         let queue = self.services.ai.enqueue(Box::pin(async move {
-            let context = (services.context)(session).await?;
+            let context = (services.context)(session, ContextPurpose::Summarize).await?;
             let (base, context) = context.summary.ok_or_else(|| {
                 ServiceError::Unsupported(
                     "Select a summary document and template in the editor first.".into(),

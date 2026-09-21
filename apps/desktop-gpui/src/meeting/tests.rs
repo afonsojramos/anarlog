@@ -339,6 +339,161 @@ async fn canonical_context_http_stream_and_tool_approval_persist() {
 }
 
 #[tokio::test]
+async fn context_preview_preserves_rows_and_summary_preparation_reuses_its_document() {
+    let fixture = Fixture::new().await;
+    let resolver = super::context::resolver(fixture.runtime.clone());
+    let documents = fixture
+        .sql("SELECT * FROM session_documents ORDER BY id", vec![])
+        .await;
+    for _ in 0..2 {
+        let context = resolver(
+            fixture.session.clone(),
+            super::ai_view::ContextPurpose::Preview,
+        )
+        .await
+        .unwrap();
+        assert!(context.summary.is_none());
+        assert!(context.history[0].role == Role::System);
+        assert_eq!(
+            fixture
+                .sql("SELECT * FROM session_documents ORDER BY id", vec![])
+                .await,
+            documents
+        );
+        assert!(
+            fixture
+                .sql("SELECT * FROM chat_groups", vec![])
+                .await
+                .is_empty()
+        );
+    }
+    let prepared = resolver(
+        fixture.session.clone(),
+        super::ai_view::ContextPurpose::Summarize,
+    )
+    .await
+    .unwrap()
+    .summary
+    .unwrap()
+    .0;
+    for purpose in [
+        super::ai_view::ContextPurpose::Preview,
+        super::ai_view::ContextPurpose::Summarize,
+    ] {
+        let summary = resolver(fixture.session.clone(), purpose)
+            .await
+            .unwrap()
+            .summary
+            .unwrap()
+            .0;
+        assert_eq!(summary.id, prepared.id);
+        assert_eq!(summary.body, prepared.body);
+        assert_eq!(summary.updated_at, prepared.updated_at);
+    }
+    assert_eq!(
+        fixture
+            .sql("SELECT id FROM session_documents", vec![])
+            .await
+            .len(),
+        documents.len() + 1
+    );
+    assert!(
+        fixture
+            .sql("SELECT * FROM chat_groups", vec![])
+            .await
+            .is_empty()
+    );
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn first_chat_send_creates_its_group_without_creating_a_summary() {
+    let fixture = Fixture::new().await;
+    let provider: Arc<dyn ProviderAdapter> =
+        Arc::new(FixtureProvider(Arc::new(AtomicBool::new(false))));
+    let ai = Arc::new(
+        AiServices::new(
+            fixture.runtime.clone(),
+            Arc::new(move |_| {
+                let provider = provider.clone();
+                Box::pin(async move { Ok(provider) })
+            }),
+            Arc::new(|_, _| Box::pin(async { Err(super::model::failure("No fixture tools")) })),
+            Arc::new(|_| false),
+        )
+        .unwrap(),
+    );
+    let chat = ai
+        .chat(fixture.session.clone(), fixture.session.0.clone())
+        .unwrap();
+    assert!(
+        fixture
+            .sql("SELECT * FROM chat_groups", vec![])
+            .await
+            .is_empty()
+    );
+    let user = Message {
+        id: "first-message".into(),
+        role: Role::User,
+        parts: vec![Part::Text {
+            text: "question".into(),
+        }],
+    };
+    chat.send(user.clone(), vec![], None, Arc::new(|_| {}))
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture
+            .sql("SELECT id FROM chat_groups", vec![])
+            .await
+            .len(),
+        1
+    );
+    assert_eq!(
+        fixture
+            .sql("SELECT id FROM chat_messages", vec![])
+            .await
+            .len(),
+        2
+    );
+    assert!(
+        fixture
+            .sql(
+                "SELECT id FROM session_documents WHERE kind = 'summary'",
+                vec![]
+            )
+            .await
+            .is_empty()
+    );
+    fixture
+        .sql("UPDATE chat_groups SET deleted_at = 'deleted'", vec![])
+        .await;
+    assert!(
+        chat.send(user, vec![], None, Arc::new(|_| {}))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        fixture
+            .sql("SELECT id FROM chat_messages", vec![])
+            .await
+            .len(),
+        2
+    );
+    assert!(
+        fixture
+            .sql(
+                "SELECT id FROM chat_groups WHERE deleted_at IS NULL",
+                vec![]
+            )
+            .await
+            .is_empty()
+    );
+    chat.flush().await;
+    fixture.close().await;
+}
+
+#[tokio::test]
 async fn provider_admission_failure_exits_preparing_and_allows_retry() {
     let fixture = Fixture::new().await;
     let services = fixture.providers("http://127.0.0.1");

@@ -11,23 +11,36 @@ use serde_json::{Value, json};
 
 use super::{
     ai::{Message, Part, Role, SummaryContext},
-    ai_view::{AiContext, ContextResolver},
+    ai_view::{AiContext, ContextPurpose, ContextResolver},
     config::preferences,
     model::{MAX_TEXT, failure},
     store::{TranscriptStore, statement, string},
 };
 
 pub fn resolver(runtime: RuntimeHandle) -> ContextResolver {
-    Arc::new(move |session| {
+    Arc::new(move |session, purpose| {
         let runtime = runtime.clone();
-        Box::pin(async move { load(&runtime, session).await })
+        Box::pin(async move {
+            match purpose {
+                ContextPurpose::Preview => load_context(&runtime, session, false).await,
+                ContextPurpose::Summarize => load(&runtime, session).await,
+            }
+        })
     })
 }
 
 pub async fn load(runtime: &RuntimeHandle, session: SessionId) -> Result<AiContext> {
+    load_context(runtime, session, true).await
+}
+
+async fn load_context(
+    runtime: &RuntimeHandle,
+    session: SessionId,
+    prepare_summary: bool,
+) -> Result<AiContext> {
     let settings = preferences(runtime).await?;
     let template_id = settings.text("selected_template_id");
-    let content = snapshot(runtime, session.clone(), template_id).await?;
+    let content = snapshot(runtime, session.clone(), template_id, prepare_summary).await?;
     let transcripts = TranscriptStore(runtime.clone())
         .load(session.clone(), CancellationToken::new())?
         .receive()
@@ -58,10 +71,11 @@ pub async fn load(runtime: &RuntimeHandle, session: SessionId) -> Result<AiConte
             title: content.session.title.clone(),
             date: content.session.started_at.clone(),
             raw_content: Some(content.memo.clone()),
-            enhanced_content: Some(markdown(
-                &content.summary.body,
-                &content.summary.body_format,
-            )?),
+            enhanced_content: content
+                .summary
+                .as_ref()
+                .map(|summary| markdown(&summary.body, &summary.body_format))
+                .transpose()?,
             meeting_chat: None,
             transcript: Some(transcript.clone()),
             participants: content.participants.clone(),
@@ -100,7 +114,7 @@ pub async fn load(runtime: &RuntimeHandle, session: SessionId) -> Result<AiConte
     Ok(AiContext {
         group: session.0,
         history,
-        summary: Some((content.summary, summary)),
+        summary: content.summary.map(|base| (base, summary)),
     })
 }
 
@@ -110,7 +124,7 @@ struct Snapshot {
     pre_memo: String,
     participants: Vec<Participant>,
     template: Option<EnhanceTemplate>,
-    summary: DocumentSnapshot,
+    summary: Option<DocumentSnapshot>,
     history: Vec<Message>,
 }
 
@@ -118,6 +132,7 @@ async fn snapshot(
     runtime: &RuntimeHandle,
     session: SessionId,
     template_id: String,
+    prepare_summary: bool,
 ) -> Result<Snapshot> {
     runtime.submit(move |services| async move {
         let rows = services.executor.execute("SELECT title, created_at, event_json, owner_user_id, workspace_id FROM sessions WHERE id = ? AND deleted_at IS NULL AND locked = 0".into(), vec![json!(session)]).await.map_err(failure)?;
@@ -145,8 +160,8 @@ async fn snapshot(
             }
         }
         let summary = match summary {
-            Some(summary) => summary,
-            None => {
+            Some(summary) => Some(summary),
+            None if prepare_summary => {
                 let id = uuid::Uuid::new_v4().to_string();
                 let body = json!({"type": "doc", "content": []}).to_string();
                 services.executor.execute_transaction(vec![statement(
@@ -154,13 +169,10 @@ async fn snapshot(
                     vec![json!(id), json!(template_id), json!(body), json!(session)], Some(1)),
                 ]).await.map_err(failure)?;
                 let rows = services.executor.execute("SELECT id, session_id, body_format, body, updated_at FROM session_documents WHERE id = ?".into(), vec![json!(id)]).await.map_err(failure)?;
-                document_snapshot(rows.first().ok_or(ServiceError::Conflict)?)?
+                Some(document_snapshot(rows.first().ok_or(ServiceError::Conflict)?)?)
             }
+            None => None,
         };
-        services.executor.execute_transaction(vec![statement(
-            "INSERT OR IGNORE INTO chat_groups (id, owner_user_id, workspace_id, title) SELECT id, owner_user_id, workspace_id, title FROM sessions WHERE id = ? AND deleted_at IS NULL AND locked = 0",
-            vec![json!(session)], None),
-        ]).await.map_err(failure)?;
         let participants = services.executor.execute("SELECT COALESCE(NULLIF(h.name, ''), p.display_name) AS name, h.job_title FROM session_participants p LEFT JOIN humans h ON h.id = p.human_id AND h.deleted_at IS NULL WHERE p.session_id = ? AND p.source <> 'excluded' AND p.deleted_at IS NULL ORDER BY p.id LIMIT 500".into(), vec![json!(session)]).await.map_err(failure)?
             .into_iter().map(|row| Participant { name: row["name"].as_str().unwrap_or_default().into(), job_title: row["job_title"].as_str().map(str::to_owned) }).collect();
         let rows = services.executor.execute("SELECT memo FROM transcripts WHERE session_id = ? AND deleted_at IS NULL ORDER BY started_at_ms, id LIMIT 1".into(), vec![json!(session)]).await.map_err(failure)?;
