@@ -466,6 +466,12 @@ impl Render for WorkspaceView {
                                                     .id(("close", slot.0))
                                                     .px_1()
                                                     .child("×")
+                                                    .on_mouse_down(
+                                                        MouseButton::Left,
+                                                        |_, window, _| {
+                                                            window.prevent_default();
+                                                        },
+                                                    )
                                                     .on_click(cx.listener(
                                                         move |this, _, _, cx| {
                                                             cx.stop_propagation();
