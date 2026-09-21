@@ -42,7 +42,7 @@ impl EventEmitter<WorkspaceEvent> for NoteView {}
 pub enum NoteEvent {
     Opened(Arc<OpenSession>),
     Failed,
-    Renamed(Arc<OpenSession>),
+    TitleUpdated(Arc<OpenSession>),
     RenameFailed,
     Move(SessionId),
 }
@@ -143,7 +143,11 @@ impl NoteView {
     }
 
     fn restore_title(&mut self, cx: &mut Context<Self>) {
-        if self.busy {
+        if self.busy || self.loading {
+            return;
+        }
+        if self.rename_error {
+            self.reload_title(cx);
             return;
         }
         if let Some(session) = &self.current {
@@ -154,6 +158,56 @@ impl NoteView {
             self.rename_error = false;
             cx.notify();
         }
+    }
+
+    fn reload_title(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = &self.current else {
+            return;
+        };
+        let draft = self.title.read(cx).buffer.text.clone();
+        self.cancellation.cancel();
+        self.cancellation = CancellationToken::new();
+        let generation = self.generation.advance();
+        let reply = self
+            .runtime
+            .open_session(session.summary.id.clone(), self.cancellation.clone());
+        self.loading = true;
+        self.message = "Loading saved title…".into();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = match reply {
+                Ok(reply) => reply.receive().await,
+                Err(error) => Err(error),
+            };
+            let _ = this.update(cx, |this, cx| {
+                if generation != this.generation {
+                    return;
+                }
+                this.loading = false;
+                match result {
+                    Ok(session) => {
+                        if this.title.read(cx).buffer.text == draft {
+                            this.title.update(cx, |title, cx| {
+                                title.set_text(session.summary.title.to_string(), cx)
+                            });
+                        }
+                        let session = Arc::new(session);
+                        this.current = Some(session.clone());
+                        this.rename_error = false;
+                        this.message.clear();
+                        cx.emit(NoteEvent::TitleUpdated(session));
+                    }
+                    Err(error) => {
+                        this.message = format!(
+                            "Could not load the saved title: {error}. Your input is preserved."
+                        );
+                        cx.emit(NoteEvent::RenameFailed);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     pub fn open(&mut self, id: SessionId, cx: &mut Context<Self>) {
@@ -262,7 +316,9 @@ impl NoteView {
                 match result {
                     Ok(session) => {
                         this.current = Some(Arc::new(session));
-                        cx.emit(NoteEvent::Renamed(this.current.as_ref().unwrap().clone()));
+                        cx.emit(NoteEvent::TitleUpdated(
+                            this.current.as_ref().unwrap().clone(),
+                        ));
                         this.message.clear();
                         if std::mem::take(&mut this.rename_pending) {
                             this.rename(cx);

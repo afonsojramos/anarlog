@@ -202,6 +202,7 @@ impl WorkspaceView {
                     note.set_recording(this.recording.contains(&session.summary.id), cx);
                 });
                 this.cache_title(session.summary.id.clone(), session.summary.title.clone());
+                this.reload(cx);
                 if let Some(intent) = this.pending.take() {
                     this.apply_navigation(intent, cx);
                 }
@@ -215,8 +216,9 @@ impl WorkspaceView {
                 }
                 cx.notify();
             }
-            NoteEvent::Renamed(session) => {
+            NoteEvent::TitleUpdated(session) => {
                 this.cache_title(session.summary.id.clone(), session.summary.title.clone());
+                this.reload(cx);
                 if let Some(intent) = this.pending.take() {
                     this.navigate(intent, cx);
                 }
