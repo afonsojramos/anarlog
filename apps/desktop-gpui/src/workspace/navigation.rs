@@ -4,6 +4,7 @@ use desktop_runtime::SessionId;
 
 pub const MAX_HISTORY: usize = 100;
 pub const MAX_CLOSED: usize = 10;
+const NOTE_SURFACE_MIN_WIDTH: f32 = 500.;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum Route {
@@ -402,9 +403,13 @@ impl SidebarState {
         if !body_width.is_finite() || body_width <= 0. {
             return None;
         }
+        self.width = self
+            .width
+            .min((body_width - 4. - NOTE_SURFACE_MIN_WIDTH).max(200.));
+        let minimum_body_width = NOTE_SURFACE_MIN_WIDTH + 200.;
         match self.note_body_width.replace(body_width) {
-            None => (body_width < 700.).then_some(700. - body_width),
-            Some(previous) if body_width < previous && body_width < 700. => {
+            None => (body_width < minimum_body_width).then_some(minimum_body_width - body_width),
+            Some(previous) if body_width < previous && body_width < minimum_body_width => {
                 self.expanded = false;
                 self.note_body_width = None;
                 None
@@ -669,6 +674,34 @@ mod tests {
         sidebar.toggle();
         assert_eq!(sidebar.layout(600., &note("a")), Some(104.));
         assert!(sidebar.expanded);
+    }
+
+    #[test]
+    fn manual_sidebar_yields_to_note_minimum_without_losing_its_proportion() {
+        let mut sidebar = SidebarState::default();
+        let route = note("a");
+        sidebar.layout(800., &route);
+        sidebar.resize(280.);
+        for (window_width, sidebar_width) in [
+            (800., 280.),
+            (1000., 350.),
+            (800., 280.),
+            (750., 242.),
+            (708., 200.),
+            (704., 200.),
+            (800., 280.),
+        ] {
+            sidebar.layout(window_width, &route);
+            assert_eq!(sidebar.width(), sidebar_width);
+            assert!(sidebar.expanded);
+        }
+        sidebar.resize(360.);
+        sidebar.layout(800., &route);
+        assert_eq!(sidebar.width(), 292.);
+        sidebar.layout(1000., &route);
+        assert_eq!(sidebar.width(), 360.);
+        sidebar.layout(708., &Route::Changelog);
+        assert!(sidebar.width() > 300.);
     }
 
     #[test]
