@@ -15,35 +15,68 @@ use super::{
 };
 use crate::ui::theme::theme;
 
-pub fn block_target(
-    document: &Document,
-    mut index: usize,
-) -> Option<(NodeRef, usize, usize, String)> {
-    let mut node = document.root.clone();
-    let mut start = 0;
-    let mut depth = 0;
-    let mut marker = String::new();
-    while node.projects_children() {
-        let (child_index, remaining, child) = node.children.locate_render(index)?;
-        marker = match node.kind() {
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct BlockStyle {
+    pub depth: usize,
+    lists: usize,
+    bullets: usize,
+    marker: String,
+    guides: Vec<usize>,
+    parent_is_item: bool,
+}
+
+impl BlockStyle {
+    fn indent(&self) -> usize {
+        self.depth * 20 + self.lists * 4
+    }
+
+    fn child(&self, node: &NodeRef, index: usize) -> Self {
+        let mut child = self.clone();
+        if matches!(node.kind(), "bulletList" | "orderedList" | "taskList") {
+            if self.parent_is_item {
+                child.guides.push(self.indent());
+            }
+            child.lists += 1;
+            child.depth += 1;
+        } else if node.kind() == "blockquote" {
+            child.depth += 1;
+        }
+        if node.kind() == "bulletList" {
+            child.bullets += 1;
+        }
+        child.marker = match node.kind() {
             "orderedList" => format!(
                 "{}.",
-                node.attr("start").and_then(Value::as_u64).unwrap_or(1) + child_index as u64
+                node.attr("start").and_then(Value::as_u64).unwrap_or(1) + index as u64
             ),
             "bulletList" => "•".into(),
             "taskItem" => if node.task_done() { "[x]" } else { "[ ]" }.into(),
-            _ if child_index == 0 => marker,
+            _ if index == 0 => self.marker.clone(),
             _ => String::new(),
         };
-        depth += usize::from(matches!(
-            node.kind(),
-            "blockquote" | "bulletList" | "orderedList" | "taskList"
-        ));
+        child.parent_is_item = matches!(node.kind(), "listItem" | "taskItem");
+        child
+    }
+}
+
+#[cfg(test)]
+pub fn block_target(document: &Document, index: usize) -> Option<(NodeRef, usize, usize, String)> {
+    block_layout(document, index)
+        .map(|(node, start, style)| (node, start, style.depth, style.marker))
+}
+
+pub fn block_layout(document: &Document, mut index: usize) -> Option<(NodeRef, usize, BlockStyle)> {
+    let mut node = document.root.clone();
+    let mut start = 0;
+    let mut style = BlockStyle::default();
+    while node.projects_children() {
+        let (child_index, remaining, child) = node.children.locate_render(index)?;
+        style = style.child(&node, child_index);
         start += usize::from(node.kind() != "doc") + node.children.prefix(child_index);
         node = child.clone();
         index = remaining;
     }
-    Some((node, start, depth, marker))
+    Some((node, start, style))
 }
 
 pub fn block_index(document: &Document, position: usize) -> Option<usize> {
@@ -78,8 +111,7 @@ pub struct Row {
     pub spans: Vec<Span>,
     pub kind: String,
     pub level: u8,
-    pub depth: usize,
-    pub marker: String,
+    pub style: BlockStyle,
 }
 
 impl Row {
@@ -127,6 +159,7 @@ impl Row {
 
 pub struct ProjectedBlock {
     pub source: NodeRef,
+    pub style: BlockStyle,
     pub rows: Vec<Arc<Row>>,
     pub grid: Option<Grid>,
 }
@@ -148,17 +181,23 @@ pub struct GridCell {
 impl ProjectedBlock {
     #[cfg(test)]
     pub fn build(source: NodeRef) -> Self {
-        Self::with_context(source, 0, String::new())
+        Self::with_layout(source, BlockStyle::default())
     }
 
+    #[cfg(test)]
     pub fn with_context(source: NodeRef, depth: usize, marker: String) -> Self {
-        fn visit(
-            node: &NodeRef,
-            start: usize,
-            depth: usize,
-            marker: String,
-            rows: &mut Vec<Arc<Row>>,
-        ) {
+        Self::with_layout(
+            source,
+            BlockStyle {
+                depth,
+                marker,
+                ..Default::default()
+            },
+        )
+    }
+
+    pub fn with_layout(source: NodeRef, style: BlockStyle) -> Self {
+        fn visit(node: &NodeRef, start: usize, style: BlockStyle, rows: &mut Vec<Arc<Row>>) {
             if node.is_textblock() {
                 let mut text = String::new();
                 let mut spans = Vec::new();
@@ -195,8 +234,7 @@ impl ProjectedBlock {
                     spans,
                     kind: node.kind().into(),
                     level: node.attr("level").and_then(Value::as_u64).unwrap_or(1) as u8,
-                    depth,
-                    marker,
+                    style,
                 }));
             } else if node.is_atom() || !node.known() {
                 let label = node
@@ -226,44 +264,22 @@ impl ProjectedBlock {
                     text,
                     kind: node.kind().into(),
                     level: 0,
-                    depth,
-                    marker,
+                    style,
                 }));
             } else {
                 for index in 0..node.children.len() {
                     let child = node.children.get(index).expect("child");
-                    let marker = match node.kind() {
-                        "orderedList" => format!(
-                            "{}.",
-                            node.attr("start").and_then(Value::as_u64).unwrap_or(1) + index as u64
-                        ),
-                        "bulletList" => "•".into(),
-                        "taskItem" => {
-                            if node.task_done() {
-                                "[x]".into()
-                            } else {
-                                "[ ]".into()
-                            }
-                        }
-                        _ if index == 0 => marker.clone(),
-                        _ => String::new(),
-                    };
                     visit(
                         child,
                         start + 1 + node.children.prefix(index),
-                        depth
-                            + usize::from(matches!(
-                                node.kind(),
-                                "blockquote" | "bulletList" | "orderedList" | "taskList"
-                            )),
-                        marker,
+                        style.child(node, index),
                         rows,
                     );
                 }
             }
         }
         let mut rows = Vec::new();
-        visit(&source, 0, depth, marker, &mut rows);
+        visit(&source, 0, style.clone(), &mut rows);
         let grid = if source.kind() == "table" {
             let mut cells = Vec::new();
             let mut occupied = std::collections::HashMap::new();
@@ -312,7 +328,12 @@ impl ProjectedBlock {
         } else {
             None
         };
-        Self { source, rows, grid }
+        Self {
+            source,
+            style,
+            rows,
+            grid,
+        }
     }
 }
 
@@ -355,7 +376,7 @@ pub fn render_row(
     let colors = theme(window);
     let mut base = window.text_style().to_run(0);
     base.color = colors.foreground;
-    if row.marker == "[x]" {
+    if row.style.marker == "[x]" {
         base.color.a *= 0.5;
         base.strikethrough = Some(StrikethroughStyle {
             thickness: px(1.),
@@ -446,30 +467,38 @@ pub fn render_row(
     } else {
         24.
     };
+    let inset = if in_cell { 0. } else { 12. };
+    let indent = row.style.indent() as f32;
+    let marker_left = inset + indent - 24.;
     div()
         .relative()
         .w_full()
         .min_h(px(line_height))
         .py(px(font_size * 0.125))
-        .pl(px(if in_cell {
-            0.
-        } else {
-            12. + row.depth as f32 * 20.
-        }))
+        .pl(px(inset + indent))
         .pr(px(if in_cell { 0. } else { 12. }))
         .text_size(px(font_size))
         .line_height(px(line_height))
         .when(row.kind == "codeBlock", |div| {
             div.bg(colors.muted).my_2().py_4().rounded_md()
         })
-        .when(!row.marker.is_empty(), |div| {
-            let marker = row.marker.clone();
+        .children(row.style.guides.iter().map(|offset| {
+            div()
+                .absolute()
+                .left(px(inset + *offset as f32 - 16.5))
+                .top_0()
+                .bottom_0()
+                .w(px(1.))
+                .bg(colors.foreground.opacity(0.3))
+        }))
+        .when(!row.style.marker.is_empty(), |div| {
+            let marker = row.style.marker.clone();
             if matches!(marker.as_str(), "[ ]" | "[x]") {
                 div.child(
                     gpui::div()
                         .id(("task", row.id))
                         .absolute()
-                        .left_0()
+                        .left(px(marker_left))
                         .cursor_pointer()
                         .on_mouse_down(
                             gpui::MouseButton::Left,
@@ -485,7 +514,38 @@ pub fn render_row(
                         .child(if marker == "[x]" { "☑" } else { "☐" }),
                 )
             } else {
-                div.child(div_marker(marker))
+                let color = colors.foreground.opacity(0.65);
+                if marker == "•" {
+                    let variant = row.style.bullets.saturating_sub(1).min(5) % 3;
+                    let diameter = font_size * if variant == 2 { 0.42 } else { 0.5 };
+                    div.child(
+                        gpui::div()
+                            .absolute()
+                            .left(px(marker_left + font_size * 0.5 - diameter / 2.))
+                            .top(px(font_size * 0.875 - diameter / 2.))
+                            .size(px(diameter))
+                            .when_else(
+                                variant == 2,
+                                |view| view.rounded(px(font_size * 0.1)),
+                                |view| view.rounded_full(),
+                            )
+                            .when_else(
+                                variant == 1,
+                                |view| view.border(px(1.5)).border_color(color),
+                                |view| view.bg(color),
+                            ),
+                    )
+                } else {
+                    div.child(
+                        gpui::div()
+                            .absolute()
+                            .left(px(marker_left))
+                            .w(px(font_size))
+                            .text_center()
+                            .text_color(color)
+                            .child(marker),
+                    )
+                }
             }
         })
         .child(text)
@@ -518,10 +578,6 @@ pub fn render_row(
             .left_0(),
         )
         .into_any_element()
-}
-
-fn div_marker(marker: String) -> impl IntoElement {
-    div().absolute().left_0().child(marker)
 }
 
 fn paint_selection(
@@ -573,5 +629,119 @@ fn paint_selection(
             ));
             y += height;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::editor::model::EditorModel;
+    use serde_json::json;
+
+    #[test]
+    fn virtual_rows_preserve_nested_guides_and_unicode_positions() {
+        let raw = json!({"type":"doc","content":[
+            {"type":"bulletList","content":[
+                {"type":"listItem","content":[
+                    {"type":"paragraph","content":[{"type":"text","text":"First α"}]}
+                ]},
+                {"type":"listItem","content":[
+                    {"type":"paragraph","content":[{"type":"text","text":"Second 日本"}]},
+                    {"type":"bulletList","content":[
+                        {"type":"listItem","content":[
+                            {"type":"paragraph","content":[{"type":"text","text":"Nested 🚀"}]},
+                            {"type":"paragraph","content":[{"type":"text","text":"Continued"}]}
+                        ]}
+                    ]}
+                ]}
+            ]}
+        ]})
+        .to_string();
+        let document = Document::parse(raw.clone().into()).unwrap();
+        let whole = ProjectedBlock::build(document.root.children.get(0).unwrap().clone());
+        assert_eq!(whole.rows.len(), 4);
+        for (index, (indent, guides, marker, bullets)) in [
+            (24, vec![], "•", 1),
+            (24, vec![], "•", 1),
+            (48, vec![24], "•", 2),
+            (48, vec![24], "", 2),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (node, start, style) = block_layout(&document, index).unwrap();
+            assert_eq!(style.indent(), indent);
+            assert_eq!(style.guides, guides);
+            assert_eq!(style.marker, marker);
+            assert_eq!(style.bullets, bullets);
+            let block = ProjectedBlock::with_layout(node.clone(), style);
+            let row = &block.rows[0];
+            assert_eq!(row.style, whole.rows[index].style);
+            assert_eq!(row.text, whole.rows[index].text);
+            assert_eq!(start + row.start, whole.rows[index].start);
+            let end = row.position(row.text.len());
+            assert_eq!(row.byte(end), Some(row.text.len()));
+            assert!(Arc::ptr_eq(
+                &document.resolve(start + end).unwrap().node,
+                &node
+            ));
+        }
+        assert_eq!(document.serialize().unwrap().as_ref(), raw);
+    }
+
+    #[test]
+    fn indentation_changes_cache_context_without_replacing_text_nodes() {
+        let document = Document::parse(json!({"type":"doc","content":[
+            {"type":"bulletList","content":[
+                {"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"First"}]}]},
+                {"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"Second 🚀"}]}]}
+            ]}
+        ]}).to_string().into()).unwrap();
+        let mut model = EditorModel::new(document);
+        let (node, start, initial) = block_layout(&model.document, 1).unwrap();
+        let cached = ProjectedBlock::with_layout(node.clone(), initial.clone());
+        model.select(Selection::caret(start + 1));
+        model.indent_list(false).unwrap();
+        let (indented, _, style) = block_layout(&model.document, 1).unwrap();
+        assert!(Arc::ptr_eq(&node, &indented));
+        assert_ne!(cached.style, style);
+        assert_eq!(style.indent(), 48);
+        assert_eq!(style.bullets, 2);
+        assert_eq!(style.guides, vec![24]);
+        model.indent_list(true).unwrap();
+        let (restored, _, style) = block_layout(&model.document, 1).unwrap();
+        assert!(Arc::ptr_eq(&node, &restored));
+        assert_eq!(style, initial);
+    }
+
+    #[test]
+    fn bullet_styles_ignore_quote_and_ordered_list_depth() {
+        let document = Document::parse(
+            json!({"type":"doc","content":[
+                {"type":"blockquote","content":[{"type":"bulletList","content":[
+                    {"type":"listItem","content":[
+                        {"type":"paragraph","content":[{"type":"text","text":"Bullet"}]},
+                        {"type":"orderedList","attrs":{"start":4},"content":[
+                            {"type":"listItem","content":[
+                                {"type":"paragraph","content":[{"type":"text","text":"Ordered"}]},
+                                {"type":"bulletList","content":[{"type":"listItem","content":[
+                                    {"type":"paragraph","content":[{"type":"text","text":"Nested"}]}
+                                ]}]}
+                            ]}
+                        ]}
+                    ]}
+                ]}]}
+            ]})
+            .to_string()
+            .into(),
+        )
+        .unwrap();
+        let (_, _, ordered) = block_layout(&document, 1).unwrap();
+        assert_eq!(ordered.marker, "4.");
+        let (_, _, nested) = block_layout(&document, 2).unwrap();
+        assert_eq!(nested.depth, 4);
+        assert_eq!(nested.bullets, 2);
+        assert_eq!(nested.indent(), 92);
+        assert_eq!(nested.guides, vec![44, 68]);
     }
 }

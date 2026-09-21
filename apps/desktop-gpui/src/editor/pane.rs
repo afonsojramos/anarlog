@@ -1111,26 +1111,21 @@ impl EditorPane {
         let Some(model) = &self.model else {
             return div().into_any_element();
         };
-        let Some((node, start, depth, marker)) = surface::block_target(&model.document, index)
-        else {
+        let Some((node, start, style)) = surface::block_layout(&model.document, index) else {
             return div().into_any_element();
         };
         if let Some(preview) = self.render_attachment(&node, start, cx) {
             return preview;
         }
         let cached = self.projection.get(&node.id).cloned();
-        let current = cached.as_ref().is_some_and(|cached| {
-            Arc::ptr_eq(&cached.source, &node)
-                && cached
-                    .rows
-                    .first()
-                    .is_none_or(|row| row.depth == depth && row.marker == marker)
-        });
+        let current = cached
+            .as_ref()
+            .is_some_and(|cached| Arc::ptr_eq(&cached.source, &node) && cached.style == style);
         if !current && self.projecting.len() < 8 && self.projecting.insert(node.id) {
             let id = node.id;
             let job = cx
                 .background_executor()
-                .spawn(async move { Arc::new(ProjectedBlock::with_context(node, depth, marker)) });
+                .spawn(async move { Arc::new(ProjectedBlock::with_layout(node, style)) });
             cx.spawn(async move |entity, cx| {
                 let projected = job.await;
                 let _ = entity.update(cx, |this, cx| {
