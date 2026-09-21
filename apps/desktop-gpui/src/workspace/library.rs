@@ -546,13 +546,15 @@ impl Render for LibraryView {
                             .when(!tags.is_empty(), |view| {
                                 view.child(
                                     div()
+                                        .w_full()
                                         .min_w_0()
                                         .flex_shrink_0()
                                         .h(px(16.))
                                         .text_size(px(11.))
                                         .line_height(px(16.))
                                         .text_color(colors.muted_foreground)
-                                        .truncate()
+                                        .line_clamp(1)
+                                        .text_ellipsis()
                                         .child(gpui::SharedString::from(tags)),
                                 )
                             });

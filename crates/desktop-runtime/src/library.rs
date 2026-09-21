@@ -79,9 +79,7 @@ impl Services {
                 "Too many sessions for tag projection".into(),
             ));
         }
-        let locale = sys_locale::get_locale()
-            .and_then(|locale| locale.parse::<Locale>().ok())
-            .unwrap_or(icu_locale_core::locale!("en"));
+        let locale = tag_locale(sys_locale::get_locale().as_deref());
         let collator =
             Collator::try_new(locale.into(), CollatorOptions::default()).map_err(failure)?;
         let mut rows = sqlx::query_as::<_, (String, String)>(
@@ -101,6 +99,14 @@ impl Services {
             .map(|(id, tags)| (id, tags.line()))
             .collect())
     }
+}
+
+fn tag_locale(name: Option<&str>) -> Locale {
+    if matches!(name, Some("C" | "POSIX")) || (name.is_none() && cfg!(target_os = "linux")) {
+        return icu_locale_core::locale!("en-US-posix");
+    }
+    name.and_then(|name| name.parse().ok())
+        .unwrap_or(icu_locale_core::locale!("en"))
 }
 
 pub(crate) struct Cache {
@@ -360,6 +366,22 @@ async fn load_session(services: &Services, id: SessionId) -> Result<OpenSession>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn posix_tags_match_javascriptcore_case_and_accent_order() {
+        for locale in ["C", "POSIX", "en-US-posix"] {
+            let collator =
+                Collator::try_new(tag_locale(Some(locale)).into(), CollatorOptions::default())
+                    .unwrap();
+            let mut tags = TagNames::default();
+            for name in ["é", "e", "É", "E", "日本"] {
+                tags.insert(name, &collator);
+            }
+            assert_eq!(tags.line().as_ref(), "#E #É #e #é #日本");
+        }
+        assert_eq!(tag_locale(Some("sv-SE")).to_string(), "sv-SE");
+        assert_eq!(tag_locale(Some("invalid locale")).to_string(), "en");
+    }
 
     #[test]
     fn tags_trim_deduplicate_and_collate_without_splitting_commas() {
