@@ -411,11 +411,13 @@ impl Render for AiPane {
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .gap_3()
                     .when(!self.busy && self.chat.is_some(), |view| {
                         view.child(
                             div()
                                 .id("send-chat")
+                                .flex_shrink_0()
                                 .cursor_pointer()
                                 .child("Send")
                                 .on_click(cx.listener(|this, _, _, cx| this.send(false, cx))),
@@ -423,6 +425,7 @@ impl Render for AiPane {
                         .child(
                             div()
                                 .id("regenerate-chat")
+                                .flex_shrink_0()
                                 .cursor_pointer()
                                 .child("Regenerate reply")
                                 .on_click(cx.listener(|this, _, _, cx| this.send(true, cx))),
@@ -430,6 +433,7 @@ impl Render for AiPane {
                         .child(
                             div()
                                 .id("summarize")
+                                .flex_shrink_0()
                                 .cursor_pointer()
                                 .child("Generate summary")
                                 .on_click(cx.listener(|this, _, _, cx| this.summarize(cx))),
