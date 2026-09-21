@@ -28,9 +28,18 @@ pub fn directory(runtime: &RuntimeHandle, session: SessionId) -> Result<Reply<Pa
             return Err(failure("This note is unavailable or locked."));
         }
         let fs = super::folders::filesystem(&services.executor).await?;
-        tokio::task::spawn_blocking(move || fs.resolve_session_dir(&session.0).map_err(failure))
-            .await
-            .map_err(failure)?
+        tokio::task::spawn_blocking(move || {
+            let path = fs.resolve_session_dir(&session.0).map_err(failure)?;
+            let metadata = path
+                .metadata()
+                .map_err(|error| failure(format!("Note folder is unavailable: {error}")))?;
+            if !metadata.is_dir() {
+                return Err(failure("The note folder path is not a directory."));
+            }
+            Ok(path)
+        })
+        .await
+        .map_err(failure)?
     })
 }
 

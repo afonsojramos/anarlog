@@ -250,6 +250,42 @@ fn note_folder_resolution_follows_moved_notes_and_rejects_locked_or_deleted_note
 }
 
 #[test]
+fn note_folder_resolution_rejects_missing_directories_and_regular_files() {
+    block_on(async {
+        let (directory, runtime) = start().await;
+        let session = runtime
+            .create_note("Missing folder".into())
+            .unwrap()
+            .receive()
+            .await
+            .unwrap()
+            .summary
+            .id;
+        let path = directory
+            .path()
+            .join("vault/sessions")
+            .join(session.0.as_ref());
+        let error = notes::directory(&runtime, session.clone())
+            .unwrap()
+            .receive()
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("Note folder is unavailable"));
+        assert!(!path.exists());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "not a directory").unwrap();
+        let error = notes::directory(&runtime, session)
+            .unwrap()
+            .receive()
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("not a directory"));
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "not a directory");
+        runtime.shutdown().await.unwrap();
+    });
+}
+
+#[test]
 fn folder_material_commands_copy_checksum_and_soft_delete_the_catalog_entry() {
     block_on(async {
         let (directory, runtime) = start().await;
