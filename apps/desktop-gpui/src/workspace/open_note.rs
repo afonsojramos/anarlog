@@ -3,7 +3,9 @@ use std::sync::Arc;
 use desktop_runtime::{
     CancellationToken, Generation, OpenSession, RenameSession, RuntimeHandle, SessionId,
 };
-use gpui::{Context, Entity, EventEmitter, Render, Subscription, Window, div, prelude::*, px};
+use gpui::{
+    AnyView, Context, Entity, EventEmitter, Render, Subscription, Window, div, prelude::*, px,
+};
 
 use crate::{
     contracts::WorkspaceEvent,
@@ -17,7 +19,7 @@ pub struct NoteView {
     runtime: RuntimeHandle,
     title: Entity<TextInput>,
     current: Option<Arc<OpenSession>>,
-    preview: String,
+    content: Option<AnyView>,
     message: String,
     busy: bool,
     loading: bool,
@@ -27,6 +29,15 @@ pub struct NoteView {
 }
 
 impl EventEmitter<WorkspaceEvent> for NoteView {}
+
+#[derive(Clone)]
+pub enum NoteEvent {
+    Opened(Arc<OpenSession>),
+    Failed,
+    Renamed(Arc<OpenSession>),
+}
+
+impl EventEmitter<NoteEvent> for NoteView {}
 
 impl NoteView {
     pub fn new(runtime: RuntimeHandle, cx: &mut Context<Self>) -> Self {
@@ -45,7 +56,7 @@ impl NoteView {
             runtime,
             title,
             current: None,
-            preview: String::new(),
+            content: None,
             message: "Select a note from your local library.".into(),
             busy: false,
             loading: false,
@@ -60,6 +71,42 @@ impl NoteView {
             || self.current.as_ref().is_some_and(|session| {
                 self.title.read(cx).buffer.text.as_str() != session.summary.title.as_ref()
             })
+    }
+
+    pub fn set_content(
+        &mut self,
+        session_id: &SessionId,
+        content: AnyView,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .current
+            .as_ref()
+            .is_some_and(|session| &session.summary.id == session_id)
+        {
+            self.content = Some(content);
+            self.message.clear();
+            cx.notify();
+        }
+    }
+
+    pub fn cancel_open(&mut self) {
+        self.cancellation.cancel();
+        self.generation.advance();
+        self.loading = false;
+    }
+
+    fn restore_title(&mut self, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        if let Some(session) = &self.current {
+            self.title.update(cx, |title, cx| {
+                title.set_text(session.summary.title.to_string(), cx)
+            });
+            self.message.clear();
+            cx.notify();
+        }
     }
 
     pub fn open(&mut self, id: SessionId, cx: &mut Context<Self>) {
@@ -86,9 +133,20 @@ impl NoteView {
                 }
                 this.loading = false;
                 match result {
-                    Ok(session) => this.show(session, cx),
+                    Ok(session) => {
+                        if this.has_unsaved_title(cx) {
+                            this.message =
+                                "The title changed while opening a note. Save or restore it first."
+                                    .into();
+                            cx.emit(NoteEvent::Failed);
+                            cx.notify();
+                        } else {
+                            this.show(session, cx);
+                        }
+                    }
                     Err(error) => {
                         this.message = error.to_string();
+                        cx.emit(NoteEvent::Failed);
                         cx.notify();
                     }
                 }
@@ -98,6 +156,9 @@ impl NoteView {
     }
 
     pub fn show(&mut self, session: OpenSession, cx: &mut Context<Self>) {
+        self.content = None;
+        let session = Arc::new(session);
+        cx.emit(NoteEvent::Opened(session.clone()));
         if let Some(document) = &session.note {
             cx.emit(WorkspaceEvent::OpenEditor {
                 session_id: session.summary.id.clone(),
@@ -107,19 +168,14 @@ impl NoteView {
         self.title.update(cx, |title, cx| {
             title.set_text(session.summary.title.to_string(), cx)
         });
-        self.preview = session
-            .note
-            .as_ref()
-            .map(|note| note.body.chars().take(6000).collect::<String>())
-            .unwrap_or_else(|| "No note document is stored for this session.".into());
         self.message = match &session.note {
             Some(note) => format!(
-                "Read-only stored {} document (first 6000 characters). Rich-text editing is not implemented in this foundation.",
+                "The {} document is loaded. Native editor content has not been connected; stored data is unchanged.",
                 note.body_format
             ),
             None => "This session has no note document. Existing data is unchanged.".into(),
         };
-        self.current = Some(Arc::new(session));
+        self.current = Some(session);
         cx.notify();
     }
 
@@ -151,6 +207,7 @@ impl NoteView {
                 match result {
                     Ok(session) => {
                         this.current = Some(Arc::new(session));
+                        cx.emit(NoteEvent::Renamed(this.current.as_ref().unwrap().clone()));
                         this.message = if this.title.read(cx).buffer.text.as_str() == title.as_ref()
                         {
                             "Title saved.".into()
@@ -184,6 +241,15 @@ impl Render for NoteView {
             .flex_col()
             .p_6()
             .gap_4()
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape"
+                    && this.title.read(cx).buffer.marked.is_none()
+                    && this.has_unsaved_title(cx)
+                {
+                    this.restore_title(cx);
+                    cx.stop_propagation();
+                }
+            }))
             .when(self.current.is_some() && !self.loading, |view| {
                 view.child(
                     div()
@@ -201,7 +267,18 @@ impl Render for NoteView {
                                 .cursor_pointer()
                                 .on_click(cx.listener(|this, _, _, cx| this.rename(cx)))
                                 .child(if self.busy { "Saving…" } else { "Save title" }),
-                        ),
+                        )
+                        .when(self.has_unsaved_title(cx), |view| {
+                            view.child(
+                                div()
+                                    .id("restore-title")
+                                    .px_2()
+                                    .py_2()
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, _, cx| this.restore_title(cx)))
+                                    .child("Restore"),
+                            )
+                        }),
                 )
             })
             .child(
@@ -210,13 +287,8 @@ impl Render for NoteView {
                     .text_color(colors.muted_foreground)
                     .child(self.message.clone()),
             )
-            .child(
-                div()
-                    .id("document-preview")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .text_sm()
-                    .child(self.preview.clone()),
-            )
+            .when_some(self.content.clone(), |view, content| {
+                view.child(div().flex_1().min_h_0().child(content))
+            })
     }
 }
