@@ -72,9 +72,7 @@
   font-weight: 750;
   text-decoration: none;
   transform: translate(-50%, -50%);
-  transition:
-    background-color 140ms ease,
-    color 140ms ease;
+  transition: background-color 140ms ease, color 140ms ease;
 }
 
 #dictation .speech-flow-control:hover,
