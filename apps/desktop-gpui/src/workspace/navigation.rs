@@ -14,6 +14,7 @@ pub enum Route {
     Templates,
     Automations,
     Folders,
+    Folder(Arc<str>),
     Human(Arc<str>),
     Organization(Arc<str>),
     Empty,
@@ -54,6 +55,7 @@ impl Route {
                 | Self::Templates
                 | Self::Automations
                 | Self::Folders
+                | Self::Folder(_)
                 | Self::Calendar
                 | Self::Settings(_)
         )
@@ -80,6 +82,7 @@ impl Route {
             Self::Templates => "Templates",
             Self::Automations => "Automations",
             Self::Folders => "Folders",
+            Self::Folder(_) => "Folder",
             Self::Empty => "New tab",
             Self::Calendar => "Calendar",
             Self::Changelog => "What's new",

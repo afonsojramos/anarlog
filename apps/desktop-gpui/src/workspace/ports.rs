@@ -25,17 +25,15 @@ impl Catalog {
 
     pub fn limitation(self) -> &'static str {
         match self {
-            Self::Contacts => {
-                "Contact editing, merge, photo and summary services are not connected."
-            }
+            Self::Contacts => "Local contact create, edit, pin and merge are available.",
             Self::Folders => {
-                "Folder rename, deletion and materials require the filesystem/catalog service."
+                "Folder create, rename, move, deletion and materials use the local vault."
             }
             Self::Templates => {
-                "Local templates are read-only. Community, Auto format and editing services are not connected."
+                "Local template editing, duplication, deletion and pinning are available."
             }
             Self::Automations => {
-                "Saved workflows are read-only. Execution, connections and chat are not connected."
+                "Local Markdown export runs directly; provider steps require a signed-in connection."
             }
         }
     }
@@ -239,7 +237,8 @@ pub fn catalog_detail(
             fields.push((
                 "Configuration".into(),
                 if super::automations::workflow_configured(&workflow) {
-                    "All steps are configured. Execution service is not connected.".into()
+                    "All steps are configured. Provider steps require a signed-in connection."
+                        .into()
                 } else {
                     "One or more steps need configuration.".into()
                 },
