@@ -57,6 +57,8 @@ impl Render for TabDrag {
 
 impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sidebar
+            .resize_container(f32::from(window.viewport_size().width));
         let colors = theme(window);
         let route = self
             .navigation
@@ -69,7 +71,7 @@ impl Render for WorkspaceView {
             .find(|(catalog, _)| Some(*catalog) == self.active_catalog)
             .map(|(_, view)| view.clone());
         let sidebar = div()
-            .w(px(self.sidebar.width))
+            .w(px(self.sidebar.width()))
             .h_full()
             .flex_shrink_0()
             .flex()
@@ -572,7 +574,9 @@ impl Render for WorkspaceView {
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(Self::shortcuts))
             .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
-                if this.resizing {
+                if event.pressed_button != Some(MouseButton::Left) {
+                    this.resizing = false;
+                } else if this.resizing {
                     this.sidebar.resize(f32::from(event.position.x) - 4.);
                     cx.notify();
                 }
@@ -581,20 +585,27 @@ impl Render for WorkspaceView {
                 MouseButton::Left,
                 cx.listener(|this, _, _, _| this.resizing = false),
             )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.resizing = false),
+            )
             .when(self.sidebar.expanded, |view| {
-                view.child(sidebar).child(
+                view.child(sidebar).when(self.sidebar.can_resize(), |view| view.child(
                     div()
                         .id("sidebar-resizer")
                         .absolute()
-                        .left(px(self.sidebar.width + 4.))
+                        .left(px(self.sidebar.width() + 4.))
                         .w(px(4.))
                         .h_full()
                         .cursor_col_resize()
                         .on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(|this, _, _, _| this.resizing = true),
+                            cx.listener(|this, _, _, cx| {
+                                this.resizing = true;
+                                cx.stop_propagation();
+                            }),
                         ),
-                )
+                ))
             })
             .child(surface)
             .when_some(self.note_operation.clone(),|view,(ids,moving)| view.child(
@@ -619,7 +630,7 @@ impl Render for WorkspaceView {
                         .items_center()
                         .justify_center()
                         .pl(px(if self.sidebar.expanded {
-                            self.sidebar.width
+                            self.sidebar.width()
                         } else {
                             0.
                         }))

@@ -366,7 +366,9 @@ impl Navigation {
 
 #[derive(Clone, Debug)]
 pub struct SidebarState {
-    pub width: f32,
+    width: f32,
+    container_width: f32,
+    proportion: Option<f32>,
     pub expanded: bool,
     saved_expanded: Option<bool>,
 }
@@ -375,6 +377,8 @@ impl Default for SidebarState {
     fn default() -> Self {
         Self {
             width: 200.,
+            container_width: 0.,
+            proportion: None,
             expanded: true,
             saved_expanded: None,
         }
@@ -382,6 +386,23 @@ impl Default for SidebarState {
 }
 
 impl SidebarState {
+    pub fn width(&self) -> f32 {
+        if self.can_resize() { self.width } else { 200. }
+    }
+
+    pub fn can_resize(&self) -> bool {
+        self.saved_expanded.is_none()
+    }
+
+    pub fn resize_container(&mut self, width: f32) {
+        if width.is_finite() && width > 0. {
+            self.container_width = width;
+            if let Some(proportion) = self.proportion {
+                self.width = (proportion * width).clamp(200., 360.);
+            }
+        }
+    }
+
     pub fn set_route(&mut self, route: &Route) {
         if route.custom_sidebar() {
             if self.saved_expanded.is_none() {
@@ -400,8 +421,11 @@ impl SidebarState {
     }
 
     pub fn resize(&mut self, width: f32) {
-        if width.is_finite() {
+        if self.can_resize() && width.is_finite() {
             self.width = width.clamp(200., 360.);
+            if self.container_width > 0. {
+                self.proportion = Some(self.width / self.container_width);
+            }
         }
     }
 }
@@ -549,6 +573,53 @@ mod tests {
         );
         assert_eq!(Route::settings("folders"), Route::Folders);
         assert_eq!(Route::settings("removed"), Route::Settings("app".into()));
+    }
+
+    #[test]
+    fn manual_sidebar_proportion_survives_window_clamps() {
+        let mut sidebar = SidebarState::default();
+        sidebar.resize_container(800.);
+        sidebar.resize_container(1600.);
+        assert_eq!(sidebar.width(), 200.);
+        sidebar.resize_container(800.);
+        sidebar.resize(280.);
+        sidebar.resize_container(1600.);
+        assert_eq!(sidebar.width(), 360.);
+        sidebar.resize_container(800.);
+        assert_eq!(sidebar.width(), 280.);
+        sidebar.resize_container(400.);
+        assert_eq!(sidebar.width(), 200.);
+        sidebar.resize_container(800.);
+        assert_eq!(sidebar.width(), 280.);
+        for invalid in [0., -100., f32::NAN, f32::INFINITY] {
+            sidebar.resize_container(invalid);
+            assert_eq!(sidebar.width(), 280.);
+        }
+        sidebar.resize(320.);
+        sidebar.resize_container(600.);
+        assert_eq!(sidebar.width(), 240.);
+    }
+
+    #[test]
+    fn custom_sidebar_width_does_not_replace_timeline_proportion() {
+        let mut sidebar = SidebarState::default();
+        sidebar.resize_container(800.);
+        sidebar.resize(280.);
+        sidebar.toggle();
+        sidebar.set_route(&Route::Templates);
+        assert!(sidebar.expanded);
+        assert!(!sidebar.can_resize());
+        assert_eq!(sidebar.width(), 200.);
+        sidebar.resize(350.);
+        sidebar.resize_container(1600.);
+        sidebar.set_route(&Route::Contacts);
+        assert_eq!(sidebar.width(), 200.);
+        sidebar.resize_container(800.);
+        sidebar.set_route(&Route::Empty);
+        assert!(!sidebar.expanded);
+        assert!(sidebar.can_resize());
+        sidebar.toggle();
+        assert_eq!(sidebar.width(), 280.);
     }
 
     #[test]

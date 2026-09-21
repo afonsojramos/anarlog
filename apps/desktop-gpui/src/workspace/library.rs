@@ -377,7 +377,7 @@ impl Render for LibraryView {
                                     }
                                 }),
                             )
-                            .child(div().text_sm().child(if item.title.is_empty() {
+                            .child(div().text_sm().truncate().child(if item.title.is_empty() {
                                 "Untitled note".into()
                             } else {
                                 gpui::SharedString::from(item.title.clone())
