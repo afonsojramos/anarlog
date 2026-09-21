@@ -1072,6 +1072,7 @@ impl WorkspaceView {
         match event.keystroke.key.as_str() {
             "k" => self.show_picker(window, cx),
             "n" => self.create(modifiers.shift, cx),
+            "," => self.navigate(Navigate::Open(Route::settings("app"), false), cx),
             "t" if modifiers.shift => self.navigate(Navigate::Restore, cx),
             "t" => self.navigate(Navigate::Open(Route::Empty, true), cx),
             "w" => {

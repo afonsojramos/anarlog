@@ -4,7 +4,7 @@ use super::{
     navigation::{Route, SlotId},
     shell::{Navigate, WorkspaceView},
 };
-use crate::ui::theme::{system_font, theme};
+use crate::ui::theme::{monospace_font, system_font, theme};
 
 struct Hint(&'static str);
 
@@ -55,6 +55,56 @@ impl Render for TabDrag {
     }
 }
 
+impl WorkspaceView {
+    fn empty_action(
+        label: &'static str,
+        keys: &'static str,
+        action: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let colors = theme(window);
+        let modifier = if cfg!(target_os = "macos") {
+            "⌘"
+        } else {
+            "Ctrl"
+        };
+        div()
+            .id(label)
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_8()
+            .px_4()
+            .py_2()
+            .rounded_full()
+            .text_sm()
+            .text_color(colors.foreground)
+            .cursor_pointer()
+            .hover(|style| style.bg(colors.accent))
+            .on_click(cx.listener(move |this, _, _, cx| action(this, cx)))
+            .child(label)
+            .child(
+                div()
+                    .h(px(20.))
+                    .min_w(px(20.))
+                    .px_1()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(colors.border)
+                    .bg(colors.muted)
+                    .text_color(colors.muted_foreground)
+                    .font_family(monospace_font(cx))
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .child(format!("{modifier} {keys}")),
+            )
+    }
+}
+
 impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sidebar
@@ -83,13 +133,7 @@ impl Render for WorkspaceView {
                     .px_2()
                     .flex()
                     .items_center()
-                    .justify_between()
-                    .child(
-                        svg()
-                            .path("logo.svg")
-                            .size(px(22.))
-                            .text_color(colors.foreground),
-                    )
+                    .justify_start()
                     .child(
                         div()
                             .flex()
@@ -519,32 +563,39 @@ impl Render for WorkspaceView {
                                 .flex_col()
                                 .items_center()
                                 .justify_center()
-                                .gap_4()
-                                .child(
-                                    svg()
-                                        .path("logo.svg")
-                                        .size(px(48.))
-                                        .text_color(colors.foreground),
-                                )
-                                .child(div().text_xl().child("What would you like to remember?"))
                                 .child(
                                     div()
-                                        .id("empty-create")
-                                        .px_4()
-                                        .py_2()
-                                        .rounded(px(8.))
-                                        .bg(colors.accent)
-                                        .cursor_pointer()
-                                        .on_click(
-                                            cx.listener(|this, _, _, cx| this.create(false, cx)),
-                                        )
-                                        .child("New note"),
-                                )
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(colors.muted_foreground)
-                                        .child("Open a note with Mod+K"),
+                                        .min_w(px(280.))
+                                        .flex()
+                                        .flex_col()
+                                        .gap_1()
+                                        .child(Self::empty_action(
+                                            "New Note",
+                                            "N",
+                                            |this, cx| this.create(false, cx),
+                                            window,
+                                            cx,
+                                        ))
+                                        .child(Self::empty_action(
+                                            "Start Recording",
+                                            "⇧ N",
+                                            |this, cx| this.create(true, cx),
+                                            window,
+                                            cx,
+                                        ))
+                                        .child(div().my_1().h(px(1.)).bg(colors.accent))
+                                        .child(Self::empty_action(
+                                            "Settings",
+                                            ",",
+                                            |this, cx| {
+                                                this.navigate(
+                                                    Navigate::Open(Route::settings("app"), false),
+                                                    cx,
+                                                )
+                                            },
+                                            window,
+                                            cx,
+                                        )),
                                 ),
                         ),
                         _ if catalog.is_some() => {
