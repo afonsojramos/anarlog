@@ -272,7 +272,7 @@ impl Render for WorkspaceView {
             .border_color(colors.border)
             .rounded_tl(px(12.))
             .when(
-                self.navigation.tabs.len() > 1 || route != Route::Empty,
+                self.navigation.tabs.len() > 1 || self.navigation.tabs.iter().any(|tab| tab.pinned),
                 |view| {
                     view.child(
                         div()

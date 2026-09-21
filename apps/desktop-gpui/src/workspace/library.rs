@@ -315,8 +315,10 @@ impl Render for LibraryView {
                         };
                         let item = &this.page.items[index];
                         let id = item.id.clone();
-                        div()
+                        let item = div()
                             .id(gpui::SharedString::from(item.id.0.clone()))
+                            .flex_1()
+                            .min_w_0()
                             .h(px(54.))
                             .flex()
                             .flex_col()
@@ -402,8 +404,8 @@ impl Render for LibraryView {
                                     } else {
                                         gpui::SharedString::from(time)
                                     }),
-                            )
-                            .into_any_element()
+                            );
+                        div().w_full().flex().child(item).into_any_element()
                     }),
                 )
                 .size_full(),

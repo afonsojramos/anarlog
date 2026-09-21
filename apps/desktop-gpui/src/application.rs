@@ -45,6 +45,7 @@ impl anlg_storage::StorageRuntime for ProfileStorage {
 
 pub struct ApplicationView {
     runtime: RuntimeHandle,
+    window: gpui::AnyWindowHandle,
     chrome: chrome::Chrome,
     workspace: Entity<WorkspaceView>,
     editor: Option<Entity<EditorPane>>,
@@ -272,6 +273,7 @@ impl ApplicationView {
         })
         .detach();
         Self {
+            window: window.window_handle(),
             runtime,
             chrome: chrome::Chrome::default(),
             workspace,
@@ -1229,6 +1231,15 @@ impl ApplicationView {
         self.product_subscriptions.clear();
         self.workspace
             .update(cx, |workspace, cx| workspace.open_route(route, false, cx));
+        let view = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            let _ = view.update(cx, |this, cx| {
+                if this.product.is_none() {
+                    let focus = this.workspace.read(cx).focus_handle(cx);
+                    let _ = this.window.update(cx, |_, window, _| focus.focus(window));
+                }
+            });
+        });
         cx.notify();
     }
 
