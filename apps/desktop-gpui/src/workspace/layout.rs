@@ -143,6 +143,7 @@ impl Render for WorkspaceView {
                             .child(
                                 div()
                                     .id("open-picker")
+                                    .group("sidebar-search")
                                     .size(px(28.))
                                     .flex()
                                     .items_center()
@@ -157,11 +158,20 @@ impl Render for WorkspaceView {
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.show_picker(window, cx)
                                     }))
-                                    .child(svg().path("Search01Icon.svg").size(px(15.))),
+                                    .child(
+                                        svg()
+                                            .path("Search01Icon.svg")
+                                            .size(px(15.))
+                                            .text_color(colors.muted_foreground)
+                                            .group_hover("sidebar-search", |style| {
+                                                style.text_color(colors.foreground)
+                                            }),
+                                    ),
                             )
                             .child(
                                 div()
                                     .id("new-note")
+                                    .group("sidebar-new-note")
                                     .size(px(28.))
                                     .flex()
                                     .items_center()
@@ -174,7 +184,15 @@ impl Render for WorkspaceView {
                                     .tooltip(|_, cx| cx.new(|_| Hint("New note")).into())
                                     .cursor_pointer()
                                     .on_click(cx.listener(|this, _, _, cx| this.create(false, cx)))
-                                    .child(svg().path("NoteEditIcon.svg").size(px(15.))),
+                                    .child(
+                                        svg()
+                                            .path("NoteEditIcon.svg")
+                                            .size(px(15.))
+                                            .text_color(colors.muted_foreground)
+                                            .group_hover("sidebar-new-note", |style| {
+                                                style.text_color(colors.foreground)
+                                            }),
+                                    ),
                             ),
                     ),
             )

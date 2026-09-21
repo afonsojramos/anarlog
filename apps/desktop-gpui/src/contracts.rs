@@ -61,6 +61,7 @@ pub enum ProductRoute {
     Export(SessionId),
     Models,
     Integrations,
+    Calendar,
 }
 
 #[derive(Clone, Debug)]

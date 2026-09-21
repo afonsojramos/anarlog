@@ -164,6 +164,7 @@ impl ProductPane {
             ProductRoute::Import => ("imports", Some(Surface::Imports)),
             ProductRoute::Models => ("transcription", Some(Surface::Models)),
             ProductRoute::Integrations => ("developers", Some(Surface::Developers)),
+            ProductRoute::Calendar => ("calendar", Some(Surface::Calendar)),
             ProductRoute::Onboarding => {
                 let flow = Onboarding::new(cfg!(target_os = "macos"));
                 let surface = flow.step().surface();

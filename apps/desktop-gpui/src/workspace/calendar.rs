@@ -160,6 +160,8 @@ pub fn load_calendar(
 
 pub struct CalendarOpen(pub SessionId);
 
+pub struct CalendarConnections;
+
 pub fn open_event(
     runtime: &RuntimeHandle,
     event_id: Arc<str>,
@@ -228,6 +230,7 @@ pub struct CalendarView {
 }
 
 impl EventEmitter<CalendarOpen> for CalendarView {}
+impl EventEmitter<CalendarConnections> for CalendarView {}
 
 impl CalendarView {
     pub fn new(runtime: RuntimeHandle) -> Self {
@@ -441,6 +444,13 @@ impl Render for CalendarView {
                             .text_lg()
                             .flex_1()
                             .child(SharedString::from(self.request.anchor.clone())),
+                    )
+                    .child(
+                        div()
+                            .id("calendar-connections")
+                            .cursor_pointer()
+                            .child("Calendar connections")
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(CalendarConnections))),
                     )
                     .child(
                         div()

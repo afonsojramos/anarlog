@@ -250,6 +250,14 @@ impl WorkspaceView {
         let calendar_subscription = cx.subscribe(&calendar, |this, _, event: &CalendarOpen, cx| {
             this.open_session(event.0.clone(), cx);
         });
+        let calendar_connections_subscription = cx.subscribe(
+            &calendar,
+            |this, _, _: &super::calendar::CalendarConnections, cx| {
+                if this.can_navigate(cx) {
+                    cx.emit(WorkspaceEvent::Product(ProductRoute::Calendar));
+                }
+            },
+        );
         cx.spawn(async move |this, cx| {
             let result = ready.receive().await;
             let _ = this.update(cx, |this, cx| match result {
@@ -309,6 +317,7 @@ impl WorkspaceView {
                 note_subscription,
                 picker_subscription,
                 calendar_subscription,
+                calendar_connections_subscription,
             ],
         }
     }
