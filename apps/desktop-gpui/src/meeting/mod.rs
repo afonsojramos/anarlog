@@ -235,7 +235,10 @@ impl MeetingPane {
                 if let Some(session_id) = &self.session {
                     cx.emit(MeetingEvent::Recording {
                         session_id: session_id.clone(),
-                        active: matches!(self.phase, Phase::Listening | Phase::Loading),
+                        active: matches!(
+                            self.phase,
+                            Phase::Listening | Phase::Loading | Phase::Finalizing
+                        ),
                     });
                 }
                 if was_recording && self.phase == Phase::Idle {

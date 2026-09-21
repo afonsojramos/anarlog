@@ -1,3 +1,4 @@
+pub mod application;
 pub mod contracts;
 pub mod editor;
 pub mod meeting;

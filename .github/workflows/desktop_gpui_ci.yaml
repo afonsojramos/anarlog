@@ -1,0 +1,43 @@
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - apps/desktop-gpui/**
+      - crates/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - packages/design-system/src/tokens.css
+      - .github/workflows/desktop_gpui_ci.yaml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev cmake ninja-build pkg-config \
+            libasound2-dev libudev-dev libpulse-dev libpipewire-0.3-dev libssl-dev \
+            libfontconfig1-dev libfreetype6-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libx11-dev libxcb1-dev
+      - run: rustup show
+      - run: cargo check --locked -p desktop-gpui
+      - run: cargo build --locked -p desktop-gpui
+      - run: cargo test --locked -p desktop-gpui -p desktop-runtime
+      - run: cargo clippy --locked -p desktop-gpui -p desktop-runtime --all-targets --no-deps -- -D warnings
+      - run: find apps/desktop-gpui crates/desktop-runtime -name '*.rs' -print0 | xargs -0 rustfmt --edition 2024 --check

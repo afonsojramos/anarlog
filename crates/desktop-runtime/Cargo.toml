@@ -12,9 +12,12 @@ anlg-db-reactive = { workspace = true }
 futures = "0.3"
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true }
+serde_qs = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
 tokio-util = { workspace = true, features = ["rt"] }
+updater-core = { path = "../updater-core" }
+url = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]

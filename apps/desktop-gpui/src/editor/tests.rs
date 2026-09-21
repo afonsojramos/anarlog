@@ -1,5 +1,7 @@
 use std::{sync::Arc, time::Instant};
 
+use desktop_runtime::{CancellationToken, Profile, RuntimeHandle, SaveDocument, ServiceError};
+use futures::{StreamExt, executor::block_on};
 use serde_json::{Value, json};
 
 use super::{
@@ -7,8 +9,113 @@ use super::{
     document::{Document, Text, utf8},
     menu::{MentionCandidate, MentionResults, MentionTarget},
     model::{EditorModel, Mapping, Selection},
+    persistence::{SaveEvent, SaveJournal},
     surface::ProjectedBlock,
 };
+
+#[test]
+fn journal_flush_roundtrips_rich_document_and_retains_conflicting_draft() {
+    let directory = tempfile::tempdir().unwrap();
+    let profile = Profile {
+        database: directory.path().join("library.sqlite"),
+    };
+    let (runtime, ready) = RuntimeHandle::start(profile.clone()).unwrap();
+    block_on(ready.receive()).unwrap();
+    let session = block_on(
+        runtime
+            .create_note("Rich fixture".into())
+            .unwrap()
+            .receive(),
+    )
+    .unwrap();
+    let base = session.note.unwrap();
+    let rich = json!({
+        "type": "doc", "attrs": {"future": 42}, "content": [
+            {"type": "paragraph", "content": [{"type":"text","text":"日本語 😀", "marks":[{"type":"bold"}]}]},
+            {"type": "future-widget", "attrs": {"attachmentId":"opaque-id", "payload":[1,2,3]}},
+            {"type": "table", "content": [{"type":"tableRow", "content":[{"type":"tableCell", "attrs":{"colspan":1,"rowspan":1}, "content":[{"type":"paragraph","content":[{"type":"text","text":"Cell"}]}]}]}]},
+            {"type":"taskList","content":[{"type":"taskItem","attrs":{"checked":true},"content":[{"type":"paragraph","content":[{"type":"text","text":"Done"}]}]}]}
+        ]
+    });
+    let mut editor = EditorModel::new(Document::parse(rich.to_string().into()).unwrap());
+    editor.replace(1..1, "Edited ").unwrap();
+    let expected = editor.document.serialize_for_save().unwrap();
+    let (journal, mut events) = SaveJournal::start(runtime.clone(), base).unwrap();
+    journal.publish(editor.revision, editor.document.clone());
+    block_on(journal.flush(editor.revision)).unwrap().unwrap();
+    let saved = match block_on(events.next()).unwrap() {
+        SaveEvent::Saved { snapshot, .. } => snapshot,
+        SaveEvent::Failed(error) => panic!("{error}"),
+    };
+    assert_eq!(saved.body, expected);
+    let remote: Arc<str> = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Remote"}]}]}"#.into();
+    block_on(
+        runtime
+            .save_document(SaveDocument {
+                base: saved,
+                body: remote.clone(),
+            })
+            .unwrap()
+            .receive(),
+    )
+    .unwrap();
+    editor.replace(1..1, "Local ").unwrap();
+    journal.publish(editor.revision, editor.document.clone());
+    assert!(matches!(
+        block_on(journal.flush(editor.revision)).unwrap(),
+        Err(ServiceError::Conflict)
+    ));
+    assert!(matches!(
+        block_on(events.next()).unwrap(),
+        SaveEvent::Failed(ServiceError::Conflict)
+    ));
+    assert!(
+        editor
+            .document
+            .serialize()
+            .unwrap()
+            .contains("Local Edited")
+    );
+    let current = block_on(
+        runtime
+            .open_session(session.summary.id.clone(), CancellationToken::new())
+            .unwrap()
+            .receive(),
+    )
+    .unwrap()
+    .note
+    .unwrap();
+    assert_eq!(current.body, remote);
+    journal
+        .resolve_conflict(current, editor.revision, editor.document.clone())
+        .unwrap();
+    block_on(journal.flush(editor.revision)).unwrap().unwrap();
+    assert!(matches!(
+        block_on(events.next()).unwrap(),
+        SaveEvent::Saved { .. }
+    ));
+    let expected = editor.document.serialize_for_save().unwrap();
+    drop(journal);
+    drop(events);
+    block_on(runtime.shutdown()).unwrap();
+    let (runtime, ready) = RuntimeHandle::start(profile).unwrap();
+    block_on(ready.receive()).unwrap();
+    let restored = block_on(
+        runtime
+            .open_session(session.summary.id, CancellationToken::new())
+            .unwrap()
+            .receive(),
+    )
+    .unwrap()
+    .note
+    .unwrap();
+    assert_eq!(restored.body, expected);
+    let restored: Value = serde_json::from_str(&restored.body).unwrap();
+    assert_eq!(restored["content"][1], rich["content"][1]);
+    assert_eq!(restored["content"][2], rich["content"][2]);
+    assert_eq!(restored["content"][3], rich["content"][3]);
+    block_on(runtime.shutdown()).unwrap();
+}
 
 fn model(text: &str) -> EditorModel {
     EditorModel::new(Document::parse(serde_json::json!({

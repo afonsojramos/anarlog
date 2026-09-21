@@ -1,4 +1,4 @@
-# Native GPUI foundation (ANLG-320)
+# Native GPUI preview (ANLG-320)
 
 This is an opt-in, standalone native package. The existing desktop app remains the
 shipping application and the behavior reference. This package starts from
@@ -22,19 +22,29 @@ is a directory, not a database filename. Only use an isolated directory or a
 consistent SQLite backup; do not copy a live WAL database's main file alone.
 The canonical schema is prepared with `db-app`; CloudSync is disabled.
 
-The functional slice opens/creates a persistent library, creates a real session
-and note atomically, searches titles/IDs on Enter, pages a virtualized timeline,
-opens a bounded read-only preview of stored document bytes, and saves titles
-using compare-and-swap. Title save failures preserve input. Unsaved title changes
-block note switching and normal window close; restore the previous title or save
-to continue. There is no rich-text edit control or recording control in this
-slice. The other lane constructors explicitly render unavailable states and are
-not exposed by the current navigation.
+The integrated preview mounts the native workspace, TipTap JSON editor,
+transcript/audio pane, and product settings/services. The editor autosaves through
+a background journal; save conflicts retain drafts. The note header opens
+transcript/audio, share, and export surfaces. Product services without concrete
+adapters display their unavailable state. Recording is deliberately unavailable
+until a validated provider, secure credentials, and model configuration are
+connected. No credentials or provider defaults are fabricated.
+
+Pinned tabs are restored and saved with CAS through `app_settings.gpui_pinned_tabs`
+inside the isolated profile. Malformed persisted pin data disables pin writes.
+This does not import the shipping application's file-based pinned-tab store.
+Title/editor/product drafts gate navigation and quit. Window close, the native
+Quit control, and the application quit keyboard shortcut flush the editor, stop
+and finalize capture, and await runtime drain. OS-forced termination and native
+application-menu quit are not yet intercepted reliably.
 
 Published `gpui = "=0.2.2"` is used without a fork or patch. On Linux, GPUI needs
 X11 or Wayland, a working Vulkan device/driver, xkbcommon, fontconfig, and FreeType.
 Build-only verification does not establish that a particular GPU/desktop works.
 macOS and Windows require their native toolchains and platform validation.
+Use Ubuntu 24.04 or a matching recent PipeWire SDK: Ubuntu 22.04's 0.3.48 SPA
+headers cannot compile the repository's `libspa 0.9.2` dependency. The native
+Linux CI uses Ubuntu 24.04 and never launches a display or audio device.
 
 The shared lockfile also changes existing resolutions: GPUI pins macOS
 `core-foundation` to `0.10.0`; its `cbindgen` requires `toml >=0.8.8`, resolving to
@@ -46,8 +56,11 @@ builds against these shared resolutions before integration.
 
 ## Architecture
 
-- `main.rs` owns CLI/profile selection, native window bootstrap and close flow.
-  The native OS titlebar is retained. Shared bootstrap remains integrator-owned.
+- `main.rs` owns CLI/profile selection and the native window.
+- `application.rs` owns the pane entities, event routing, one shared capture and
+  playback owner, startup recovery, persisted pins, and the close/drain flow.
+  Real audio/storage ports are installed; missing provider/product services remain
+  explicit unavailable boundaries.
 - `ui/` provides source-derived light/dark HSL tokens, the system font policy,
   embedded existing logo and Hugeicons, focus restoration, and a bounded native
   single-line input with UTF-16/IME entry points and clipboard operations.
@@ -83,13 +96,12 @@ timestamp, but cannot prove that a caller retained every unknown node. The edito
 lane must preserve unknown data and refuse unsafe transformations. CAS failures
 must retain the dirty draft and expose reload/merge recovery.
 
-## Parallel lane contract
+## Module contracts
 
-All lane modules are already registered in `lib.rs` and their constructors and
-event types compile. A lane must leave the constructor/event contract compatible
-or report an exact shared change request to the integrator. Do not edit another
-lane or common files to make a local build work. The compiled unavailable panels
-are scaffolding to replace; they do not count as feature delivery.
+All modules are registered in `lib.rs` and mounted by `application.rs`.
+The following contracts and ownership boundaries were used by the five fresh
+implementation lanes. Explicit unavailable services are still integration
+boundaries; they do not count as feature delivery.
 
 ### Path ownership
 
@@ -247,19 +259,32 @@ The runtime tests use temporary databases only, covering durable reopen,
 opaque JSON preservation, CAS conflict and deleted-document rejection,
 queue saturation/drain, flush barriers, cancellation and reactive unsubscribe.
 Input model tests cover UTF-16, grapheme deletion and composition-relative ranges.
-These do not validate native input methods or accessibility.
+These do not validate native input methods or accessibility. Integration coverage
+also exercises rich-document save/reopen through `SaveJournal`, preservation of
+opaque/table/task content, competing writes, explicit conflict resolution, and
+pin CAS/corrupt-storage behavior.
 
-This foundation is not appearance/interaction parity and makes no performance
-claim. No GUI test or recording is performed in this child handoff.
+`pnpm dev:desktop-gpui --profile /absolute/path/to/sandbox` runs the native binary.
+`pnpm check:desktop-gpui` runs the native check, tests, and Clippy. The focused
+`desktop_gpui_ci.yaml` additionally builds the binary and checks Rust formatting.
+
+This preview has not demonstrated appearance/interaction parity and makes no
+performance claim. No GUI test or recording is performed in this child handoff.
 macOS/Windows builds, native accessibility trees, screen readers, IME/CJK across
 platforms, real audio, auth/providers, i18n, tray/updater/integration behavior,
-packaging and signing remain unvalidated. Native input still lacks full undo,
-drag selection, word navigation and horizontal scrolling; the editor lane must
-provide its own complete editing surface. Selected documents currently refresh
-only when reopened; the editor/runtime lanes must connect typed document watches
-and preserve dirty drafts during remote updates.
+packaging and signing remain unvalidated. The workspace's title/search input is
+separate from the rich editor and still lacks full undo, drag selection, word
+navigation and horizontal scrolling. Selected documents currently refresh only
+when reopened; the editor/runtime typed document watch must still be connected
+to the editor's remote-revision API without replacing dirty drafts.
 Shutdown flush errors currently leave a visible failure on a closed runtime;
 recovery/retry policy and OS session-end handling belong to runtime.
+
+Standalone note windows, folder/contact/template mutations, automation execution,
+provider calendar reconciliation, attachment preview, native search extraction,
+secure credential/provider/model selection, meeting AI services,
+account/CloudSync/billing adapters, and system permissions remain incomplete or
+unavailable.
 
 Equivalent release-build old/new profiling with reproducible large-library,
 large-document and streaming fixtures is required before claiming any speed,

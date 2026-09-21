@@ -6,9 +6,50 @@ use serde_json::{Value, json};
 
 use super::{
     calendar::{CalendarRequest, load_calendar},
+    navigation::Route,
     picker::PICKER_QUERY,
+    pins,
     ports::{Catalog, CatalogQuery, catalog_detail, catalog_page, decode_catalog},
 };
+
+#[test]
+fn pins_use_cas_and_malformed_storage_cannot_become_empty_success() {
+    block_on(async {
+        let (_directory, runtime) = start().await;
+        let (base, routes) = pins::load(&runtime).unwrap().receive().await.unwrap();
+        assert!(routes.is_empty());
+        let routes: Arc<[Route]> = vec![Route::Contacts, Route::Calendar].into();
+        pins::save(&runtime, base.clone(), routes.clone())
+            .unwrap()
+            .receive()
+            .await
+            .unwrap();
+        assert!(matches!(
+            pins::save(&runtime, base, Arc::from([]))
+                .unwrap()
+                .receive()
+                .await,
+            Err(ServiceError::Conflict)
+        ));
+        let (_, restored) = pins::load(&runtime).unwrap().receive().await.unwrap();
+        assert_eq!(restored.as_slice(), routes.as_ref());
+        execute(
+            &runtime,
+            "UPDATE app_settings SET value_json = '{broken' WHERE id = 'gpui_pinned_tabs'",
+            vec![],
+        )
+        .await;
+        assert!(pins::load(&runtime).unwrap().receive().await.is_err());
+        let raw = execute(
+            &runtime,
+            "SELECT value_json FROM app_settings WHERE id = 'gpui_pinned_tabs'",
+            vec![],
+        )
+        .await;
+        assert_eq!(raw[0]["value_json"], "{broken");
+        runtime.shutdown().await.unwrap();
+    });
+}
 
 #[test]
 fn contacts_prefer_authenticated_self_and_keep_self_visible_during_search() {

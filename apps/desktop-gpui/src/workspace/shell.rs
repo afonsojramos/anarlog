@@ -234,6 +234,13 @@ impl WorkspaceView {
         cx.notify();
     }
 
+    pub fn current_route(&self) -> Route {
+        self.navigation
+            .current()
+            .map(|tab| tab.route.clone())
+            .unwrap_or(Route::Empty)
+    }
+
     pub fn set_editor_content(
         &mut self,
         session_id: &SessionId,

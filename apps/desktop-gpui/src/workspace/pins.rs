@@ -1,9 +1,48 @@
 use std::sync::Arc;
 
-use desktop_runtime::SessionId;
+use desktop_runtime::{Reply, RuntimeHandle, ServiceError, SessionId};
 use serde_json::{Value, json};
 
 use super::navigation::Route;
+
+const SETTINGS_KEY: &str = "gpui_pinned_tabs";
+const MAX_BYTES: usize = 64 * 1024;
+
+#[derive(Clone)]
+pub struct Revision(Option<String>);
+
+pub fn load(runtime: &RuntimeHandle) -> desktop_runtime::Result<Reply<(Revision, Vec<Route>)>> {
+    runtime.submit(|services| async move {
+        let rows = services.executor.execute(
+            "SELECT CASE WHEN length(CAST(value_json AS BLOB)) <= ? THEN value_json END AS value_json FROM app_settings WHERE id = ?".into(),
+            vec![json!(MAX_BYTES), json!(SETTINGS_KEY)],
+        ).await.map_err(|error| ServiceError::Failed(error.to_string().into()))?;
+        let raw = rows.first().map(|row| row["value_json"].as_str().map(str::to_owned)
+            .ok_or_else(|| ServiceError::Unsupported("Pinned tabs exceed the read limit; stored data retained.".into()))).transpose()?;
+        let routes = raw.as_deref().map(decode).transpose()
+            .map_err(|error| ServiceError::Failed(format!("Pinned tabs are malformed; stored data retained: {error}").into()))?.unwrap_or_default();
+        Ok((Revision(raw), routes))
+    })
+}
+
+pub fn save(
+    runtime: &RuntimeHandle,
+    base: Revision,
+    routes: Arc<[Route]>,
+) -> desktop_runtime::Result<Reply<Revision>> {
+    runtime.submit(move |services| async move {
+        let raw = encode(&routes).map_err(|error| ServiceError::Failed(error.to_string().into()))?;
+        if raw.len() > MAX_BYTES {
+            return Err(ServiceError::Unsupported("Pinned tabs exceed the 64 KiB limit.".into()));
+        }
+        let rows = services.executor.execute(
+            "INSERT INTO app_settings (id, value_json, updated_at) SELECT ?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE (SELECT value_json FROM app_settings WHERE id = ?1) IS ?3 ON CONFLICT(id) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at RETURNING id".into(),
+            vec![json!(SETTINGS_KEY), json!(raw), json!(base.0)],
+        ).await.map_err(|error| ServiceError::Failed(error.to_string().into()))?;
+        if rows.is_empty() { return Err(ServiceError::Conflict); }
+        Ok(Revision(Some(raw)))
+    })
+}
 
 pub fn decode(raw: &str) -> Result<Vec<Route>, serde_json::Error> {
     let rows: Vec<Value> = serde_json::from_str(raw)?;

@@ -1104,6 +1104,7 @@ dependencies = [
  "futures-channel",
  "futures-util",
  "rand 0.9.4",
+ "raw-window-handle",
  "serde",
  "serde_repr",
  "url",
@@ -5479,15 +5480,33 @@ name = "desktop-gpui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "audio",
+ "audio-actual",
+ "audio-mock",
+ "audio-utils",
+ "db-execute",
  "desktop-runtime",
  "futures",
+ "global-hotkey",
  "gpui",
+ "listener-core",
+ "listener2-core",
+ "notification-interface",
+ "ractor",
+ "rfd",
+ "rodio",
+ "serde",
  "serde_json",
+ "storage",
  "tempfile",
+ "template-app",
  "tiptap",
+ "tokio",
  "tracing",
  "tracing-subscriber",
+ "transcript",
  "unicode-segmentation",
+ "uuid",
 ]
 
 [[package]]
@@ -5501,10 +5520,13 @@ dependencies = [
  "futures",
  "serde",
  "serde_json",
+ "serde_qs",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
+ "updater-core",
+ "url",
  "uuid",
 ]
 
@@ -13956,6 +13978,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5da3b0203fd7ee5720aa0b5e790b591aa5d3f41c3ed2c34a3a393382198af2f7"
 
 [[package]]
+name = "pollster"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f3a9f18d041e6d0e102a0a46750538147e5e8992d3b4873aaafee2520b00ce3"
+
+[[package]]
 name = "poly1305"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -14005,7 +14033,7 @@ dependencies = [
  "log",
  "parking_lot",
  "pin-project",
- "pollster",
+ "pollster 0.2.5",
  "static_assertions",
  "thiserror 1.0.69",
 ]
@@ -15292,6 +15320,7 @@ version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a15ad77d9e70a92437d8f74c35d99b4e4691128df018833e99f90bcd36152672"
 dependencies = [
+ "ashpd 0.11.1",
  "block2",
  "dispatch2",
  "glib-sys",
@@ -15303,7 +15332,9 @@ dependencies = [
  "objc2-app-kit",
  "objc2-core-foundation",
  "objc2-foundation",
+ "pollster 0.4.0",
  "raw-window-handle",
+ "urlencoding",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",

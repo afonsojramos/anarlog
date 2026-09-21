@@ -1,6 +1,6 @@
-use std::{cell::Cell, path::PathBuf, rc::Rc};
+use std::path::PathBuf;
 
-use desktop_gpui::{contracts::LaneContext, ui::assets::Assets, workspace::WorkspaceView};
+use desktop_gpui::{application::ApplicationView, ui::assets::Assets};
 use desktop_runtime::Profile;
 use gpui::{AppContext, Application, Bounds, WindowBounds, WindowOptions, px, size};
 
@@ -14,7 +14,7 @@ fn main() -> anyhow::Result<()> {
     let profile = match args.next() {
         Some(argument) if argument == "--help" => {
             println!(
-                "Anarlog native foundation\nUsage: desktop-gpui [--profile DIRECTORY]\nDefault: $HOME/.anarlog-gpui-sandbox/library.sqlite\nUse only an isolated profile or a backup copy, never the shipping app's live profile."
+                "Anarlog native preview\nUsage: desktop-gpui [--profile DIRECTORY]\nDefault: $HOME/.anarlog-gpui-sandbox/library.sqlite\nUse only an isolated profile or a backup copy, never the shipping app's live profile."
             );
             return Ok(());
         }
@@ -35,20 +35,6 @@ fn main() -> anyhow::Result<()> {
         database: profile.join("library.sqlite"),
     })?;
     Application::new().with_assets(Assets).run(move |cx| {
-        let closing = Rc::new(Cell::new(false));
-        let closed = Rc::new(Cell::new(false));
-        let quit_runtime = runtime.clone();
-        let quit_closed = closed.clone();
-        cx.on_app_quit(move |_| {
-            let runtime = quit_runtime.clone();
-            let already_closed = quit_closed.get();
-            async move {
-                if !already_closed && let Err(error) = runtime.shutdown().await {
-                    tracing::error!(%error, "runtime shutdown failed");
-                }
-            }
-        })
-        .detach();
         let result = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
@@ -63,43 +49,11 @@ fn main() -> anyhow::Result<()> {
                 ..Default::default()
             },
             move |window, cx| {
-                let root = cx.new(|cx| {
-                    WorkspaceView::new(
-                        LaneContext {
-                            runtime: runtime.clone(),
-                        },
-                        ready,
-                        window,
-                        cx,
-                    )
-                });
+                let root =
+                    cx.new(|cx| ApplicationView::new(runtime.clone(), ready, profile, window, cx));
                 let root_weak = root.downgrade();
                 window.on_window_should_close(cx, move |_, cx| {
-                    if closing.get() {
-                        return false;
-                    }
-                    let can_close = root_weak
-                        .update(cx, |root, cx| root.can_close(cx))
-                        .unwrap_or(true);
-                    if !can_close {
-                        return false;
-                    }
-                    closing.set(true);
-                    let runtime = runtime.clone();
-                    let root = root_weak.clone();
-                    let closed = closed.clone();
-                    cx.spawn(async move |cx| match runtime.shutdown().await {
-                        Ok(()) => {
-                            closed.set(true);
-                            let _ = cx.update(|cx| cx.quit());
-                        }
-                        Err(error) => {
-                            let _ = root.update(cx, |root, cx| {
-                                root.set_status(format!("Shutdown failed: {error}"), cx)
-                            });
-                        }
-                    })
-                    .detach();
+                    let _ = root_weak.update(cx, |root, cx| root.request_quit(cx));
                     false
                 });
                 root

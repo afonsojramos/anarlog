@@ -8,7 +8,7 @@ use gpui::{
 };
 
 use crate::{
-    contracts::WorkspaceEvent,
+    contracts::{MeetingIntent, ProductRoute, WorkspaceEvent},
     ui::{
         input::{InputEvent, TextInput},
         theme::theme,
@@ -287,6 +287,37 @@ impl Render for NoteView {
                     .text_color(colors.muted_foreground)
                     .child(self.message.clone()),
             )
+            .when_some(self.current.clone(), |view, session| {
+                view.child(
+                    div().flex().gap_3().children(
+                        ["Transcript / audio", "Share", "Export"]
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, label)| {
+                                let id = session.summary.id.clone();
+                                div()
+                                    .id(("note-service", index))
+                                    .px_2()
+                                    .py_1()
+                                    .cursor_pointer()
+                                    .child(label)
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        cx.emit(match index {
+                                            0 => WorkspaceEvent::Meeting(MeetingIntent::Open(
+                                                id.clone(),
+                                            )),
+                                            1 => WorkspaceEvent::Product(ProductRoute::Share(
+                                                id.clone(),
+                                            )),
+                                            _ => WorkspaceEvent::Product(ProductRoute::Export(
+                                                id.clone(),
+                                            )),
+                                        });
+                                    }))
+                            }),
+                    ),
+                )
+            })
             .when_some(self.content.clone(), |view, content| {
                 view.child(div().flex_1().min_h_0().child(content))
             })

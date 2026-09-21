@@ -2,6 +2,8 @@
   "scripts": {
     "dev": "node scripts/dev.mjs stack",
     "dev:desktop": "node scripts/dev.mjs desktop",
+    "dev:desktop-gpui": "cargo run --locked -p desktop-gpui --",
+    "check:desktop-gpui": "cargo check --locked -p desktop-gpui && cargo test --locked -p desktop-gpui -p desktop-runtime && cargo clippy --locked -p desktop-gpui -p desktop-runtime --all-targets --no-deps -- -D warnings",
     "dev:web": "node scripts/dev.mjs web",
     "dev:api": "node scripts/dev.mjs api",
     "fmt:check": "dprint check",
