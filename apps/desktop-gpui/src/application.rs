@@ -96,6 +96,12 @@ impl ApplicationView {
             )
         });
         let subscriptions = vec![
+            cx.on_focus_lost(window, |this, window, cx| {
+                if this.product.is_none() && !this.closing && !this.writers_paused {
+                    cx.focus_view(&this.workspace, window);
+                    cx.notify();
+                }
+            }),
             cx.subscribe_in(&workspace, window, |this, _, event, window, cx| {
                 this.workspace_event(event, window, cx)
             }),
