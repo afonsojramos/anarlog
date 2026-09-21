@@ -2,7 +2,7 @@ import "./dictation-section.css";
 
 import { Link } from "@tanstack/react-router";
 import { useReducedMotion } from "motion/react";
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import { useMountEffect } from "@/hooks/useMountEffect";
 
@@ -82,7 +82,9 @@ export function DictationSection() {
 function SpeechFlowVisual() {
   const id = useId();
   const reducedMotion = useReducedMotion();
+  const stageRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+  const [edges, setEdges] = useState({ left: -80, right: 1180 });
   const rawRef = useRef<SVGTextElement>(null);
   const polishedRef = useRef<SVGTextElement>(null);
   const rawPathRef = useRef<SVGPathElement>(null);
@@ -98,6 +100,17 @@ function SpeechFlowVisual() {
         !rawPathRef.current
       )
         return;
+      if (stageRef.current && svgRef.current) {
+        const scale = svgRef.current.clientWidth / 1180;
+        const halfWidth = stageRef.current.clientWidth / scale / 2 + 32;
+        const left = Math.min(-80, 590 - halfWidth);
+        const right = Math.max(1180, 590 + halfWidth);
+        setEdges((previous) =>
+          previous.left === left && previous.right === right
+            ? previous
+            : { left, right },
+        );
+      }
       const next = {
         raw: rawRef.current.getComputedTextLength() / streamCopies,
         polished: polishedRef.current.getComputedTextLength() / streamCopies,
@@ -114,11 +127,19 @@ function SpeechFlowVisual() {
     void document.fonts.ready.then(measure);
     const observer = new ResizeObserver(measure);
     if (svgRef.current) observer.observe(svgRef.current);
+    if (stageRef.current) observer.observe(stageRef.current);
     return () => {
       active = false;
       observer.disconnect();
     };
   });
+
+  useEffect(() => {
+    if (rawPathRef.current) {
+      const path = rawPathRef.current.getTotalLength();
+      setLengths((previous) => ({ ...previous, path }));
+    }
+  }, [edges.left]);
 
   const rawStart = lengths.path - lengths.raw * 2;
   const polishedStart = -lengths.polished;
@@ -126,6 +147,7 @@ function SpeechFlowVisual() {
 
   return (
     <div
+      ref={stageRef}
       className="speech-flow-stage"
       aria-label="Rough speech becomes polished text"
     >
@@ -142,12 +164,12 @@ function SpeechFlowVisual() {
         <path
           ref={rawPathRef}
           id={`${id}-raw`}
-          d="M-80 226 C 40 184 172 172 244 214 C 320 258 308 320 232 318 C 142 316 120 254 174 198 C 236 136 322 150 382 166 C 436 181 464 176 500 176"
+          d={`M${edges.left} 226 H-80 C 40 184 172 172 244 214 C 320 258 308 320 232 318 C 142 316 120 254 174 198 C 236 136 322 150 382 166 C 436 181 464 176 500 176`}
         />
         <path
           id={`${id}-polished`}
           className="speech-flow-ribbon"
-          d="M690 176 C 804 176 878 176 940 168 C 1008 158 1038 128 1078 70 C 1106 32 1138 10 1180 -4"
+          d={`M650 176 C 804 176 878 176 940 168 C 1008 158 1038 128 1078 70 C 1106 32 1138 10 1180 -4 H${edges.right}`}
         />
         <text
           ref={rawRef}
