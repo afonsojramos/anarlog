@@ -1144,6 +1144,9 @@ impl EditorPane {
                     if index < this.list_count {
                         this.list.splice(index..index + 1, 1);
                     }
+                    if this.pending_reveal.is_some() {
+                        this.reveal_caret();
+                    }
                     cx.notify();
                 });
             })
@@ -1277,8 +1280,11 @@ impl EditorPane {
         } else {
             px(0.)
         };
-        self.pending_reveal = None;
-        if distance != px(0.) {
+        if distance == px(0.) {
+            if self.projecting.is_empty() {
+                self.pending_reveal = None;
+            }
+        } else {
             let entity = cx.weak_entity();
             window.on_next_frame(move |_, cx| {
                 let _ = entity.update(cx, |this, cx| {

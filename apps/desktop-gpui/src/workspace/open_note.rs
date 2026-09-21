@@ -357,7 +357,12 @@ impl Render for NoteView {
                                         cx.emit(NoteEvent::Move(session.summary.id.clone()));
                                     }
                                 }))
-                                .child(svg().path("workspace/Folder01Icon.svg").size(px(16.))),
+                                .child(
+                                    svg()
+                                        .path("workspace/Folder01Icon.svg")
+                                        .size(px(16.))
+                                        .text_color(colors.muted_foreground),
+                                ),
                         )
                         .child(div().text_color(colors.muted_foreground).child("/"))
                         .child(

@@ -339,6 +339,35 @@ async fn canonical_context_http_stream_and_tool_approval_persist() {
 }
 
 #[tokio::test]
+async fn provider_admission_failure_exits_preparing_and_allows_retry() {
+    let fixture = Fixture::new().await;
+    let services = fixture.providers("http://127.0.0.1");
+    let capture = super::capture::CaptureService::spawn(
+        fixture.runtime.clone(),
+        Arc::new(anlg_audio_mock::MockAudio::new(1)),
+        Arc::new(FixtureStorage(fixture.directory.clone())),
+        services.start_resolver(),
+    )
+    .unwrap();
+    for _ in 0..2 {
+        let error = capture
+            .start(fixture.session.clone())
+            .unwrap()
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(error.to_string().contains("Choose a provider"));
+        let update = capture.take_update(0);
+        assert_eq!(update.session, Some(fixture.session.clone()));
+        assert_eq!(update.phase, super::capture::Phase::Failed);
+        assert_eq!(update.status.as_ref(), "Recording could not start.");
+        assert!(update.error.is_some());
+    }
+    drop(capture);
+    fixture.close().await;
+}
+
+#[tokio::test]
 async fn native_streaming_capture_stops_and_reopens_durable_transcript() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter("listener_core=debug,owhisper_client=debug")

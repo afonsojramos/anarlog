@@ -414,7 +414,10 @@ impl CaptureService {
                                 let result = start(&runtime, &root, &shared, &resolve, adapter.storage.clone(), &capture_activities, session).await;
                                 if let Err(error) = &result {
                                     let mut state = shared.lock().unwrap_or_else(|poison| poison.into_inner());
-                                    if state.phase == Phase::Loading { state.phase = Phase::Failed; }
+                                    if state.phase == Phase::Loading {
+                                        state.phase = Phase::Failed;
+                                        state.status = "Recording could not start.".into();
+                                    }
                                     state.error = Some(error.clone());
                                     state.revision += 1;
                                 }

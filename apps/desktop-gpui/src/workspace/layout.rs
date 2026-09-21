@@ -24,7 +24,7 @@ impl Render for Hint {
     }
 }
 
-fn icon(label: &'static str) -> impl IntoElement {
+fn icon(label: &'static str, color: gpui::Hsla) -> impl IntoElement {
     let name = match label {
         "Back" => "ArrowLeft02Icon",
         "Forward" => "ArrowRight02Icon",
@@ -36,7 +36,10 @@ fn icon(label: &'static str) -> impl IntoElement {
         "Pin" | "Unpin" => "PinIcon",
         _ => "FileTextIcon",
     };
-    svg().path(format!("workspace/{name}.svg")).size(px(16.))
+    svg()
+        .path(format!("workspace/{name}.svg"))
+        .size(px(16.))
+        .text_color(color)
 }
 
 #[derive(Clone)]
@@ -166,7 +169,7 @@ impl Render for WorkspaceView {
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.navigate(Navigate::Open(target.clone(), false), cx)
                                 }))
-                                .child(icon(label))
+                                .child(icon(label, colors.foreground))
                         }),
                     ),
             )
@@ -276,7 +279,7 @@ impl Render for WorkspaceView {
                             .hover(|style| style.bg(colors.accent))
                             .tooltip(|_, cx| cx.new(|_| Hint("Toggle sidebar · Mod+\\")).into())
                             .cursor_pointer()
-                            .child(icon("Sidebar"))
+                            .child(icon("Sidebar", colors.foreground))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.sidebar.toggle();
                                 cx.notify();
@@ -293,7 +296,7 @@ impl Render for WorkspaceView {
                             .hover(|style| style.bg(colors.accent))
                             .tooltip(|_, cx| cx.new(|_| Hint("Back · Alt+Left")).into())
                             .cursor_pointer()
-                            .child(icon("Back"))
+                            .child(icon("Back", colors.foreground))
                             .text_color(
                                 if self.navigation.current().is_some_and(|tab| tab.can_back()) {
                                     colors.foreground
@@ -316,7 +319,7 @@ impl Render for WorkspaceView {
                             .hover(|style| style.bg(colors.accent))
                             .tooltip(|_, cx| cx.new(|_| Hint("Forward · Alt+Right")).into())
                             .cursor_pointer()
-                            .child(icon("Forward"))
+                            .child(icon("Forward", colors.foreground))
                             .text_color(
                                 if self
                                     .navigation
@@ -445,7 +448,7 @@ impl Render for WorkspaceView {
                                                                 })
                                                                 .into()
                                                             })
-                                                            .child(icon("Pin"))
+                                                            .child(icon("Pin", colors.foreground))
                                                             .on_click(cx.listener(
                                                                 move |this, _, _, cx| {
                                                                     cx.stop_propagation();
