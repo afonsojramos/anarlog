@@ -1014,15 +1014,6 @@ impl WorkspaceView {
             cx.stop_propagation();
             return;
         }
-        if event.keystroke.key == "escape"
-            && !modifiers.secondary()
-            && !modifiers.alt
-            && !modifiers.shift
-        {
-            self.leave_overlay(cx);
-            cx.stop_propagation();
-            return;
-        }
         if modifiers.alt && matches!(event.keystroke.key.as_str(), "left" | "right") {
             self.navigate(Navigate::History(event.keystroke.key == "right"), cx);
             cx.stop_propagation();
@@ -1044,6 +1035,23 @@ impl WorkspaceView {
             _ => return,
         }
         cx.stop_propagation();
+    }
+
+    pub(super) fn dismiss_overlay(
+        &mut self,
+        event: &KeyDownEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let modifiers = event.keystroke.modifiers;
+        if event.keystroke.key == "escape"
+            && !modifiers.secondary()
+            && !modifiers.alt
+            && !modifiers.shift
+        {
+            self.leave_overlay(cx);
+            cx.stop_propagation();
+        }
     }
 
     fn leave_overlay(&mut self, cx: &mut Context<Self>) {

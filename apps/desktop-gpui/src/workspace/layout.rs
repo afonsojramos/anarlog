@@ -330,6 +330,7 @@ impl Render for WorkspaceView {
             .bg(colors.background)
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(Self::shortcuts))
+            .on_key_down(cx.listener(Self::dismiss_overlay))
             .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
                 if event.pressed_button != Some(MouseButton::Left) {
                     this.resizing = false;
