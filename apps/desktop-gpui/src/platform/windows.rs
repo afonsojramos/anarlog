@@ -112,9 +112,9 @@ impl WindowIdentity {
         let (width, height, minimum, kind) = match self {
             Self::Main => (910.0, 600.0, (500.0, 500.0), WindowKind::Normal),
             Self::Note(_) => (720.0, 820.0, (420.0, 500.0), WindowKind::Normal),
-            Self::Composer | Self::FloatingBar | Self::LiveCaption => return Err(
-                ServiceError::Unsupported("Nonactivating panels and overlay window hosts require a native platform adapter".into())
-            ),
+            Self::Composer => (640.0, 180.0, (400.0, 120.0), WindowKind::Floating),
+            Self::FloatingBar => (320.0, 64.0, (280.0, 64.0), WindowKind::PopUp),
+            Self::LiveCaption => (640.0, 180.0, (320.0, 100.0), WindowKind::Floating),
         };
         let bounds = match restored_logical {
             Some(frame) if frame.valid() => frame.bounds(),
@@ -126,6 +126,9 @@ impl WindowIdentity {
             window_min_size: Some(size(px(minimum.0), px(minimum.1))),
             window_decorations: matches!(self, Self::Main).then_some(WindowDecorations::Client),
             kind,
+            focus: !matches!(self, Self::FloatingBar | Self::LiveCaption),
+            is_resizable: !matches!(self, Self::FloatingBar),
+            is_minimizable: matches!(self, Self::Main | Self::Note(_)),
             titlebar: if matches!(self, Self::Main) && !cfg!(target_os = "macos") {
                 None
             } else {
