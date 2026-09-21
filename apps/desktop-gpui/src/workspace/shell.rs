@@ -998,7 +998,7 @@ impl WorkspaceView {
                     self.navigate(Navigate::Close(slot), cx);
                 }
             }
-            "b" => {
+            "\\" => {
                 self.sidebar.toggle();
                 cx.notify();
             }
