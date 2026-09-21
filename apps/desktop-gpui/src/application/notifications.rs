@@ -121,7 +121,17 @@ impl ApplicationView {
                 if this
                     .update(cx, |this, cx| {
                         match snapshot {
-                            Ok(snapshot) => this.notifications.preferences = Some(snapshot),
+                            Ok(snapshot) => {
+                                let use_24_hour_time = snapshot
+                                    .get("use_24_hour_time")
+                                    .and_then(|setting| setting.value.as_bool())
+                                    .unwrap_or(false);
+                                let timezone = choice(&snapshot, "timezone").parse().ok();
+                                this.workspace.update(cx, |workspace, cx| {
+                                    workspace.set_timeline_clock(use_24_hour_time, timezone, cx)
+                                });
+                                this.notifications.preferences = Some(snapshot);
+                            }
                             Err(error) => {
                                 this.notifications.preferences = None;
                                 this.status(&error.to_string(), cx);

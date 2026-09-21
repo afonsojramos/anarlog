@@ -96,6 +96,17 @@ impl Focusable for WorkspaceView {
 }
 
 impl WorkspaceView {
+    pub fn set_timeline_clock(
+        &mut self,
+        use_24_hour_time: bool,
+        timezone: Option<chrono_tz::Tz>,
+        cx: &mut Context<Self>,
+    ) {
+        self.library.update(cx, |library, cx| {
+            library.set_clock(use_24_hour_time, timezone, cx)
+        });
+    }
+
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         self.sidebar.toggle();
         cx.notify();

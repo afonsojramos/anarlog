@@ -1,6 +1,7 @@
 use std::{collections::HashSet, sync::Arc};
 
-use chrono::{DateTime, Datelike, Local, NaiveDate};
+use chrono::{DateTime, Datelike, FixedOffset, Local, NaiveDate, Utc};
+use chrono_tz::Tz;
 use desktop_runtime::{LibraryPage, SessionId};
 use gpui::{
     Context, EventEmitter, FocusHandle, ListAlignment, ListState, Render, Window, div, list,
@@ -19,6 +20,8 @@ pub struct LibraryView {
     focus: FocusHandle,
     menu: Option<NoteMenu>,
     menu_index: usize,
+    use_24_hour_time: bool,
+    timezone: Option<Tz>,
 }
 
 enum TimelineRow {
@@ -82,6 +85,38 @@ fn bucket(date: NaiveDate, today: NaiveDate) -> String {
             }
         }
     }
+}
+
+fn local_time(date: DateTime<Utc>, timezone: Option<Tz>) -> DateTime<FixedOffset> {
+    match timezone {
+        Some(timezone) => date.with_timezone(&timezone).fixed_offset(),
+        None => date.with_timezone(&Local).fixed_offset(),
+    }
+}
+
+fn timestamp(date: DateTime<FixedOffset>, today: NaiveDate, use_24_hour_time: bool) -> String {
+    let time = date
+        .format(if use_24_hour_time {
+            "%H:%M"
+        } else {
+            "%-I:%M %p"
+        })
+        .to_string();
+    if date
+        .date_naive()
+        .signed_duration_since(today)
+        .num_days()
+        .abs()
+        < 7
+    {
+        return time;
+    }
+    let date = date.format(if date.year() == today.year() {
+        "%b %-d"
+    } else {
+        "%b %-d, %Y"
+    });
+    format!("{date}, {time}")
 }
 
 #[derive(Clone)]
@@ -148,6 +183,21 @@ impl LibraryView {
             focus: cx.focus_handle(),
             menu: None,
             menu_index: 0,
+            use_24_hour_time: false,
+            timezone: None,
+        }
+    }
+
+    pub fn set_clock(
+        &mut self,
+        use_24_hour_time: bool,
+        timezone: Option<Tz>,
+        cx: &mut Context<Self>,
+    ) {
+        if (self.use_24_hour_time, self.timezone) != (use_24_hour_time, timezone) {
+            self.use_24_hour_time = use_24_hour_time;
+            self.timezone = timezone;
+            self.set_page(self.page.clone(), cx);
         }
     }
 
@@ -156,12 +206,12 @@ impl LibraryView {
             .ids
             .retain(|id| page.items.iter().any(|item| &item.id == id));
         let mut rows = Vec::new();
-        let today = Local::now().date_naive();
+        let today = local_time(Utc::now(), self.timezone).date_naive();
         let mut previous = String::new();
         for (index, item) in page.items.iter().enumerate() {
             let date = DateTime::parse_from_rfc3339(&item.created_at)
                 .ok()
-                .map(|date| date.with_timezone(&Local));
+                .map(|date| local_time(date.with_timezone(&Utc), self.timezone));
             let heading = date
                 .map(|date| bucket(date.date_naive(), today))
                 .unwrap_or_else(|| "Undated".into());
@@ -170,22 +220,7 @@ impl LibraryView {
                 previous = heading;
             }
             let time = date
-                .map(|date| {
-                    date.format(
-                        if date
-                            .date_naive()
-                            .signed_duration_since(today)
-                            .num_days()
-                            .abs()
-                            < 7
-                        {
-                            "%H:%M"
-                        } else {
-                            "%b %-d, %Y"
-                        },
-                    )
-                    .to_string()
-                })
+                .map(|date| timestamp(date, today, self.use_24_hour_time))
                 .unwrap_or_default();
             rows.push(TimelineRow::Note(index, time));
         }
@@ -491,6 +526,62 @@ impl Render for LibraryView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn timeline_timestamps_keep_time_and_only_show_the_year_when_needed() {
+        let today = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+        for (date, twelve_hour, twenty_four_hour) in [
+            ("2026-01-15T00:05:00Z", "12:05 AM", "00:05"),
+            ("2026-01-15T12:05:00Z", "12:05 PM", "12:05"),
+            ("2026-01-09T23:59:00Z", "11:59 PM", "23:59"),
+            ("2026-01-08T13:02:00Z", "Jan 8, 1:02 PM", "Jan 8, 13:02"),
+            ("2026-01-21T13:02:00Z", "1:02 PM", "13:02"),
+            ("2026-01-22T13:02:00Z", "Jan 22, 1:02 PM", "Jan 22, 13:02"),
+            (
+                "2025-12-31T13:02:00Z",
+                "Dec 31, 2025, 1:02 PM",
+                "Dec 31, 2025, 13:02",
+            ),
+        ] {
+            let date = DateTime::parse_from_rfc3339(date).unwrap();
+            assert_eq!(timestamp(date, today, false), twelve_hour);
+            assert_eq!(timestamp(date, today, true), twenty_four_hour);
+        }
+    }
+
+    #[test]
+    fn timeline_timezone_applies_to_grouping_year_boundaries_and_dst() {
+        let zone = Some(chrono_tz::America::Los_Angeles);
+        let date = |value: &str| {
+            local_time(
+                DateTime::parse_from_rfc3339(value)
+                    .unwrap()
+                    .with_timezone(&Utc),
+                zone,
+            )
+        };
+        let previous_year = date("2026-01-01T00:30:00Z");
+        let today = date("2026-01-08T00:00:00Z").date_naive();
+        assert_eq!(bucket(previous_year.date_naive(), today), "a week ago");
+        assert_eq!(
+            timestamp(previous_year, today, false),
+            "Dec 31, 2025, 4:30 PM"
+        );
+
+        let before = date("2026-03-08T09:59:00Z");
+        let after = date("2026-03-08T10:00:00Z");
+        assert_eq!(timestamp(before, after.date_naive(), false), "1:59 AM");
+        assert_eq!(timestamp(after, after.date_naive(), false), "3:00 AM");
+        assert_eq!(bucket(before.date_naive(), after.date_naive()), "Today");
+
+        for instant in ["2026-11-01T08:30:00Z", "2026-11-01T09:30:00Z"] {
+            let repeated_hour = date(instant);
+            assert_eq!(
+                timestamp(repeated_hour, repeated_hour.date_naive(), true),
+                "01:30"
+            );
+        }
+    }
 
     #[test]
     fn opening_a_note_sets_the_range_anchor_without_selecting_it_for_deletion() {
