@@ -408,7 +408,7 @@ impl Render for AiPane {
                 )
             })
             .child(self.status.clone())
-            .child(div().w_full().flex_shrink_0().child(self.input.clone()))
+            .child(self.input.clone())
             .child(
                 div()
                     .flex()

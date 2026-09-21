@@ -645,7 +645,7 @@ impl Render for MeetingPane {
                 })
             })
             .when(!self.ai_open, |view| view.child(div().flex_1().min_h_0().child(self.transcript.clone())))
-            .when(self.ai_open, |view| view.when_some(self.ai.as_ref(), |view, ai| view.child(div().flex_1().min_h_0().child(ai.clone()))));
+            .when(self.ai_open, |view| view.when_some(self.ai.as_ref(), |view, ai| view.child(div().flex().flex_1().min_h_0().child(ai.clone()))));
         if let Some(editor) = &self.editor {
             let mut form = div()
                 .p_3()
