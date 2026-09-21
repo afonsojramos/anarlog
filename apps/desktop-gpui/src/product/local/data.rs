@@ -34,7 +34,7 @@ pub async fn complete_onboarding(runtime: &RuntimeHandle) -> Result<SessionId> {
             ));
             statements.push(statement(
                 "INSERT INTO session_documents (id,session_id,body) VALUES (?,?,?)",
-                vec![json!(Uuid::new_v4().to_string()), json!(id), json!(anlg_tiptap::md_to_tiptap_json(WELCOME).map_err(failure)?.to_string())],
+                vec![json!(id), json!(id), json!(anlg_tiptap::md_to_tiptap_json(WELCOME).map_err(failure)?.to_string())],
             ));
         }
         statements.push(setting("onboarding_needed", Value::Bool(false)));
@@ -430,7 +430,7 @@ fn from_markdown(title: &str, content: &str) -> Result<CanonicalMeeting> {
         version: 1,
         session: json!({"id":id,"title":title,"kind":"meeting"}),
         documents: vec![
-            json!({"id":Uuid::new_v4().to_string(),"session_id":id,"body_format":"prosemirror_json","body":body.to_string()}),
+            json!({"id":id,"session_id":id,"body_format":"prosemirror_json","body":body.to_string()}),
         ],
         transcripts: vec![],
         participants: vec![],

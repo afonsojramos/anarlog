@@ -18,6 +18,101 @@ async fn start(profile: &Profile) -> RuntimeHandle {
 }
 
 #[tokio::test]
+async fn native_notes_share_the_shipping_editors_document() {
+    let directory = tempfile::tempdir().unwrap();
+    let profile = Profile {
+        database: directory.path().join("shared.sqlite"),
+    };
+    let runtime = start(&profile).await;
+    let session = runtime
+        .create_note("Cross-client 日本語".into())
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    let native_body: Arc<str> = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Native 日本語 🚀"}]}]}"#.into();
+    let saved = runtime
+        .save_document(SaveDocument {
+            base: session.note.unwrap(),
+            body: native_body.clone(),
+        })
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    let shipping_select = include_str!("../../../apps/desktop/src/session/queries/sessions.ts")
+        .split_once("const SESSION_SELECT_SQL = `")
+        .unwrap()
+        .1
+        .split_once("`;")
+        .unwrap()
+        .0;
+    let id = session.summary.id.clone();
+    let rows = runtime
+        .submit(move |services| async move {
+            services
+                .executor
+                .execute(shipping_select.into(), vec![json!(id)])
+                .await
+                .map_err(|e| ServiceError::Failed(e.to_string().into()))
+        })
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    assert_eq!(rows[0]["raw_body"], native_body.as_ref());
+    assert_eq!(rows[0]["raw_body_format"], "prosemirror_json");
+    assert_eq!(saved.id.0, session.summary.id.0);
+
+    let external_body = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Tauri 日本語 🚀"}]}]}"#;
+    let mut other = sqlx::SqliteConnection::connect_with(
+        &SqliteConnectOptions::new().filename(&profile.database),
+    )
+    .await
+    .unwrap();
+    let written = sqlx::query(
+        "UPDATE session_documents SET body=?, updated_at='2026-09-21T12:00:00.000Z' WHERE id=?",
+    )
+    .bind(external_body)
+    .bind(session.summary.id.0.as_ref())
+    .execute(&mut other)
+    .await
+    .unwrap();
+    assert_eq!(written.rows_affected(), 1);
+    assert!(matches!(
+        runtime
+            .save_document(SaveDocument {
+                base: saved,
+                body: native_body
+            })
+            .unwrap()
+            .receive()
+            .await,
+        Err(ServiceError::Conflict)
+    ));
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM session_documents WHERE session_id=? AND kind='note'",
+    )
+    .bind(session.summary.id.0.as_ref())
+    .fetch_one(&mut other)
+    .await
+    .unwrap();
+    assert_eq!(count, 1);
+    other.close().await.unwrap();
+    runtime.shutdown().await.unwrap();
+
+    let runtime = start(&profile).await;
+    let reopened = runtime
+        .open_session(session.summary.id, CancellationToken::new())
+        .unwrap()
+        .receive()
+        .await
+        .unwrap();
+    assert_eq!(reopened.note.unwrap().body.as_ref(), external_body);
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn library_cache_observes_other_connections_and_rollbacks() {
     let directory = tempfile::tempdir().unwrap();
     let profile = Profile {

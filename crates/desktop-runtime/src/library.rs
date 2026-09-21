@@ -154,7 +154,6 @@ impl RuntimeHandle {
     pub fn create_note(&self, title: Arc<str>) -> Result<Reply<OpenSession>> {
         self.submit(move |services| async move {
             let id = Uuid::new_v4().to_string();
-            let document_id = Uuid::new_v4().to_string();
             services
                 .executor
                 .execute_transaction(vec![
@@ -168,7 +167,7 @@ impl RuntimeHandle {
                             "INSERT INTO session_documents (id, session_id, body) VALUES (?, ?, ?)"
                                 .into(),
                         params: vec![
-                            json!(document_id),
+                            json!(id),
                             json!(id),
                             json!({"type":"doc","content":[{"type":"paragraph"}]})
                                 .to_string()

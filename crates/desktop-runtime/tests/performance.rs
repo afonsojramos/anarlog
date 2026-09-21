@@ -39,10 +39,20 @@ async fn fixture(runtime: &RuntimeHandle, count: usize, document_bytes: usize) -
                 params: vec![params[0].clone(), params[1].clone(), params[2].clone(), params[2].clone()],
                 expected_rows_affected: Some(1),
             });
-            fingerprint(&mut hash, &body);
+            let document_params = vec![
+                json!(id),
+                json!(id),
+                json!(body),
+                json!(TIMESTAMP),
+                json!(TIMESTAMP),
+            ];
+            fingerprint(
+                &mut hash,
+                &Value::Array(document_params.clone()).to_string(),
+            );
             statements.push(TransactionStatement {
                 sql: "INSERT INTO session_documents (id,session_id,body,created_at,updated_at) VALUES (?,?,?,?,?)".into(),
-                params: vec![json!(format!("doc-{id}")), json!(id), json!(body), json!(TIMESTAMP), json!(TIMESTAMP)],
+                params: document_params,
                 expected_rows_affected: Some(1),
             });
         }

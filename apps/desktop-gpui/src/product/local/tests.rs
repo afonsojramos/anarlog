@@ -189,6 +189,86 @@ async fn runtime(root: &std::path::Path) -> RuntimeHandle {
 }
 
 #[tokio::test]
+async fn generated_imports_and_onboarding_use_the_shipping_note_id() {
+    let root = tempfile::tempdir().unwrap();
+    let runtime = runtime(root.path()).await;
+    let welcome = data::complete_onboarding(&runtime).await.unwrap();
+    let mut ids = vec![welcome];
+    for (extension, content) in [
+        ("md", "# Hello 日本語 🚀"),
+        ("txt", "Hello 日本語 🚀"),
+        ("srt", "1\n00:00:01,000 --> 00:00:02,500\nHello\n\n"),
+        ("vtt", "WEBVTT\n\n00:00:01.000 --> 00:00:02.500\nHello\n\n"),
+        (
+            "json",
+            r#"{"notes":"Hello","summary":"Keep summary separate"}"#,
+        ),
+        ("csv", "title,notes\nImported,Hello\n"),
+    ] {
+        ids.extend(
+            data::import_meetings(
+                &runtime,
+                data::parse(extension, "Cross-client import", content).unwrap(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap(),
+        );
+    }
+    for id in ids {
+        let saved = data::snapshot(&runtime, id.clone()).await.unwrap();
+        let note = saved
+            .documents
+            .iter()
+            .find(|doc| doc["kind"] == "note")
+            .unwrap();
+        assert_eq!(note["id"], id.0.as_ref());
+        assert_eq!(note["session_id"], id.0.as_ref());
+        assert_eq!(note["body_format"], "prosemirror_json");
+        for summary in saved
+            .documents
+            .iter()
+            .filter(|doc| doc["kind"] == "summary")
+        {
+            assert_ne!(summary["id"], id.0.as_ref());
+        }
+    }
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn canonical_import_preserves_existing_document_ids() {
+    let root = tempfile::tempdir().unwrap();
+    let runtime = runtime(root.path()).await;
+    let mut meeting = data::parse("md", "Imported archive", "Exact note")
+        .unwrap()
+        .remove(0);
+    meeting.documents[0]["id"] = json!("archived-note-id");
+    meeting.documents.push(json!({
+        "id": "archived-summary-id",
+        "session_id": meeting.session["id"],
+        "kind": "summary",
+        "body_format": "prosemirror_json",
+        "body": r#"{"type":"doc","content":[{"type":"paragraph"}]}"#,
+    }));
+    let parsed = data::parse("json", "Archive", &serde_json::to_string(&meeting).unwrap()).unwrap();
+    let ids = data::import_meetings(&runtime, parsed, CancellationToken::new())
+        .await
+        .unwrap();
+    let imported = data::snapshot(&runtime, ids[0].clone()).await.unwrap();
+    for original in meeting.documents {
+        let restored = imported
+            .documents
+            .iter()
+            .find(|doc| doc["id"] == original["id"])
+            .unwrap();
+        assert_eq!(restored["session_id"], original["session_id"]);
+        assert_eq!(restored["body"], original["body"]);
+    }
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn onboarding_is_durable_and_reuses_the_welcome_session() {
     let root = tempfile::tempdir().unwrap();
     let runtime = runtime(root.path()).await;
