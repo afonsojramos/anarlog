@@ -337,6 +337,7 @@ impl Render for AiPane {
             .flex()
             .flex_col()
             .size_full()
+            .min_w_0()
             .gap_2()
             .p_3()
             .child(
@@ -407,11 +408,12 @@ impl Render for AiPane {
                 )
             })
             .child(self.status.clone())
-            .child(self.input.clone())
+            .child(div().w_full().flex_shrink_0().child(self.input.clone()))
             .child(
                 div()
                     .flex()
                     .flex_wrap()
+                    .w_full()
                     .gap_3()
                     .when(!self.busy && self.chat.is_some(), |view| {
                         view.child(
