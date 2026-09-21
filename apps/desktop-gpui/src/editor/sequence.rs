@@ -2,6 +2,9 @@ use std::sync::Arc;
 
 pub trait Measured: Clone {
     fn units(&self) -> usize;
+    fn render_blocks(&self) -> usize {
+        1
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -15,6 +18,7 @@ enum Tree<T> {
         right: Sequence<T>,
         count: usize,
         units: usize,
+        render_blocks: usize,
         height: u32,
     },
 }
@@ -52,6 +56,49 @@ impl<T: Measured> Sequence<T> {
         }
     }
 
+    pub fn render_blocks(&self) -> usize {
+        match self.0.as_deref() {
+            None => 0,
+            Some(Tree::Leaf(value)) => value.render_blocks(),
+            Some(Tree::Branch { render_blocks, .. }) => *render_blocks,
+        }
+    }
+
+    pub fn render_prefix(&self, index: usize) -> usize {
+        match self.0.as_deref() {
+            None => 0,
+            Some(Tree::Leaf(value)) => {
+                if index == 0 {
+                    0
+                } else {
+                    value.render_blocks()
+                }
+            }
+            Some(Tree::Branch { left, right, .. }) => {
+                if index <= left.len() {
+                    left.render_prefix(index)
+                } else {
+                    left.render_blocks() + right.render_prefix(index - left.len())
+                }
+            }
+        }
+    }
+
+    pub fn locate_render(&self, offset: usize) -> Option<(usize, usize, &T)> {
+        match self.0.as_deref()? {
+            Tree::Leaf(value) => (offset < value.render_blocks()).then_some((0, offset, value)),
+            Tree::Branch { left, right, .. } => {
+                if offset < left.render_blocks() {
+                    left.locate_render(offset)
+                } else {
+                    right
+                        .locate_render(offset - left.render_blocks())
+                        .map(|(index, at, value)| (index + left.len(), at, value))
+                }
+            }
+        }
+    }
+
     fn height(&self) -> u32 {
         match self.0.as_deref() {
             None => 0,
@@ -70,6 +117,7 @@ impl<T: Measured> Sequence<T> {
         Self(Some(Arc::new(Tree::Branch {
             count: left.len() + right.len(),
             units: left.units() + right.units(),
+            render_blocks: left.render_blocks() + right.render_blocks(),
             height: 1 + left.height().max(right.height()),
             left,
             right,

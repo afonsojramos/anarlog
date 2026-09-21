@@ -18,6 +18,39 @@ impl EditorPane {
     ) {
         let key = event.keystroke.key.as_str();
         let modifiers = event.keystroke.modifiers;
+        let key = if cfg!(target_os = "macos") && modifiers.platform {
+            match key {
+                "left" => "home",
+                "right" => "end",
+                key => key,
+            }
+        } else {
+            key
+        };
+        if self.link_input.is_some() {
+            match key {
+                "escape" => self.link_input = None,
+                "enter" => self.commit_link(cx),
+                "backspace" => {
+                    self.link_input.as_mut().expect("link").pop();
+                }
+                "v" if modifiers.secondary() => {
+                    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                        self.link_input = Some(text);
+                    }
+                }
+                _ => return,
+            }
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
+        if key == "k" && modifiers.secondary() {
+            self.link_input = Some(String::new());
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
         if let Some(menu) = &mut self.mention {
             match key {
                 "up" | "down" => {
@@ -91,9 +124,13 @@ impl EditorPane {
                             } else {
                                 item.metadata().cloned()
                             };
-                            self.paste(text, metadata, cx);
-                        } else {
-                            self.message = "Image paste needs the attachment import service; clipboard content was not discarded.".into();
+                            self.paste(text, metadata, !modifiers.shift, cx);
+                        } else if let Some(gpui::ClipboardEntry::Image(image)) = item
+                            .entries()
+                            .iter()
+                            .find(|entry| matches!(entry, gpui::ClipboardEntry::Image(_)))
+                        {
+                            self.paste_image(image.clone(), cx);
                             cx.notify();
                         }
                     }
@@ -122,8 +159,22 @@ impl EditorPane {
                 });
                 Ok(())
             }
+            "left" | "right" if modifiers.alt || modifiers.control => {
+                model.move_word(key == "right", modifiers.shift)
+            }
             "left" | "right" => model.move_grapheme(key == "right", modifiers.shift),
-            "up" | "down" => {
+            "up" | "down" | "pageup" | "pagedown" => {
+                let forward = matches!(key, "down" | "pagedown");
+                let page = matches!(key, "pageup" | "pagedown");
+                let page_height = self
+                    .viewport
+                    .map(|viewport| viewport.size.height)
+                    .unwrap_or(gpui::px(480.));
+                let rows = if page {
+                    (f32::from(page_height) / 24.).round() as usize
+                } else {
+                    1
+                };
                 let caret = self.layouts.values().find_map(|layout| {
                     layout.bounds_for(model.selection.head..model.selection.head)
                 });
@@ -131,11 +182,8 @@ impl EditorPane {
                     let target = gpui::point(
                         caret.left(),
                         caret.top()
-                            + if key == "up" {
-                                -caret.size.height
-                            } else {
-                                caret.size.height
-                            },
+                            + if page { page_height } else { caret.size.height }
+                                * if forward { 1. } else { -1. },
                     );
                     if let Some(layout) = self
                         .layouts
@@ -151,7 +199,17 @@ impl EditorPane {
                             },
                             head: position,
                         });
+                    } else {
+                        if let Err(error) =
+                            model.move_vertical_blocks(forward, rows, modifiers.shift)
+                        {
+                            self.message = error;
+                        }
                     }
+                } else if let Err(error) =
+                    model.move_vertical_blocks(forward, rows, modifiers.shift)
+                {
+                    self.message = error;
                 }
                 Ok(())
             }
@@ -159,12 +217,30 @@ impl EditorPane {
                 .document
                 .resolve(model.selection.head)
                 .map(|resolved| {
-                    let position = resolved.start
-                        + if key == "end" {
-                            resolved.node.children.units()
-                        } else {
-                            0
-                        };
+                    let end = key == "end";
+                    let position = self
+                        .layouts
+                        .values()
+                        .find_map(|layout| {
+                            let caret =
+                                layout.bounds_for(model.selection.head..model.selection.head)?;
+                            Some(layout.position(gpui::point(
+                                if end {
+                                    layout.layout.bounds().right() + gpui::px(10.)
+                                } else {
+                                    layout.layout.bounds().left() - gpui::px(10.)
+                                },
+                                caret.origin.y + caret.size.height / 2.,
+                            )))
+                        })
+                        .unwrap_or(
+                            resolved.start
+                                + if end {
+                                    resolved.node.children.units()
+                                } else {
+                                    0
+                                },
+                        );
                     model.select(Selection {
                         anchor: if modifiers.shift {
                             model.selection.anchor
@@ -174,9 +250,35 @@ impl EditorPane {
                         head: position,
                     });
                 }),
+            "backspace" | "delete" if modifiers.alt || modifiers.control => {
+                if model.selection.is_empty() {
+                    model.move_word(key == "delete", true)
+                } else {
+                    Ok(())
+                }
+                .and_then(|()| model.replace(model.selection.range(), ""))
+            }
             "backspace" | "delete" => model.delete(key == "delete"),
             "enter" if !modifiers.shift => model.split_block(),
-            "tab" => model.indent_list(modifiers.shift),
+            "enter" => model.insert_inline_atom("hardBreak", Default::default()),
+            "tab" => {
+                let in_table = model
+                    .document
+                    .resolve(model.selection.head)
+                    .is_ok_and(|resolved| {
+                        (1..resolved.path.len()).any(|depth| {
+                            model
+                                .document
+                                .node(&resolved.path[..depth])
+                                .is_some_and(|node| node.kind() == "table")
+                        })
+                    });
+                if in_table {
+                    model.table_move(!modifiers.shift)
+                } else {
+                    model.indent_list(modifiers.shift)
+                }
+            }
             "escape" => {
                 self.init.return_focus.focus(window);
                 Ok(())
@@ -184,6 +286,7 @@ impl EditorPane {
             _ => return,
         };
         self.edited(before, result, cx);
+        self.reveal_caret();
         self.update_slash();
         self.update_mention(cx);
         cx.stop_propagation();
@@ -233,6 +336,13 @@ impl EntityInputHandler for EditorPane {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(input) = &mut self.link_input {
+            if input.len() + text.len() <= 8192 {
+                input.push_str(text);
+            }
+            cx.notify();
+            return;
+        }
         let Some(model) = &mut self.model else {
             return;
         };

@@ -3,9 +3,7 @@ use std::{
     sync::Arc,
 };
 
-use desktop_runtime::{
-    AttachmentId, CancellationToken, DocumentSnapshot, HumanId, LibraryQuery, ServiceError,
-};
+use desktop_runtime::{AttachmentId, CancellationToken, DocumentSnapshot, HumanId, ServiceError};
 use futures::{StreamExt, channel::oneshot};
 use gpui::{
     App, ClipboardItem, Context, ElementInputHandler, EventEmitter, FocusHandle, Focusable,
@@ -51,9 +49,18 @@ pub struct EditorPane {
     focused: bool,
     read_only: bool,
     dragging: bool,
+    drag_position: Option<Point<Pixels>>,
+    drag_scroll: Option<gpui::Task<()>>,
+    pub(super) viewport: Option<gpui::Bounds<Pixels>>,
     clipboard_generation: u64,
     external_generation: u64,
     external: Option<DocumentSnapshot>,
+    watch_cancel: CancellationToken,
+    pub(super) link_input: Option<String>,
+    attachment_service: Option<super::AttachmentService>,
+    attachment_previews: HashMap<String, Result<super::AttachmentPreview, String>>,
+    attachment_loading: HashSet<String>,
+    pending_attachment: Option<super::AttachmentPreview>,
 }
 
 impl EditorPane {
@@ -78,6 +85,39 @@ impl EditorPane {
         })
         .detach();
         focus.focus(window);
+        let watch_cancel = CancellationToken::new();
+        let (sender, mut receiver) = futures::channel::mpsc::channel(1);
+        cx.background_executor()
+            .spawn(super::services::watch(
+                context.runtime.clone(),
+                init.session_id.clone(),
+                watch_cancel.clone(),
+                sender,
+            ))
+            .detach();
+        cx.spawn(async move |entity, cx| {
+            while let Some(result) = receiver.next().await {
+                if entity
+                    .update(cx, |this, cx| {
+                        match result {
+                            Ok(Some(snapshot)) => this.remote_revision(snapshot, cx),
+                            Ok(None) => {
+                                this.message =
+                                    "This document was removed remotely; local content retained."
+                                        .into();
+                                this.set_read_only(true, cx);
+                            }
+                            Err(error) => this.message = format!("Document watch stopped: {error}"),
+                        }
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
         let runtime = context.runtime.clone();
         let snapshot = init.document.clone();
         let load = cx.background_executor().spawn(async move {
@@ -98,7 +138,7 @@ impl EditorPane {
             let _ = entity.update(cx, |this, cx| {
                 match loaded {
                     Ok((document, journal, receiver)) => {
-                        this.list_count = document.root.children.len();
+                        this.list_count = document.root.children.render_blocks();
                         this.list.reset(this.list_count);
                         let mut model = EditorModel::new(document);
                         model.read_only = this.read_only;
@@ -116,6 +156,9 @@ impl EditorPane {
                     if entity.update(cx, |this, cx| {
                         match event {
                             SaveEvent::Saved { revision, snapshot } => {
+                                if this.external.as_ref().is_some_and(|external| external.id == snapshot.id && external.updated_at == snapshot.updated_at) {
+                                    this.external = None;
+                                }
                                 this.init.document = snapshot.clone();
                                 if this.model.as_ref().is_some_and(|model| model.revision == revision && !model.composing()) {
                                     this.dirty = false;
@@ -157,9 +200,18 @@ impl EditorPane {
             focused: true,
             read_only: false,
             dragging: false,
+            drag_position: None,
+            drag_scroll: None,
+            viewport: None,
             clipboard_generation: 0,
             external_generation: 0,
             external: None,
+            watch_cancel,
+            link_input: None,
+            attachment_service: None,
+            attachment_previews: HashMap::new(),
+            attachment_loading: HashSet::new(),
+            pending_attachment: None,
         }
     }
 
@@ -215,12 +267,11 @@ impl EditorPane {
                 session_id: self.init.session_id.clone(),
                 dirty: true,
             });
-            let count = model.document.root.children.len();
+            let count = model.document.root.children.render_blocks();
             if count != self.list_count {
                 self.list.reset(count);
                 self.list_count = count;
-            } else if let Some((index, _, _)) =
-                model.document.root.children.locate(model.selection.head)
+            } else if let Some(index) = surface::block_index(&model.document, model.selection.head)
             {
                 self.list.splice(index..index + 1, 1);
             }
@@ -243,6 +294,8 @@ impl EditorPane {
             BlockCommand::Heading(level) => model.set_block("heading", Some(level)),
             BlockCommand::BulletList => model.wrap_block("bulletList"),
             BlockCommand::OrderedList => model.wrap_block("orderedList"),
+            BlockCommand::TaskList => model.wrap_block("taskList"),
+            BlockCommand::Table => model.insert_table(),
             BlockCommand::Quote => model.wrap_block("blockquote"),
             BlockCommand::Code => model.set_block("codeBlock", None),
             BlockCommand::Divider => {
@@ -365,28 +418,13 @@ impl EditorPane {
         } else {
             let cancel = CancellationToken::new();
             self.mention_cancel = Some(cancel.clone());
-            let reply = self.context.runtime.library(
-                LibraryQuery {
-                    search: query.into(),
-                    offset: 0,
-                    limit: 5,
-                },
+            let job = cx.background_executor().spawn(super::services::mentions(
+                self.context.runtime.clone(),
+                query,
                 cancel,
-            );
+            ));
             cx.spawn(async move |entity, cx| {
-                let result = match reply {
-                    Ok(reply) => reply.receive().await.map(|page| {
-                        page.items
-                            .iter()
-                            .map(|session| MentionCandidate {
-                                label: session.title.to_string(),
-                                target: MentionTarget::Session(session.id.0.to_string()),
-                            })
-                            .collect()
-                    }),
-                    Err(error) => Err(error),
-                }
-                .map_err(|error| error.to_string());
+                let result = job.await;
                 let _ = entity.update(cx, |this, cx| this.resolve_mentions(generation, result, cx));
             })
             .detach();
@@ -471,6 +509,283 @@ impl EditorPane {
         self.edited(before, result, cx);
     }
 
+    pub fn configure_attachments(&mut self, vault: std::path::PathBuf, cx: &mut Context<Self>) {
+        self.attachment_service = Some(super::AttachmentService::new(
+            self.context.runtime.clone(),
+            vault,
+        ));
+        self.attachment_previews.clear();
+        cx.notify();
+    }
+
+    pub fn open_attachment(&mut self, id: AttachmentId, cx: &mut Context<Self>) {
+        let Some(service) = self.attachment_service.clone() else {
+            cx.emit(EditorEvent::OpenAttachment(id));
+            return;
+        };
+        let session = self.init.session_id.clone();
+        let job = cx.background_executor().spawn(async move {
+            let preview = service
+                .resolve(session, id.0.to_string(), CancellationToken::new())
+                .await?;
+            open::that(preview.path.as_ref()).map_err(|error| error.to_string())
+        });
+        cx.spawn(async move |entity, cx| {
+            if let Err(error) = job.await {
+                let _ = entity.update(cx, |this, cx| {
+                    this.message = error;
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn choose_attachment(&mut self, cx: &mut Context<Self>) {
+        let Some(service) = self.attachment_service.clone() else {
+            return;
+        };
+        let session = self.init.session_id.clone();
+        let job = cx.background_executor().spawn(async move {
+            let Some(file) = rfd::AsyncFileDialog::new().pick_file().await else {
+                return Ok(None);
+            };
+            service
+                .import(session, file.path().to_owned())
+                .await
+                .map(Some)
+        });
+        cx.spawn(async move |entity, cx| {
+            let result = job.await;
+            let _ = entity.update(cx, |this, cx| {
+                match result {
+                    Ok(Some(preview)) => {
+                        this.attachment_previews
+                            .insert(preview.id.clone(), Ok(preview.clone()));
+                        this.pending_attachment = Some(preview);
+                        this.insert_pending_attachment(cx);
+                    }
+                    Ok(None) => {}
+                    Err(error) => this.message = error,
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(super) fn paste_image(&mut self, image: gpui::Image, cx: &mut Context<Self>) {
+        let Some(service) = self.attachment_service.clone() else {
+            self.message = "Configure the active vault before importing attachments.".into();
+            return;
+        };
+        let session = self.init.session_id.clone();
+        let job = cx.background_executor().spawn(async move {
+            let extension = image
+                .format
+                .mime_type()
+                .split('/')
+                .nth(1)
+                .unwrap_or("png")
+                .replace("+xml", "");
+            service
+                .import_bytes(session, format!("pasted-image.{extension}"), image.bytes)
+                .await
+        });
+        cx.spawn(async move |entity, cx| {
+            let result = job.await;
+            let _ = entity.update(cx, |this, cx| {
+                match result {
+                    Ok(preview) => {
+                        this.attachment_previews
+                            .insert(preview.id.clone(), Ok(preview.clone()));
+                        this.pending_attachment = Some(preview);
+                        this.insert_pending_attachment(cx);
+                    }
+                    Err(error) => this.message = error,
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn insert_pending_attachment(&mut self, cx: &mut Context<Self>) {
+        let (Some(preview), Some(model)) = (&self.pending_attachment, &mut self.model) else {
+            return;
+        };
+        let image = preview.mime.starts_with("image/");
+        let attrs = serde_json::json!({
+            "attachmentId": preview.id, "name": preview.name, "alt": preview.name,
+            "mimeType": preview.mime, "size": preview.size
+        })
+        .as_object()
+        .expect("attrs")
+        .clone();
+        let before = model.revision;
+        let result = model.insert_block_atom(if image { "image" } else { "fileAttachment" }, attrs);
+        if result.is_ok() {
+            self.pending_attachment = None;
+        }
+        self.edited(before, result, cx);
+    }
+
+    fn attachment_remove_control(
+        &self,
+        start: usize,
+        id: u64,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        div()
+            .id(("remove-attachment", id))
+            .text_sm()
+            .cursor_pointer()
+            .when(!self.read_only, |view| {
+                view.child("Remove").on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        if let Some(model) = &mut this.model {
+                            let before = model.revision;
+                            let result = model.remove_block_atom(start, id);
+                            this.edited(before, result, cx);
+                        }
+                        this.dragging = false;
+                        cx.stop_propagation();
+                    }),
+                )
+            })
+            .into_any_element()
+    }
+
+    fn render_attachment(
+        &mut self,
+        node: &super::document::NodeRef,
+        start: usize,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        if !matches!(node.kind(), "image" | "fileAttachment") {
+            return None;
+        }
+        if node.kind() == "image"
+            && node
+                .attr("attachmentId")
+                .and_then(serde_json::Value::as_str)
+                .is_none()
+            && let Some(src) = node
+                .attr("src")
+                .and_then(serde_json::Value::as_str)
+                .filter(|src| clipboard::openable_link(src))
+        {
+            return Some(
+                div()
+                    .my_1()
+                    .child(
+                        gpui::img(src.to_owned())
+                            .max_w_full()
+                            .max_h(px(360.))
+                            .object_fit(gpui::ObjectFit::Contain),
+                    )
+                    .child(self.attachment_remove_control(start, node.id, cx))
+                    .into_any_element(),
+            );
+        }
+        let id = node
+            .attr("attachmentId")
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| !id.is_empty())
+            .or_else(|| {
+                node.attr("sharedAttachmentId")
+                    .and_then(serde_json::Value::as_str)
+            })?
+            .to_owned();
+        if !self.attachment_previews.contains_key(&id)
+            && self.attachment_loading.len() < 4
+            && !self.attachment_loading.contains(&id)
+            && let Some(service) = self.attachment_service.clone()
+        {
+            self.attachment_loading.insert(id.clone());
+            let session = self.init.session_id.clone();
+            let request_id = id.clone();
+            let cancel = self.watch_cancel.clone();
+            let job = cx
+                .background_executor()
+                .spawn(async move { service.resolve(session, request_id, cancel).await });
+            let request_id = id.clone();
+            cx.spawn(async move |entity, cx| {
+                let preview = job.await;
+                let _ = entity.update(cx, |this, cx| {
+                    this.attachment_loading.remove(&request_id);
+                    if this.attachment_previews.len() >= 128 {
+                        this.attachment_previews.clear();
+                    }
+                    this.attachment_previews.insert(request_id, preview);
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+        match self.attachment_previews.get(&id) {
+            Some(Ok(preview)) => {
+                let path = preview.path.clone();
+                let image = preview.mime.starts_with("image/");
+                Some(
+                    div()
+                        .id(("attachment", node.id))
+                        .my_1()
+                        .rounded_lg()
+                        .border_1()
+                        .px_3()
+                        .py_2()
+                        .cursor_pointer()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                let path = path.clone();
+                                let job = cx.background_executor().spawn(async move {
+                                    open::that(path.as_ref()).map_err(|error| error.to_string())
+                                });
+                                cx.spawn(async move |entity, cx| {
+                                    if let Err(error) = job.await {
+                                        let _ = entity.update(cx, |this, cx| {
+                                            this.message = error;
+                                            cx.notify();
+                                        });
+                                    }
+                                })
+                                .detach();
+                                this.dragging = false;
+                                cx.stop_propagation();
+                            }),
+                        )
+                        .when(image, |view| {
+                            view.child(
+                                gpui::img(preview.path.as_ref().clone())
+                                    .max_h(px(if node.kind() == "image" { 360. } else { 40. }))
+                                    .max_w_full()
+                                    .object_fit(gpui::ObjectFit::Contain),
+                            )
+                        })
+                        .child(format!(
+                            "{} · {:.1} KB",
+                            preview.name,
+                            preview.size as f64 / 1024.
+                        ))
+                        .child(self.attachment_remove_control(start, node.id, cx))
+                        .into_any_element(),
+                )
+            }
+            Some(Err(error)) => Some(
+                div()
+                    .p_3()
+                    .border_1()
+                    .child(error.clone())
+                    .child(self.attachment_remove_control(start, node.id, cx))
+                    .into_any_element(),
+            ),
+            None => None,
+        }
+    }
+
     pub(super) fn copy(&mut self, cut: bool, cx: &mut Context<Self>) {
         let Some(model) = &self.model else {
             return;
@@ -514,7 +829,13 @@ impl EditorPane {
         .detach();
     }
 
-    pub(super) fn paste(&mut self, text: String, metadata: Option<String>, cx: &mut Context<Self>) {
+    pub(super) fn paste(
+        &mut self,
+        text: String,
+        metadata: Option<String>,
+        rich: bool,
+        cx: &mut Context<Self>,
+    ) {
         let Some(model) = &self.model else {
             return;
         };
@@ -528,6 +849,13 @@ impl EditorPane {
         let generation = self.clipboard_generation;
         let job = cx.background_executor().spawn(async move {
             if let Some(metadata) = metadata { return clipboard::parse_slice(&metadata); }
+            if rich && !code
+                && let Ok(mut clipboard) = arboard::Clipboard::new()
+                && clipboard.get_text().is_ok_and(|current| current == text)
+                && let Ok(html) = clipboard.get().html()
+            {
+                return super::html::parse(&html);
+            }
             if text.len() > 1024 * 1024 { return Err("Paste exceeds the 1 MiB transaction limit".into()); }
             let paragraphs = if code { vec![text.as_str()] } else { text.split('\n').collect() };
             let content: Vec<_> = paragraphs.into_iter().map(|line| serde_json::json!({
@@ -632,7 +960,7 @@ impl EditorPane {
                                 model.revision = next;
                                 model.read_only = this.read_only;
                                 if model.document.resolve(selection.head).is_ok() && model.document.resolve(selection.anchor).is_ok() { model.select(selection); }
-                                this.list_count = model.document.root.children.len();
+                                this.list_count = model.document.root.children.render_blocks();
                                 this.list.reset(this.list_count);
                                 this.model = Some(model);
                                 this.init.document = remote;
@@ -656,14 +984,19 @@ impl EditorPane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if snapshot.id != self.init.document.id || snapshot.session_id != self.init.session_id {
+        self.focused = self.focus.is_focused(window);
+        self.remote_revision(snapshot, cx);
+    }
+
+    pub fn remote_revision(&mut self, snapshot: DocumentSnapshot, cx: &mut Context<Self>) {
+        if snapshot.id != self.init.document.id
+            || snapshot.session_id != self.init.session_id
+            || snapshot.updated_at == self.init.document.updated_at
+        {
             return;
         }
         self.external_generation += 1;
-        if self.dirty
-            || self.focus.is_focused(window)
-            || self.model.as_ref().is_some_and(EditorModel::composing)
-        {
+        if self.dirty || self.focused || self.model.as_ref().is_some_and(EditorModel::composing) {
             self.external = Some(snapshot);
             self.message = "A remote revision is available. Your draft and composition are retained; resolve before saving.".into();
             cx.notify();
@@ -693,7 +1026,7 @@ impl EditorPane {
                 }
                 match parsed {
                     Ok(document) if this.journal.as_ref().is_some_and(|journal| journal.rebase_if_clean(snapshot.clone())) => {
-                        this.list_count = document.root.children.len();
+                        this.list_count = document.root.children.render_blocks();
                         this.list.reset(this.list_count);
                         let mut model = EditorModel::new(document);
                         model.read_only = this.read_only;
@@ -720,19 +1053,26 @@ impl EditorPane {
         let Some(model) = &self.model else {
             return div().into_any_element();
         };
-        let Some(node) = model.document.root.children.get(index).cloned() else {
+        let Some((node, start, depth, marker)) = surface::block_target(&model.document, index)
+        else {
             return div().into_any_element();
         };
-        let start = model.document.root.children.prefix(index);
+        if let Some(preview) = self.render_attachment(&node, start, cx) {
+            return preview;
+        }
         let cached = self.projection.get(&node.id).cloned();
-        let current = cached
-            .as_ref()
-            .is_some_and(|cached| Arc::ptr_eq(&cached.source, &node));
+        let current = cached.as_ref().is_some_and(|cached| {
+            Arc::ptr_eq(&cached.source, &node)
+                && cached
+                    .rows
+                    .first()
+                    .is_none_or(|row| row.depth == depth && row.marker == marker)
+        });
         if !current && self.projecting.len() < 8 && self.projecting.insert(node.id) {
             let id = node.id;
             let job = cx
                 .background_executor()
-                .spawn(async move { Arc::new(ProjectedBlock::build(node)) });
+                .spawn(async move { Arc::new(ProjectedBlock::with_context(node, depth, marker)) });
             cx.spawn(async move |entity, cx| {
                 let projected = job.await;
                 let _ = entity.update(cx, |this, cx| {
@@ -756,14 +1096,67 @@ impl EditorPane {
             .detach();
         }
         match cached {
+            Some(block) if block.grid.is_some() => {
+                let grid = block.grid.as_ref().expect("grid");
+                let colors = theme(window);
+                div()
+                    .grid()
+                    .grid_cols(grid.columns)
+                    .w_full()
+                    .my_4()
+                    .border_t_1()
+                    .border_l_1()
+                    .border_color(colors.border)
+                    .children(grid.cells.iter().map(|cell| {
+                        div()
+                            .col_span(cell.colspan)
+                            .col_start(cell.column)
+                            .row_span(cell.rowspan)
+                            .row_start(cell.row)
+                            .min_w_0()
+                            .border_r_1()
+                            .border_b_1()
+                            .border_color(colors.border)
+                            .py_2()
+                            .px_3()
+                            .when(cell.header, |view| {
+                                view.bg(colors.muted)
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                            })
+                            .children(block.rows[cell.rows.clone()].iter().map(|row| {
+                                if let Some(preview) = row.spans.first().and_then(|span| {
+                                    self.render_attachment(
+                                        &span.node,
+                                        start + row.start + span.position,
+                                        cx,
+                                    )
+                                }) {
+                                    preview
+                                } else {
+                                    surface::render_row(
+                                        row.clone(),
+                                        start,
+                                        current,
+                                        true,
+                                        window,
+                                        cx,
+                                    )
+                                }
+                            }))
+                    }))
+                    .into_any_element()
+            }
             Some(block) => div()
                 .w_full()
-                .children(
-                    block
-                        .rows
-                        .iter()
-                        .map(|row| surface::render_row(row.clone(), start, current, window, cx)),
-                )
+                .children(block.rows.iter().map(|row| {
+                    if let Some(preview) = row.spans.first().and_then(|span| {
+                        self.render_attachment(&span.node, start + row.start + span.position, cx)
+                    }) {
+                        preview
+                    } else {
+                        surface::render_row(row.clone(), start, current, false, window, cx)
+                    }
+                }))
                 .into_any_element(),
             None => div()
                 .h(px(28.))
@@ -778,6 +1171,82 @@ impl EditorPane {
             .values()
             .find(|layout| layout.layout.bounds().contains(&position))
             .map(|layout| layout.position(position))
+            .or_else(|| {
+                self.layouts
+                    .values()
+                    .min_by(|a, b| {
+                        let da = (f32::from(a.layout.bounds().top()) - f32::from(position.y)).abs();
+                        let db = (f32::from(b.layout.bounds().top()) - f32::from(position.y)).abs();
+                        da.total_cmp(&db)
+                    })
+                    .map(|layout| layout.position(position))
+            })
+    }
+
+    pub(super) fn reveal_caret(&self) {
+        if let Some(model) = &self.model
+            && let Some(index) = surface::block_index(&model.document, model.selection.head)
+        {
+            self.list.scroll_to_reveal_item(index);
+        }
+    }
+
+    pub(super) fn commit_link(&mut self, cx: &mut Context<Self>) {
+        if let Some(href) = self.link_input.clone()
+            && let Some(model) = &mut self.model
+        {
+            let before = model.revision;
+            let result = model.set_link(&href);
+            if result.is_ok() {
+                self.link_input = None;
+            }
+            self.edited(before, result, cx);
+        }
+    }
+
+    fn start_drag_scroll(&mut self, cx: &mut Context<Self>) {
+        if self.drag_scroll.is_some() {
+            return;
+        }
+        self.drag_scroll = Some(cx.spawn(async move |entity, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(30))
+                    .await;
+                let keep_running = entity
+                    .update(cx, |this, cx| {
+                        if !this.dragging {
+                            return false;
+                        }
+                        if let (Some(point), Some(bounds)) = (this.drag_position, this.viewport) {
+                            let delta = if point.y < bounds.top() + px(32.) {
+                                16.
+                            } else if point.y > bounds.bottom() - px(32.) {
+                                -16.
+                            } else {
+                                0.
+                            };
+                            if delta != 0. {
+                                this.list.scroll_by(px(delta));
+                                if let Some(position) = this.hit(point)
+                                    && let Some(model) = &mut this.model
+                                {
+                                    model.select(Selection {
+                                        anchor: model.selection.anchor,
+                                        head: position,
+                                    });
+                                }
+                                cx.notify();
+                            }
+                        }
+                        true
+                    })
+                    .unwrap_or(false);
+                if !keep_running {
+                    break;
+                }
+            }
+        }));
     }
 
     fn activate_at(&mut self, position: usize, cx: &mut Context<Self>) {
@@ -792,7 +1261,7 @@ impl EditorPane {
                     .attr("attachmentId")
                     .and_then(serde_json::Value::as_str)
                 {
-                    cx.emit(EditorEvent::OpenAttachment(AttachmentId(id.into())));
+                    self.open_attachment(AttachmentId(id.into()), cx);
                     return;
                 }
                 if span.node.kind() == "mention-@"
@@ -837,32 +1306,92 @@ impl Focusable for EditorPane {
 
 impl Render for EditorPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let caret = self.model.as_ref().and_then(|model| {
+            self.layouts
+                .values()
+                .find_map(|layout| layout.bounds_for(model.selection.head..model.selection.head))
+        });
+        let popup_position = |width: f32, height: f32, below: bool| {
+            if let (Some(caret), Some(viewport)) = (caret, self.viewport) {
+                let left = (caret.left() - viewport.left())
+                    .max(px(8.))
+                    .min((viewport.size.width - px(width + 8.)).max(px(8.)));
+                let under = caret.bottom() - viewport.top() + px(8.);
+                let above = caret.top() - viewport.top() - px(height + 8.);
+                let top = if below && under + px(height) < viewport.size.height {
+                    under
+                } else if above >= px(8.) {
+                    above
+                } else {
+                    under
+                };
+                gpui::point(left, top)
+            } else {
+                gpui::point(px(12.), px(40.))
+            }
+        };
+        let menu_position = popup_position(280., 320., true);
+        let toolbar_position = popup_position(360., 40., false);
         self.layouts.clear();
         let colors = theme(window);
         let entity = cx.entity();
         let handler = entity.clone();
-        let menu = self.slash.as_ref().map(|menu| {
-            div()
-                .border_1()
-                .border_color(colors.border)
-                .bg(colors.card)
-                .p_2()
-                .children(
-                    menu.items()
-                        .into_iter()
-                        .enumerate()
-                        .map(|(index, (_, label))| {
+        let menu =
+            self.slash.as_ref().map(|menu| {
+                div()
+                    .id("slash-menu")
+                    .absolute()
+                    .left(menu_position.x)
+                    .top(menu_position.y)
+                    .w(px(280.))
+                    .max_h(px(320.))
+                    .overflow_y_scroll()
+                    .rounded_xl()
+                    .shadow_lg()
+                    .border_1()
+                    .border_color(colors.border)
+                    .bg(colors.card)
+                    .p_2()
+                    .children(menu.items().into_iter().enumerate().map(
+                        |(index, (command, label))| {
                             div()
+                                .id(("slash-option", index))
+                                .cursor_pointer()
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _, _, cx| {
+                                        if let Some(menu) = &mut this.slash {
+                                            menu.selected = index;
+                                        }
+                                        this.slash_commit(cx);
+                                        cx.stop_propagation();
+                                    }),
+                                )
                                 .px_2()
                                 .py_1()
                                 .when(index == menu.selected, |div| div.bg(colors.accent))
-                                .child(label)
-                        }),
-                )
-        });
+                                .child(div().child(label))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(colors.muted_foreground)
+                                        .child(command.description()),
+                                )
+                        },
+                    ))
+            });
         let mentions =
             self.mention.as_ref().map(|menu| {
                 div()
+                    .id("mention-menu")
+                    .absolute()
+                    .left(menu_position.x)
+                    .top(menu_position.y)
+                    .w(px(280.))
+                    .max_h(px(320.))
+                    .overflow_y_scroll()
+                    .rounded_xl()
+                    .shadow_lg()
                     .border_1()
                     .border_color(colors.border)
                     .bg(colors.card)
@@ -870,6 +1399,18 @@ impl Render for EditorPane {
                     .children(menu.results.candidates.iter().enumerate().map(
                         |(index, candidate)| {
                             div()
+                                .id(("mention-option", index))
+                                .cursor_pointer()
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _, _, cx| {
+                                        if let Some(menu) = &mut this.mention {
+                                            menu.selected = index;
+                                        }
+                                        this.commit_mention(cx);
+                                        cx.stop_propagation();
+                                    }),
+                                )
                                 .px_2()
                                 .py_1()
                                 .when(index == menu.selected, |div| div.bg(colors.accent))
@@ -884,9 +1425,6 @@ impl Render for EditorPane {
                             && menu.results.error.is_none(),
                         |view| view.child("No matching results"),
                     )
-                    .when(!self.external_mention_provider, |view| {
-                        view.child("Session search · people and organizations unavailable")
-                    })
             });
         div()
             .id("native-note-editor")
@@ -923,6 +1461,13 @@ impl Render for EditorPane {
                 }),
             )
             .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
+                if !event
+                    .pressed_button
+                    .is_some_and(|button| button == MouseButton::Left)
+                {
+                    this.dragging = false;
+                    this.drag_scroll = None;
+                }
                 if this.dragging
                     && let Some(position) = this.hit(event.position)
                     && let Some(model) = &mut this.model
@@ -931,15 +1476,159 @@ impl Render for EditorPane {
                         anchor: model.selection.anchor,
                         head: position,
                     });
+                    this.drag_position = Some(event.position);
+                    this.start_drag_scroll(cx);
                     cx.notify();
                 }
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _, _, _| this.dragging = false),
+                cx.listener(|this, _, _, _| {
+                    this.dragging = false;
+                    this.drag_scroll = None;
+                }),
             )
             .when(!self.message.is_empty(), |container| {
                 container.child(div().p_2().text_sm().child(self.message.clone()))
+            })
+            .when(
+                self.attachment_service.is_some() && !self.read_only,
+                |view| {
+                    view.child(
+                        div()
+                            .id("attach-file")
+                            .px_3()
+                            .py_1()
+                            .text_sm()
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| this.choose_attachment(cx)))
+                            .child("Attach file"),
+                    )
+                },
+            )
+            .when(self.pending_attachment.is_some(), |view| {
+                view.child(
+                    div()
+                        .id("insert-upload")
+                        .px_3()
+                        .py_1()
+                        .text_sm()
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| this.insert_pending_attachment(cx)))
+                        .child("Insert uploaded attachment at cursor"),
+                )
+            })
+            .when(
+                !self.read_only
+                    && self
+                        .model
+                        .as_ref()
+                        .is_some_and(|model| !model.selection.is_empty()),
+                |view| {
+                    view.child(gpui::deferred(
+                        div()
+                            .absolute()
+                            .left(toolbar_position.x)
+                            .top(toolbar_position.y)
+                            .shadow_lg()
+                            .flex()
+                            .gap_1()
+                            .p_1()
+                            .border_1()
+                            .rounded_md()
+                            .border_color(colors.border)
+                            .bg(colors.card)
+                            .children(
+                                [
+                                    ("bold", "B"),
+                                    ("italic", "I"),
+                                    ("underline", "U"),
+                                    ("strike", "S"),
+                                    ("code", "Code"),
+                                    ("highlight", "Highlight"),
+                                ]
+                                .into_iter()
+                                .map(|(kind, label)| {
+                                    div()
+                                        .id(kind)
+                                        .px_2()
+                                        .py_1()
+                                        .cursor_pointer()
+                                        .hover(|style| style.bg(colors.accent))
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(move |this, _, _, cx| {
+                                                if let Some(model) = &mut this.model {
+                                                    let before = model.revision;
+                                                    let result = model.toggle_mark(kind);
+                                                    this.edited(before, result, cx);
+                                                }
+                                                cx.stop_propagation();
+                                            }),
+                                        )
+                                        .child(label)
+                                }),
+                            )
+                            .child(
+                                div()
+                                    .id("edit-link")
+                                    .px_2()
+                                    .py_1()
+                                    .cursor_pointer()
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _, _, cx| {
+                                            this.link_input = Some(String::new());
+                                            cx.stop_propagation();
+                                            cx.notify();
+                                        }),
+                                    )
+                                    .child("Link"),
+                            ),
+                    ))
+                },
+            )
+            .when_some(self.link_input.clone(), |view, input| {
+                view.child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .p_2()
+                        .border_1()
+                        .border_color(colors.border)
+                        .child(if input.is_empty() {
+                            "Enter URL…".into()
+                        } else {
+                            input
+                        })
+                        .child(
+                            div()
+                                .id("save-link")
+                                .cursor_pointer()
+                                .child("Apply")
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.commit_link(cx);
+                                        cx.stop_propagation();
+                                    }),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id("remove-link")
+                                .cursor_pointer()
+                                .child("Remove")
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.link_input = Some(String::new());
+                                        this.commit_link(cx);
+                                        cx.stop_propagation();
+                                    }),
+                                ),
+                        ),
+                )
             })
             .when(self.dirty, |container| {
                 container.child(
@@ -971,12 +1660,13 @@ impl Render for EditorPane {
                 .min_h_0()
                 .w_full(),
             )
-            .children(menu)
-            .children(mentions)
+            .children(menu.map(gpui::deferred))
+            .children(mentions.map(gpui::deferred))
             .child(
                 canvas(
                     move |_, _, _| (),
                     move |bounds, (), window, cx| {
+                        handler.update(cx, |this, _| this.viewport = Some(bounds));
                         let focus = handler.read(cx).focus.clone();
                         window.handle_input(&focus, ElementInputHandler::new(bounds, handler), cx);
                     },
@@ -986,5 +1676,14 @@ impl Render for EditorPane {
                 .top_0()
                 .left_0(),
             )
+    }
+}
+
+impl Drop for EditorPane {
+    fn drop(&mut self) {
+        self.watch_cancel.cancel();
+        if let Some(cancel) = &self.mention_cancel {
+            cancel.cancel();
+        }
     }
 }
