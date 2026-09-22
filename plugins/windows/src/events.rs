@@ -36,12 +36,13 @@ pub fn on_window_event(window: &tauri::Window<tauri::Wry>, event: &tauri::Window
     }
 
     #[cfg(not(target_os = "macos"))]
-    if matches!(event, tauri::WindowEvent::Resized(_))
-        && let Some(position) = app
+    if let tauri::WindowEvent::Resized(size) = event
+        && let Ok(scale) = window.scale_factor()
+        && let Some(frame) = app
             .try_state::<crate::PendingPositions>()
-            .and_then(|positions| positions.take(window.label()))
+            .and_then(|positions| positions.take_if_sized(window.label(), size.to_logical(scale)))
     {
-        let _ = window.set_position(position);
+        let _ = window.set_position(tauri::LogicalPosition::new(frame.x, frame.y));
     }
 
     if matches!(event, tauri::WindowEvent::Focused(false))

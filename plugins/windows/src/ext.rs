@@ -369,7 +369,7 @@ impl AppWindow {
                 if let Some(pending_positions) = app_handle.try_state::<crate::PendingPositions>()
                     && (current_size.width != size.width || current_size.height != size.height)
                 {
-                    pending_positions.insert(label, position);
+                    pending_positions.insert(label, frame);
                 }
 
                 window.set_size(size)?;

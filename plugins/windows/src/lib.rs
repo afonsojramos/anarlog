@@ -51,16 +51,20 @@ impl SavedFrames {
 
 #[cfg(not(target_os = "macos"))]
 #[derive(Default)]
-pub struct PendingPositions(pub Mutex<HashMap<String, tauri::LogicalPosition<f64>>>);
+pub struct PendingPositions(pub Mutex<HashMap<String, SavedFrame>>);
 
 #[cfg(not(target_os = "macos"))]
 impl PendingPositions {
-    fn insert(&self, label: String, position: tauri::LogicalPosition<f64>) {
-        self.0.lock().unwrap().insert(label, position);
+    fn insert(&self, label: String, frame: SavedFrame) {
+        self.0.lock().unwrap().insert(label, frame);
     }
 
-    fn take(&self, label: &str) -> Option<tauri::LogicalPosition<f64>> {
-        self.0.lock().unwrap().remove(label)
+    fn take_if_sized(&self, label: &str, size: tauri::LogicalSize<f64>) -> Option<SavedFrame> {
+        let mut pending = self.0.lock().unwrap();
+        let matches = pending.get(label).is_some_and(|frame| {
+            (frame.w - size.width).abs() < 1.0 && (frame.h - size.height).abs() < 1.0
+        });
+        if matches { pending.remove(label) } else { None }
     }
 
     fn remove(&self, label: &str) {
