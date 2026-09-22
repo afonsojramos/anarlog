@@ -77,6 +77,7 @@ pub(super) struct ChunkedSink {
     last_flush: Instant,
     last_space_check: Instant,
     pending_sync: Option<std::thread::JoinHandle<std::io::Result<()>>>,
+    sync: fn(&File) -> std::io::Result<()>,
     pub recovered_audio: bool,
 }
 
@@ -124,8 +125,15 @@ impl ChunkedSink {
             last_flush: Instant::now(),
             last_space_check: Instant::now(),
             pending_sync: None,
+            sync: File::sync_all,
             recovered_audio,
         })
+    }
+
+    #[cfg(test)]
+    fn with_sync(mut self, sync: fn(&File) -> std::io::Result<()>) -> Self {
+        self.sync = sync;
+        self
     }
 
     fn partial_path(&self) -> PathBuf {
@@ -181,27 +189,34 @@ impl ChunkedSink {
         Ok(())
     }
 
-    // Rotation runs on the live writer thread: fsync there can stall for
-    // seconds on slow disks and starve the capture queue, so sync off-thread.
-    // At most one sync is outstanding; its result surfaces at the next
-    // rotation or at finish so a failing disk still stops the recorder.
+    // A chunk is published (renamed from .part) only after it is durable.
+    // Rotation runs on the live writer thread, where fsync can stall for
+    // seconds on slow disks and starve the capture queue, so it syncs and
+    // publishes off-thread. At most one such task is outstanding; its result
+    // surfaces at the next rotation or at finish so a failing disk still
+    // stops the recorder, and an unpublished .part is recovered at startup.
     fn close_chunk(&mut self, background_sync: bool) -> Result<(), ActorProcessingErr> {
         let Some(chunk) = self.chunk.take() else {
             return Ok(());
         };
         let file = chunk.finish()?;
         let end_ms = self.start_ms + self.chunk_samples * 1000 / SAMPLE_RATE as u64;
+        let partial = self.partial_path();
         let ready = self.dir.join(format!(
             "{}-{}-{}-{}.mp3",
             self.capture_started_at, self.start_ms, end_ms, self.audio_start_ms
         ));
-        std::fs::rename(self.partial_path(), &ready)?;
+        let sync = self.sync;
+        let publish = move || {
+            sync(&file)?;
+            std::fs::rename(partial, ready)
+        };
         let previous = self.join_pending_sync();
         let current = if background_sync {
-            self.pending_sync = Some(std::thread::spawn(move || file.sync_all()));
+            self.pending_sync = Some(std::thread::spawn(publish));
             Ok(())
         } else {
-            file.sync_all().map_err(ActorProcessingErr::from)
+            publish().map_err(ActorProcessingErr::from)
         };
         self.start_ms = end_ms;
         self.chunk_samples = 0;
@@ -471,6 +486,7 @@ mod tests {
             )
             .unwrap();
         }
+        sink.join_pending_sync().unwrap();
         let chunks = list_recovery_chunks(dir.path()).unwrap();
         assert_eq!(chunks.len(), 1);
         assert_eq!((chunks[0].start_ms, chunks[0].end_ms), (0, 60_000));
@@ -481,6 +497,61 @@ mod tests {
         sink.finish().unwrap();
         assert_eq!(list_recovery_chunks(dir.path()).unwrap().len(), 1);
         assert!(dir.path().join("audio.mp3").metadata().unwrap().len() < 2_000_000);
+    }
+
+    fn write_one_chunk(sink: &mut ChunkedSink) {
+        let samples = vec![0.1; SAMPLE_RATE as usize];
+        for _ in 0..60 {
+            sink.write(&samples, &samples).unwrap();
+        }
+    }
+
+    #[test]
+    fn slow_chunk_sync_neither_blocks_the_writer_nor_publishes_early() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sink = ChunkedSink::new(dir.path(), 123, 0, false)
+            .unwrap()
+            .with_sync(|_| {
+                std::thread::sleep(Duration::from_millis(500));
+                Ok(())
+            });
+        let started = Instant::now();
+        write_one_chunk(&mut sink);
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert!(list_recovery_chunks(dir.path()).unwrap().is_empty());
+        sink.write(&[0.1; 160], &[0.1; 160]).unwrap();
+        sink.finish().unwrap();
+        let chunks = list_recovery_chunks(dir.path()).unwrap();
+        assert_eq!(chunks.len(), 2);
+        assert_eq!((chunks[0].start_ms, chunks[0].end_ms), (0, 60_000));
+        assert!(
+            std::fs::read_dir(dir.path().join(RECOVERY_DIR))
+                .unwrap()
+                .all(|e| e.unwrap().path().extension().unwrap() == "mp3")
+        );
+    }
+
+    #[test]
+    fn failed_chunk_sync_stops_the_writer_and_leaves_the_chunk_recoverable() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sink = ChunkedSink::new(dir.path(), 123, 0, false)
+            .unwrap()
+            .with_sync(|_| Err(std::io::Error::other("disk gone")));
+        write_one_chunk(&mut sink);
+        assert!(list_recovery_chunks(dir.path()).unwrap().is_empty());
+        let samples = vec![0.1; SAMPLE_RATE as usize];
+        for _ in 0..59 {
+            sink.write(&samples, &samples).unwrap();
+        }
+        assert!(sink.write(&samples, &samples).is_err());
+        assert!(sink.finish().is_err());
+        assert!(list_recovery_chunks(dir.path()).unwrap().is_empty());
+        recover_partial_chunks(dir.path()).unwrap();
+        let chunks = list_recovery_chunks(dir.path()).unwrap();
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].start_ms, 0);
+        assert!(chunks[0].end_ms >= 60_000);
+        assert_eq!(chunks[1].start_ms, 60_000);
     }
 
     #[test]
@@ -508,6 +579,7 @@ mod tests {
             sink.write(&samples, &samples).unwrap();
             assert!(sink.history_samples <= SAMPLE_RATE as usize * 2);
             if second % 60 == 0 {
+                sink.join_pending_sync().unwrap();
                 let chunks = list_recovery_chunks(dir.path()).unwrap();
                 assert_eq!(chunks.len(), 1);
                 assert_eq!(chunks[0].end_ms, second * 1000);
