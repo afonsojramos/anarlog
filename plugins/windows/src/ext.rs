@@ -217,8 +217,19 @@ impl AppWindow {
 
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = app;
-            Ok(None)
+            let Some(window) = self.get(app) else {
+                return Ok(None);
+            };
+            let scale = window.scale_factor()?;
+            let position = window.outer_position()?.to_logical::<f64>(scale);
+            let size = window.inner_size()?.to_logical::<f64>(scale);
+
+            Ok(Some(SavedFrame {
+                x: position.x,
+                y: position.y,
+                w: size.width,
+                h: size.height,
+            }))
         }
     }
 
@@ -249,8 +260,23 @@ impl AppWindow {
 
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = app;
-            Ok(None)
+            let Some(window) = self.get(app) else {
+                return Ok(None);
+            };
+            let Some(monitor) = window.current_monitor()? else {
+                return Ok(None);
+            };
+            let scale = monitor.scale_factor();
+            let work_area = monitor.work_area();
+            let position = work_area.position.to_logical::<f64>(scale);
+            let size = work_area.size.to_logical::<f64>(scale);
+
+            Ok(Some(SavedFrame {
+                x: position.x,
+                y: position.y,
+                w: size.width,
+                h: size.height,
+            }))
         }
     }
 
@@ -311,8 +337,10 @@ impl AppWindow {
 
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = app;
-            let _ = frame;
+            if let Some(window) = self.get(app) {
+                window.set_position(tauri::LogicalPosition::new(frame.x, frame.y))?;
+                window.set_size(tauri::LogicalSize::new(frame.w, frame.h))?;
+            }
             Ok(())
         }
     }

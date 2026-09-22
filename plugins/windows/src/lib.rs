@@ -43,6 +43,10 @@ impl SavedFrames {
     fn remove(&self, label: &str) {
         self.0.lock().unwrap().remove(label);
     }
+
+    fn contains(&self, label: &str) -> bool {
+        self.0.lock().unwrap().contains_key(label)
+    }
 }
 
 #[derive(Default)]

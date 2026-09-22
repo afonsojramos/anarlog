@@ -35,6 +35,15 @@ pub fn on_window_event(window: &tauri::Window<tauri::Wry>, event: &tauri::Window
         return;
     }
 
+    if matches!(event, tauri::WindowEvent::Focused(false))
+        && matches!(window.label().parse::<AppWindow>(), Ok(AppWindow::Main))
+        && app
+            .try_state::<crate::SavedFrames>()
+            .is_some_and(|frames| frames.contains(window.label()))
+    {
+        let _ = window.set_always_on_top(true);
+    }
+
     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
         match window.label().parse::<AppWindow>() {
             Err(e) => tracing::warn!("window_parse_error: {:?}", e),
