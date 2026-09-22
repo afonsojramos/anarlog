@@ -347,7 +347,15 @@ impl AppWindow {
                 return Ok(());
             };
             let is_main = matches!(self, AppWindow::Main);
+            let label = self.label();
+            let app_handle = app.clone();
             run_on_main_thread(app, move || -> tauri::Result<()> {
+                let size = tauri::LogicalSize::new(frame.w, frame.h);
+                let position = tauri::LogicalPosition::new(frame.x, frame.y);
+                let current_size = window
+                    .inner_size()?
+                    .to_logical::<f64>(window.scale_factor()?);
+
                 if is_main {
                     let (min_w, min_h) = crate::window::MAIN_WINDOW_MIN_SIZE;
                     window.set_min_size(Some(tauri::LogicalSize::new(
@@ -355,8 +363,17 @@ impl AppWindow {
                         min_h.min(frame.h),
                     )))?;
                 }
-                window.set_size(tauri::LogicalSize::new(frame.w, frame.h))?;
-                window.set_position(tauri::LogicalPosition::new(frame.x, frame.y))
+
+                // Window managers clamp a move request against the window's
+                // current size, so re-apply the position once the resize lands.
+                if let Some(pending_positions) = app_handle.try_state::<crate::PendingPositions>()
+                    && (current_size.width != size.width || current_size.height != size.height)
+                {
+                    pending_positions.insert(label, position);
+                }
+
+                window.set_size(size)?;
+                window.set_position(position)
             })?
             .map_err(crate::Error::from)
         }

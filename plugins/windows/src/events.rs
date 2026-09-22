@@ -35,6 +35,15 @@ pub fn on_window_event(window: &tauri::Window<tauri::Wry>, event: &tauri::Window
         return;
     }
 
+    #[cfg(not(target_os = "macos"))]
+    if matches!(event, tauri::WindowEvent::Resized(_))
+        && let Some(position) = app
+            .try_state::<crate::PendingPositions>()
+            .and_then(|positions| positions.take(window.label()))
+    {
+        let _ = window.set_position(position);
+    }
+
     if matches!(event, tauri::WindowEvent::Focused(false))
         && matches!(window.label().parse::<AppWindow>(), Ok(AppWindow::Main))
         && app

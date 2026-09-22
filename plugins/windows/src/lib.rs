@@ -49,6 +49,25 @@ impl SavedFrames {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
+#[derive(Default)]
+pub struct PendingPositions(pub Mutex<HashMap<String, tauri::LogicalPosition<f64>>>);
+
+#[cfg(not(target_os = "macos"))]
+impl PendingPositions {
+    fn insert(&self, label: String, position: tauri::LogicalPosition<f64>) {
+        self.0.lock().unwrap().insert(label, position);
+    }
+
+    fn take(&self, label: &str) -> Option<tauri::LogicalPosition<f64>> {
+        self.0.lock().unwrap().remove(label)
+    }
+
+    fn remove(&self, label: &str) {
+        self.0.lock().unwrap().remove(label);
+    }
+}
+
 #[derive(Default)]
 pub struct WindowExpansions(pub Mutex<HashMap<String, Vec<(f64, f64, bool)>>>);
 
@@ -217,6 +236,10 @@ pub(crate) fn clear_window_state(app: &tauri::AppHandle<tauri::Wry>, label: &str
     if let Some(state) = app.try_state::<SavedFrames>() {
         state.remove(label);
     }
+    #[cfg(not(target_os = "macos"))]
+    if let Some(state) = app.try_state::<PendingPositions>() {
+        state.remove(label);
+    }
     if let Some(state) = app.try_state::<WindowExpansions>() {
         state.remove(label);
     }
@@ -298,6 +321,9 @@ pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
                 let saved_frames = SavedFrames::default();
                 app.manage(saved_frames);
             }
+
+            #[cfg(not(target_os = "macos"))]
+            app.manage(PendingPositions::default());
 
             {
                 let window_expansions = WindowExpansions::default();
