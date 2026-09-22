@@ -345,8 +345,8 @@ impl AppWindow {
                         min_h.min(frame.h),
                     )))?;
                 }
-                window.set_position(tauri::LogicalPosition::new(frame.x, frame.y))?;
                 window.set_size(tauri::LogicalSize::new(frame.w, frame.h))?;
+                window.set_position(tauri::LogicalPosition::new(frame.x, frame.y))?;
             }
             Ok(())
         }
