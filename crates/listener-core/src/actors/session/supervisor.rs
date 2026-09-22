@@ -26,6 +26,7 @@ const LISTENER_RETRY_DELAYS: [Duration; 5] = [
     Duration::from_secs(30),
 ];
 const MAX_LISTENER_RETRY_AFTER: Duration = Duration::from_secs(30);
+const RECORDER_RETRY_DELAY: Duration = Duration::from_secs(5);
 
 pub struct SessionState {
     ctx: SessionContext,
@@ -72,7 +73,7 @@ impl Actor for SessionActor {
                 Ok(cell) => Some(cell),
                 Err(error) => {
                     emit_storage_error(&ctx, &error.to_string());
-                    myself.send_after(Duration::from_secs(30), || SessionMsg::RetryRecorder);
+                    myself.send_after(RECORDER_RETRY_DELAY, || SessionMsg::RetryRecorder);
                     None
                 }
             };
@@ -162,7 +163,7 @@ impl Actor for SessionActor {
                         .recorder_restarts
                         .maybe_reset(&children::RECORDER_RESTART_BUDGET);
                     if !children::try_restart_recorder(myself.get_cell(), state).await {
-                        myself.send_after(Duration::from_secs(30), || SessionMsg::RetryRecorder);
+                        myself.send_after(RECORDER_RETRY_DELAY, || SessionMsg::RetryRecorder);
                     }
                 }
             }
@@ -234,8 +235,7 @@ impl Actor for SessionActor {
                                 &state.ctx,
                                 reason.as_deref().unwrap_or("Audio saving stopped"),
                             );
-                            myself
-                                .send_after(Duration::from_secs(30), || SessionMsg::RetryRecorder);
+                            myself.send_after(RECORDER_RETRY_DELAY, || SessionMsg::RetryRecorder);
                         }
                         None => {
                             tracing::warn!("unknown_child_terminated");
@@ -270,8 +270,7 @@ impl Actor for SessionActor {
                             state.recorder_cell = None;
                             children::sync_source_recorder(state).await;
                             emit_storage_error(&state.ctx, &error.to_string());
-                            myself
-                                .send_after(Duration::from_secs(30), || SessionMsg::RetryRecorder);
+                            myself.send_after(RECORDER_RETRY_DELAY, || SessionMsg::RetryRecorder);
                         }
                         None => {
                             tracing::warn!("unknown_child_failed");

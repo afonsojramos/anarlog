@@ -55,13 +55,12 @@ impl EncoderFile {
         Ok(())
     }
 
-    fn finish(mut self) -> Result<(), ActorProcessingErr> {
+    fn finish(mut self) -> Result<File, ActorProcessingErr> {
         self.output.clear();
         self.encoder.flush(&mut self.output)?;
         self.file.write_all(&self.output)?;
         self.file.flush()?;
-        self.file.get_ref().sync_all()?;
-        Ok(())
+        Ok(self.file.into_inner().map_err(|error| error.into_error())?)
     }
 }
 
@@ -166,7 +165,7 @@ impl ChunkedSink {
             self.history_samples -= mic.len().max(speaker.len());
         }
         if self.chunk_samples >= CHUNK_SAMPLES {
-            self.close_chunk()?;
+            self.close_chunk(true)?;
         }
         if self.last_flush.elapsed() >= Duration::from_secs(1) {
             if let Some(chunk) = &mut self.chunk {
@@ -180,25 +179,45 @@ impl ChunkedSink {
         Ok(())
     }
 
-    fn close_chunk(&mut self) -> Result<(), ActorProcessingErr> {
+    // Rotation runs on the live writer thread: fsync there can stall for
+    // seconds on slow disks and starve the capture queue, so sync off-thread.
+    fn close_chunk(&mut self, background_sync: bool) -> Result<(), ActorProcessingErr> {
         let Some(chunk) = self.chunk.take() else {
             return Ok(());
         };
-        chunk.finish()?;
+        let file = chunk.finish()?;
         let end_ms = self.start_ms + self.chunk_samples * 1000 / SAMPLE_RATE as u64;
         let ready = self.dir.join(format!(
             "{}-{}-{}-{}.mp3",
             self.capture_started_at, self.start_ms, end_ms, self.audio_start_ms
         ));
-        std::fs::rename(self.partial_path(), ready)?;
+        std::fs::rename(self.partial_path(), &ready)?;
+        if background_sync {
+            std::thread::spawn(move || {
+                if let Err(error) = file.sync_all() {
+                    tracing::warn!(?error, path = ?ready, "recovery_chunk_sync_failed");
+                }
+            });
+        } else {
+            file.sync_all()?;
+        }
         self.start_ms = end_ms;
         self.chunk_samples = 0;
         Ok(())
     }
 
     pub fn finish(mut self) -> Result<(), ActorProcessingErr> {
-        let chunks = self.close_chunk();
-        let archive = self.archive.take().map(EncoderFile::finish).transpose();
+        let chunks = self.close_chunk(false);
+        let archive = self
+            .archive
+            .take()
+            .map(|archive| {
+                archive
+                    .finish()?
+                    .sync_all()
+                    .map_err(ActorProcessingErr::from)
+            })
+            .transpose();
         chunks?;
         archive?;
         Ok(())
