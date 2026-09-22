@@ -68,7 +68,6 @@ pub(crate) fn should_restart_terminated_webview(label: &str, is_visible: bool) -
     is_visible && matches!(label.parse::<AppWindow>(), Ok(AppWindow::Main))
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn run_on_main_thread<R: Send + 'static>(
     app: &AppHandle<tauri::Wry>,
     f: impl FnOnce() -> R + Send + 'static,
@@ -220,16 +219,20 @@ impl AppWindow {
             let Some(window) = self.get(app) else {
                 return Ok(None);
             };
-            let scale = window.scale_factor()?;
-            let position = window.outer_position()?.to_logical::<f64>(scale);
-            let size = window.inner_size()?.to_logical::<f64>(scale);
+            run_on_main_thread(app, move || -> tauri::Result<SavedFrame> {
+                let scale = window.scale_factor()?;
+                let position = window.outer_position()?.to_logical::<f64>(scale);
+                let size = window.inner_size()?.to_logical::<f64>(scale);
 
-            Ok(Some(SavedFrame {
-                x: position.x,
-                y: position.y,
-                w: size.width,
-                h: size.height,
-            }))
+                Ok(SavedFrame {
+                    x: position.x,
+                    y: position.y,
+                    w: size.width,
+                    h: size.height,
+                })
+            })?
+            .map(Some)
+            .map_err(crate::Error::from)
         }
     }
 
@@ -263,20 +266,23 @@ impl AppWindow {
             let Some(window) = self.get(app) else {
                 return Ok(None);
             };
-            let Some(monitor) = window.current_monitor()? else {
-                return Ok(None);
-            };
-            let scale = monitor.scale_factor();
-            let work_area = monitor.work_area();
-            let position = work_area.position.to_logical::<f64>(scale);
-            let size = work_area.size.to_logical::<f64>(scale);
+            run_on_main_thread(app, move || -> tauri::Result<Option<SavedFrame>> {
+                let Some(monitor) = window.current_monitor()? else {
+                    return Ok(None);
+                };
+                let scale = monitor.scale_factor();
+                let work_area = monitor.work_area();
+                let position = work_area.position.to_logical::<f64>(scale);
+                let size = work_area.size.to_logical::<f64>(scale);
 
-            Ok(Some(SavedFrame {
-                x: position.x,
-                y: position.y,
-                w: size.width,
-                h: size.height,
-            }))
+                Ok(Some(SavedFrame {
+                    x: position.x,
+                    y: position.y,
+                    w: size.width,
+                    h: size.height,
+                }))
+            })?
+            .map_err(crate::Error::from)
         }
     }
 
@@ -337,8 +343,12 @@ impl AppWindow {
 
         #[cfg(not(target_os = "macos"))]
         {
-            if let Some(window) = self.get(app) {
-                if matches!(self, AppWindow::Main) {
+            let Some(window) = self.get(app) else {
+                return Ok(());
+            };
+            let is_main = matches!(self, AppWindow::Main);
+            run_on_main_thread(app, move || -> tauri::Result<()> {
+                if is_main {
                     let (min_w, min_h) = crate::window::MAIN_WINDOW_MIN_SIZE;
                     window.set_min_size(Some(tauri::LogicalSize::new(
                         min_w.min(frame.w),
@@ -346,9 +356,9 @@ impl AppWindow {
                     )))?;
                 }
                 window.set_size(tauri::LogicalSize::new(frame.w, frame.h))?;
-                window.set_position(tauri::LogicalPosition::new(frame.x, frame.y))?;
-            }
-            Ok(())
+                window.set_position(tauri::LogicalPosition::new(frame.x, frame.y))
+            })?
+            .map_err(crate::Error::from)
         }
     }
 
