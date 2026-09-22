@@ -76,6 +76,7 @@ pub(super) struct ChunkedSink {
     archive: Option<EncoderFile>,
     last_flush: Instant,
     last_space_check: Instant,
+    pending_sync: Option<std::thread::JoinHandle<std::io::Result<()>>>,
     pub recovered_audio: bool,
 }
 
@@ -122,6 +123,7 @@ impl ChunkedSink {
             archive,
             last_flush: Instant::now(),
             last_space_check: Instant::now(),
+            pending_sync: None,
             recovered_audio,
         })
     }
@@ -181,6 +183,8 @@ impl ChunkedSink {
 
     // Rotation runs on the live writer thread: fsync there can stall for
     // seconds on slow disks and starve the capture queue, so sync off-thread.
+    // At most one sync is outstanding; its result surfaces at the next
+    // rotation or at finish so a failing disk still stops the recorder.
     fn close_chunk(&mut self, background_sync: bool) -> Result<(), ActorProcessingErr> {
         let Some(chunk) = self.chunk.take() else {
             return Ok(());
@@ -192,12 +196,9 @@ impl ChunkedSink {
             self.capture_started_at, self.start_ms, end_ms, self.audio_start_ms
         ));
         std::fs::rename(self.partial_path(), &ready)?;
+        self.join_pending_sync()?;
         if background_sync {
-            std::thread::spawn(move || {
-                if let Err(error) = file.sync_all() {
-                    tracing::warn!(?error, path = ?ready, "recovery_chunk_sync_failed");
-                }
-            });
+            self.pending_sync = Some(std::thread::spawn(move || file.sync_all()));
         } else {
             file.sync_all()?;
         }
@@ -206,8 +207,18 @@ impl ChunkedSink {
         Ok(())
     }
 
+    fn join_pending_sync(&mut self) -> Result<(), ActorProcessingErr> {
+        if let Some(handle) = self.pending_sync.take() {
+            handle
+                .join()
+                .map_err(|_| std::io::Error::other("recovery chunk sync thread panicked"))??;
+        }
+        Ok(())
+    }
+
     pub fn finish(mut self) -> Result<(), ActorProcessingErr> {
         let chunks = self.close_chunk(false);
+        let synced = self.join_pending_sync();
         let archive = self
             .archive
             .take()
@@ -219,6 +230,7 @@ impl ChunkedSink {
             })
             .transpose();
         chunks?;
+        synced?;
         archive?;
         Ok(())
     }
