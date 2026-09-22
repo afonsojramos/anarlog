@@ -196,15 +196,17 @@ impl ChunkedSink {
             self.capture_started_at, self.start_ms, end_ms, self.audio_start_ms
         ));
         std::fs::rename(self.partial_path(), &ready)?;
-        self.join_pending_sync()?;
-        if background_sync {
+        let previous = self.join_pending_sync();
+        let current = if background_sync {
             self.pending_sync = Some(std::thread::spawn(move || file.sync_all()));
+            Ok(())
         } else {
-            file.sync_all()?;
-        }
+            file.sync_all().map_err(ActorProcessingErr::from)
+        };
         self.start_ms = end_ms;
         self.chunk_samples = 0;
-        Ok(())
+        previous?;
+        current
     }
 
     fn join_pending_sync(&mut self) -> Result<(), ActorProcessingErr> {
