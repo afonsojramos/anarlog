@@ -1,6 +1,7 @@
 use crate::WindowImpl;
 
 const MAIN_WINDOW_WIDTH: f64 = 910.0;
+pub(crate) const MAIN_WINDOW_MIN_SIZE: (f64, f64) = (500.0, 500.0);
 const MAIN_WINDOW_HEIGHT: f64 = 600.0;
 const NOTE_WINDOW_WIDTH: f64 = 720.0;
 const NOTE_WINDOW_HEIGHT: f64 = 820.0;
@@ -203,7 +204,7 @@ impl WindowImpl for AppWindow {
                     .window_builder(app, "/app")
                     .maximizable(true)
                     .minimizable(true)
-                    .min_inner_size(500.0, 500.0)
+                    .min_inner_size(MAIN_WINDOW_MIN_SIZE.0, MAIN_WINDOW_MIN_SIZE.1)
                     .inner_size(MAIN_WINDOW_WIDTH, MAIN_WINDOW_HEIGHT);
                 builder.build()?
             }

@@ -338,6 +338,13 @@ impl AppWindow {
         #[cfg(not(target_os = "macos"))]
         {
             if let Some(window) = self.get(app) {
+                if matches!(self, AppWindow::Main) {
+                    let (min_w, min_h) = crate::window::MAIN_WINDOW_MIN_SIZE;
+                    window.set_min_size(Some(tauri::LogicalSize::new(
+                        min_w.min(frame.w),
+                        min_h.min(frame.h),
+                    )))?;
+                }
                 window.set_position(tauri::LogicalPosition::new(frame.x, frame.y))?;
                 window.set_size(tauri::LogicalSize::new(frame.w, frame.h))?;
             }
