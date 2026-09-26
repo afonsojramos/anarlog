@@ -711,7 +711,7 @@ fn checkpointed_engine_ignores_replayed_words_and_keeps_segments_continuous() {
 #[test]
 fn updating_attendance_does_not_merge_remote_voices() {
     let mut engine = LiveTranscriptEngine::new("deepgram", &[], Some("self"));
-    engine.update_identities(&["remote".into()], Some("self"), vec![]);
+    engine.update_identities(&["remote".into()], Some("self"), vec![], false, 0);
     let mut spoken = word("hello", 0.0, 0.5);
     spoken.speaker = Some(7);
     let response = transcript_response_at("hello", vec![spoken], true, 1, 0.0, 0.5);
@@ -755,6 +755,8 @@ fn speaker_assignment_names_later_segments_from_the_same_speaker() {
                     speaker_index: 0,
                 },
             }],
+            false,
+            0,
         )
         .expect("assignment relabels the segment already on screen");
     assert_eq!(relabeled.upserts.len(), 1);
@@ -794,6 +796,198 @@ fn speaker_assignment_names_later_segments_from_the_same_speaker() {
             .filter(|segment| segment.key.speaker_human_id.as_deref() == Some("artem"))
             .all(|segment| !segment.text.contains("nice"))
     );
+}
+
+#[test]
+fn isolated_mic_names_indexless_words_as_self() {
+    let participants = ["self".to_string()];
+    let mut engine = LiveTranscriptEngine::with_speaker_assignments(
+        "deepgram",
+        &participants,
+        Some("self"),
+        vec![],
+        true,
+        0,
+    );
+
+    let update = engine
+        .process(&transcript_response_at(
+            "hello there",
+            words_from_text("hello there", 0.0, 1.0),
+            true,
+            0,
+            0.0,
+            1.0,
+        ))
+        .expect("update");
+    let segments = update.segment_delta.expect("segments").upserts;
+    assert_eq!(segments.len(), 1);
+    assert_eq!(segments[0].key.speaker_human_id.as_deref(), Some("self"));
+}
+
+#[test]
+fn shared_mic_keeps_indexless_words_anonymous() {
+    let participants = ["self".to_string()];
+    let mut engine = LiveTranscriptEngine::with_speaker_assignments(
+        "deepgram",
+        &participants,
+        Some("self"),
+        vec![],
+        false,
+        0,
+    );
+
+    let update = engine
+        .process(&transcript_response_at(
+            "hello there",
+            words_from_text("hello there", 0.0, 1.0),
+            true,
+            0,
+            0.0,
+            1.0,
+        ))
+        .expect("update");
+    let segments = update.segment_delta.expect("segments").upserts;
+    assert_eq!(segments.len(), 1);
+    assert_eq!(segments[0].key.speaker_human_id, None);
+}
+
+#[test]
+fn isolation_start_keeps_earlier_words_anonymous() {
+    let participants = ["self".to_string()];
+    let mut engine = LiveTranscriptEngine::with_speaker_assignments(
+        "deepgram",
+        &participants,
+        Some("self"),
+        vec![],
+        false,
+        0,
+    );
+
+    engine
+        .process(&transcript_response_at(
+            "guest speaks",
+            words_from_text("guest speaks", 0.0, 1.0),
+            true,
+            0,
+            0.0,
+            1.0,
+        ))
+        .expect("shared-era update");
+
+    if let Some(delta) = engine.update_identities(&participants, Some("self"), vec![], true, 2000) {
+        assert!(
+            delta
+                .upserts
+                .iter()
+                .filter(|segment| segment.text.contains("guest speaks"))
+                .all(|segment| segment.key.speaker_human_id.is_none()),
+            "shared-era words must not inherit the owner when isolation starts"
+        );
+    }
+
+    let update = engine
+        .process(&transcript_response_at(
+            "owner speaks",
+            words_from_text("owner speaks", 3.0, 1.0),
+            true,
+            0,
+            3.0,
+            1.0,
+        ))
+        .expect("isolated-era update");
+    let segments = update.segment_delta.expect("segments").upserts;
+    let owner = segments
+        .iter()
+        .find(|segment| segment.text.contains("owner speaks"))
+        .expect("isolated-era segment");
+    assert_eq!(owner.key.speaker_human_id.as_deref(), Some("self"));
+}
+
+#[test]
+fn isolation_end_keeps_earlier_isolated_words_named() {
+    let participants = ["self".to_string()];
+    let mut engine = LiveTranscriptEngine::with_speaker_assignments(
+        "deepgram",
+        &participants,
+        Some("self"),
+        vec![],
+        true,
+        0,
+    );
+
+    engine
+        .process(&transcript_response_at(
+            "owner speaks",
+            words_from_text("owner speaks", 0.0, 1.0),
+            true,
+            0,
+            0.0,
+            1.0,
+        ))
+        .expect("isolated-era update");
+
+    if let Some(delta) = engine.update_identities(&participants, Some("self"), vec![], false, 2000)
+    {
+        assert!(
+            delta
+                .upserts
+                .iter()
+                .filter(|segment| segment.text.contains("owner speaks"))
+                .all(|segment| segment.key.speaker_human_id.as_deref() == Some("self")),
+            "isolated-era words keep the owner after isolation ends"
+        );
+    }
+
+    let update = engine
+        .process(&transcript_response_at(
+            "guest speaks",
+            words_from_text("guest speaks", 3.0, 1.0),
+            true,
+            0,
+            3.0,
+            1.0,
+        ))
+        .expect("shared-era update");
+    let segments = update.segment_delta.expect("segments").upserts;
+    let guest = segments
+        .iter()
+        .find(|segment| segment.text.contains("guest speaks"))
+        .expect("shared-era segment");
+    assert_eq!(guest.key.speaker_human_id, None);
+}
+
+#[test]
+fn isolated_mic_self_wins_over_scoped_guest_assignment() {
+    let participants = ["self".to_string()];
+    let mut engine = LiveTranscriptEngine::with_speaker_assignments(
+        "deepgram",
+        &participants,
+        Some("self"),
+        vec![IdentityAssignment {
+            human_id: "guest".to_string(),
+            scope: anlg_transcript::IdentityScope::ChannelSpeaker {
+                channel: anlg_transcript::ChannelProfile::DirectMic,
+                speaker_index: 0,
+            },
+        }],
+        true,
+        0,
+    );
+
+    let update = engine
+        .process(&transcript_response_at(
+            "hello there",
+            words_from_text("hello there", 0.0, 1.0),
+            true,
+            0,
+            0.0,
+            1.0,
+        ))
+        .expect("update");
+    let segments = update.segment_delta.expect("segments").upserts;
+    assert_eq!(segments.len(), 1);
+    assert_eq!(segments[0].key.speaker_human_id.as_deref(), Some("self"));
 }
 
 #[test]

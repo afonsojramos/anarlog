@@ -71,6 +71,9 @@ pub struct ListenerArgs {
     pub self_human_id: Option<String>,
     pub speaker_assignments: Vec<IdentityAssignment>,
     pub live_transcript: SharedLiveTranscript,
+    /// The mic-isolation verdict the streams opened with: every playing output is a headphone
+    /// and the mic was not swapped away from the user's Bluetooth headset.
+    pub mic_isolated: bool,
 }
 
 pub struct ListenerState {
@@ -308,6 +311,8 @@ impl Actor for ListenerActor {
                     &state.args.participant_human_ids,
                     state.args.self_human_id.as_deref(),
                     state.args.speaker_assignments.clone(),
+                    state.args.mic_isolated,
+                    state.args.session_started_at.elapsed().as_millis() as i64,
                 ) {
                     state
                         .args
@@ -434,6 +439,8 @@ fn resume_transcript(args: &ListenerArgs, adapter_name: &str) -> LiveTranscriptE
                 &args.participant_human_ids,
                 args.self_human_id.as_deref(),
                 args.speaker_assignments.clone(),
+                args.mic_isolated,
+                args.session_started_at.elapsed().as_millis() as i64,
             ) {
                 args.runtime
                     .emit_data(SessionDataEvent::TranscriptSegmentDelta {
@@ -448,6 +455,8 @@ fn resume_transcript(args: &ListenerArgs, adapter_name: &str) -> LiveTranscriptE
             &args.participant_human_ids,
             args.self_human_id.as_deref(),
             args.speaker_assignments.clone(),
+            args.mic_isolated,
+            args.session_started_at.elapsed().as_millis() as i64,
         ),
     }
 }
